@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+/tmp/
+*.tmp
+
+# Test coverage
+coverage/
+
+# Playwright
+playwright-report/
+test-results/
+
+# Bun
+bun.lockb
+
+# Claude Code local files
+.claude/*.local.*
+
+# Git
+*.gitbundle
+*.bundle
+
+docs/
+# Saved board
+data/
+
+# Local agent traces and review archives
+.pi/
+*.tgz
