@@ -4,6 +4,7 @@
 
 import { parseArgs } from 'node:util'
 import { assert } from '../shared/assert'
+import { cleanup_publish, cleanup_restore, cleanup_snapshot } from './cleanup_commands'
 import { fetch_drawing, serve, start, status, stop, type Options } from './commands'
 import { commands, help_commands, help_top, type Command } from './help'
 import { failure, outcome_print, type Outcome, type OutputMode } from './output'
@@ -21,6 +22,13 @@ const options_by_command = {
   status: options_common,
   stop: options_common,
   serve: { ...options_common, port: { type: 'string' } },
+  'cleanup-snapshot': {
+    ...options_common, out: { type: 'string' }, 'no-open': { type: 'boolean' },
+  },
+  'cleanup-publish': { ...options_common, file: { type: 'string' } },
+  'cleanup-restore': {
+    ...options_common, 'base-revision': { type: 'string' }, revision: { type: 'string' },
+  },
 } as const
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -80,18 +88,36 @@ function arguments_parse(command: Command, rest: readonly string[]): Parsed {
       return { outcome: usage_error(message, help_command) }
     }
   }
+  const base_revision = revision_parse(values['base-revision'])
+  const revision = revision_parse(values.revision)
+  if (base_revision === 'malformed' || revision === 'malformed') {
+    const message = 'A revision must be a whole number from 0 up.'
+    return { outcome: usage_error(message, help_command) }
+  }
   const options: Options = {
     port,
     no_open: values['no-open'] === true,
     out: typeof values.out === 'string' ? values.out : null,
     terminal: process.stdout.isTTY === true && values.json !== true && values.quiet !== true,
+    file: typeof values.file === 'string' ? values.file : null,
+    base_revision,
+    revision,
   }
   assert(options.port === null || options.port > 0, 'a parsed port is positive')
   return { options, help: values.help === true }
 }
 
+function revision_parse(value: string | boolean | undefined): number | null | 'malformed' {
+  if (typeof value !== 'string') return null
+  const revision = Number(value)
+  return /^[0-9]{1,15}$/.test(value) && Number.isSafeInteger(revision) ? revision : 'malformed'
+}
+
 function command_run(command: Command, options: Options): Promise<Outcome> {
   if (command === 'start') return start(options)
+  if (command === 'cleanup-snapshot') return cleanup_snapshot(options)
+  if (command === 'cleanup-publish') return cleanup_publish(options)
+  if (command === 'cleanup-restore') return cleanup_restore(options)
   if (command === 'fetch') return fetch_drawing(options)
   if (command === 'status') return status()
   if (command === 'stop') return stop()

@@ -1,12 +1,18 @@
-// The iPad workspace: a canvas and a tool strip. Everything else tldraw offers is hidden.
+// The iPad workspace: a canvas and a tool strip. Everything else tldraw offers is hidden. Tabs
+// switch to the cleaned diagram, or show it beside the sketch while drawing continues.
 
 import { DefaultSizeStyle, Tldraw, type Editor } from 'tldraw'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
+import { CleanedPane } from './cleaned_pane'
+import { use_cleaned } from './cleaned_state'
 import { Notice } from './notice'
 import { ToolStrip } from './tool_strip'
+import { use_view, ViewPanes, ViewTabs } from './views'
 
 export function DrawPage() {
   const board = use_board_store('draw')
+  const [view, view_choose] = use_view('draw')
+  const cleaned = use_cleaned()
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     return <Notice text="The board is not answering. Start it on your Mac, then reload." />
@@ -14,15 +20,22 @@ export function DrawPage() {
 
   return (
     <main className="board">
-      <Tldraw
-        store={board.store}
-        hideUi
-        assetUrls={asset_urls}
-        components={components_quiet}
-        onMount={draw_mount}
-      >
-        <ToolStrip />
-      </Tldraw>
+      <ViewPanes
+        view={view}
+        sketch={
+          <Tldraw
+            store={board.store}
+            hideUi
+            assetUrls={asset_urls}
+            components={components_quiet}
+            onMount={draw_mount}
+          >
+            <ToolStrip />
+          </Tldraw>
+        }
+        cleaned={<CleanedPane cleaned={cleaned} />}
+      />
+      <ViewTabs view={view} stale={cleaned.status?.stale ?? false} onChoose={view_choose} />
       {board.connectionStatus === 'offline' && (
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}

@@ -38,9 +38,182 @@ body,
   inset: 0;
 }
 
-/* The stage is for looking at. Nothing on it responds to the pointer. */
+/* The stage is for looking at. Nothing on it responds to the pointer but its tabs. */
 .board--stage {
   pointer-events: none;
+}
+
+.board--stage .tabs,
+.board--stage .cleaned__restore button {
+  pointer-events: auto;
+}
+
+/* Views. The sketch pane is always laid out at full size, even when hidden, so its canvas
+   keeps its viewport, its zoom and, on the stage, its rendering of the image agents fetch. */
+
+.views {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.views__pane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.views[data-view='cleaned'] .views__pane--sketch {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.views[data-view='side'] .views__pane--cleaned {
+  border-left: 1px solid rgb(30 34 39 / 0.12);
+}
+
+/* A tall screen, such as an iPad held upright, stacks the two views instead. */
+@media (max-aspect-ratio: 1/1) {
+  .views[data-view='side'] {
+    flex-direction: column;
+  }
+
+  .views[data-view='side'] .views__pane--cleaned {
+    border-top: 1px solid rgb(30 34 39 / 0.12);
+    border-left: 0;
+  }
+}
+
+.tabs {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 14px);
+  right: calc(env(safe-area-inset-right) + 14px);
+  z-index: 500;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--graphite);
+  box-shadow: 0 10px 28px -10px rgb(30 34 39 / 0.45);
+  touch-action: manipulation;
+}
+
+.tabs__tab {
+  position: relative;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--paper-on-graphite);
+  font: inherit;
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.tabs__tab[aria-selected='true'] {
+  background: var(--paper);
+  color: var(--graphite);
+}
+
+.tabs__tab:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: -4px;
+}
+
+/* The sketch has changed since the cleaned diagram was made from it. */
+.tabs__stale {
+  position: absolute;
+  top: 6px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+/* The cleaned diagram. */
+
+.cleaned {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+}
+
+.cleaned .tl-container.tl-theme__light,
+.cleaned .tl-theme__light {
+  --tl-color-background: #fff;
+}
+
+.cleaned__empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0 2rem;
+  color: var(--graphite-soft);
+  font-size: 1.0625rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.cleaned__bar {
+  position: absolute;
+  bottom: calc(env(safe-area-inset-bottom) + 14px);
+  left: 14px;
+  z-index: 400;
+  max-width: calc(100% - 28px);
+  padding: 0.55rem 0.9rem;
+  border: 1px solid rgb(30 34 39 / 0.12);
+  border-radius: 12px;
+  background: var(--paper);
+  font-size: 0.875rem;
+}
+
+.cleaned__bar p {
+  margin: 0;
+}
+
+.cleaned__provenance {
+  color: var(--graphite-soft);
+}
+
+.cleaned__summary {
+  margin-top: 0.25rem;
+}
+
+.cleaned__stale {
+  margin-top: 0.35rem;
+  color: var(--warning);
+  font-weight: 500;
+}
+
+.cleaned__restore {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.45rem;
+}
+
+.cleaned__restore button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--graphite);
+  color: var(--paper);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.cleaned__restore button[data-armed='true'] {
+  background: var(--warning);
 }
 
 .tl-container.tl-theme__light,

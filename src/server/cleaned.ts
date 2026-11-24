@@ -1,0 +1,292 @@
+// The cleaned diagram: a separate document an external agent publishes whole. It never touches
+// the sync room, so human ink stays exactly as drawn. A publish is accepted only when it was
+// made from the sketch as it is now (the source hash) and from the cleaned revision as it is
+// now (compare-and-swap). The new state is written to disk before it replaces the old one, so a
+// failed write leaves the previous diagram in place, in memory and on disk.
+//
+// Prior revisions are kept, up to a bound, for an explicit restore. A restore is itself a new
+// revision and goes through the same compare-and-swap, so it cannot clobber a newer publish.
+
+import type { TLRecord } from '@tldraw/tlschema'
+import { assert } from '../shared/assert'
+import { cleaned_history_count_max, document_hash_pattern } from '../shared/constants'
+import {
+  proposal_format,
+  type CleanedDocument,
+  type CleanedProvenance,
+  type CleanedStatus,
+  type ProposalShape,
+} from '../shared/cleanup_types'
+import { proposal_parse, proposal_records } from './cleanup_proposal'
+import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
+
+export type PublishResult =
+  | { kind: 'published'; revision: number; shapes_count: number }
+  | { kind: 'invalid'; path: string; message: string }
+  | { kind: 'sketch_changed'; sketch_hash: string }
+  | { kind: 'revision_conflict'; revision: number }
+
+export type RestoreResult =
+  | { kind: 'restored'; revision: number; restored_from: number }
+  | { kind: 'revision_conflict'; revision: number }
+  | { kind: 'not_found' }
+
+type Version = Omit<CleanedProvenance, 'shapes_count'> & { shapes: ProposalShape[] }
+type State = { revision: number; current: Version | null; history: Version[] }
+
+const file_name = 'cleaned.state'
+const state_format = 'tldraw-sync.cleaned.v1'
+const label = '-'
+
+export class Cleaned {
+  private records_current: TLRecord[]
+
+  private constructor(
+    private readonly disk: Disk,
+    private state: State,
+  ) {
+    this.records_current = state.current === null ? [] : proposal_records(state.current.shapes)
+  }
+
+  // A board saved before cleanup existed has no file: it opens with nothing published.
+  static open(disk: Disk): Cleaned {
+    const bytes = disk.read(file_name)
+    const state = bytes === null ? { revision: 0, current: null, history: [] } : state_read(bytes)
+    const cleaned = new Cleaned(disk, state)
+    assert(cleaned.state.revision >= 0, 'a revision is never negative')
+    assert(cleaned.state.history.length <= cleaned_history_count_max, 'history is bounded')
+    return cleaned
+  }
+
+  publish(input: unknown, sketch_hash: string, now_ms: number): PublishResult {
+    assert(document_hash_pattern.test(sketch_hash), 'the sketch hash is well formed')
+    assert(Number.isFinite(now_ms), 'time is a number')
+    const parsed = proposal_parse(input)
+
+    if (!parsed.ok) return { kind: 'invalid', path: parsed.path, message: parsed.message }
+
+    const { proposal } = parsed
+
+    if (proposal.snapshot !== sketch_hash) return { kind: 'sketch_changed', sketch_hash }
+
+    if (proposal.base_revision !== this.state.revision) {
+      return { kind: 'revision_conflict', revision: this.state.revision }
+    }
+
+    const version: Version = {
+      revision: this.state.revision + 1,
+      source_hash: proposal.snapshot,
+      agent: proposal.agent,
+      summary: proposal.summary,
+      published_at_ms: now_ms,
+      restored_from: null,
+      shapes: proposal.shapes,
+    }
+    this.commit(version)
+    assert(this.state.current === version, 'the published version is current')
+    return { kind: 'published', revision: version.revision, shapes_count: version.shapes.length }
+  }
+
+  // Restores a prior revision, the most recent one when none is named.
+  restore(base_revision: number, revision: number | null, now_ms: number): RestoreResult {
+    assert(Number.isInteger(base_revision), 'a base revision is whole')
+    assert(revision === null || Number.isInteger(revision), 'a restored revision is whole')
+
+    if (base_revision !== this.state.revision) {
+      return { kind: 'revision_conflict', revision: this.state.revision }
+    }
+
+    const { history } = this.state
+    const target =
+      revision === null ? history.at(-1) : history.find((version) => version.revision === revision)
+
+    if (target === undefined) return { kind: 'not_found' }
+
+    const version: Version = {
+      ...target,
+      revision: this.state.revision + 1,
+      published_at_ms: now_ms,
+      restored_from: target.revision,
+    }
+    this.commit(version)
+    assert(this.state.current === version, 'the restored version is current')
+    return { kind: 'restored', revision: version.revision, restored_from: target.revision }
+  }
+
+  status(sketch_hash: string): CleanedStatus {
+    assert(document_hash_pattern.test(sketch_hash), 'the sketch hash is well formed')
+    const { current, history, revision } = this.state
+    const status = {
+      revision,
+      sketch_hash,
+      current: current === null ? null : provenance(current),
+      stale: current !== null && current.source_hash !== sketch_hash,
+      history: history.map(provenance),
+    }
+    assert(status.current === null || status.current.revision === revision, 'current is latest')
+    return status
+  }
+
+  document(sketch_hash: string): CleanedDocument {
+    const status = this.status(sketch_hash)
+    const records = this.records_current
+    assert((status.current === null) === (records.length === 0), 'records match the current')
+    return { ...status, records }
+  }
+
+  // Write first, then swap. A throwing disk leaves the state, and the file, as they were.
+  private commit(version: Version): void {
+    assert(version.revision === this.state.revision + 1, 'revisions grow one at a time')
+    const records = proposal_records(version.shapes)
+    const previous = this.state.current
+    const history =
+      previous === null
+        ? this.state.history
+        : [...this.state.history, previous].slice(-cleaned_history_count_max)
+    const next: State = { revision: version.revision, current: version, history }
+
+    const payload = new TextEncoder().encode(JSON.stringify(state_json(next)))
+    this.disk.write_atomic(file_name, envelope_encode({ kind: 'cleaned', label, payload }))
+
+    // Pair assertion: the file now on disk reads back as the state about to be served.
+    const written = this.disk.read(file_name)
+    assert(written !== null, 'the cleaned state was written')
+    assert(state_read(written).revision === next.revision, 'the written state reads back')
+
+    this.state = next
+    this.records_current = records
+  }
+}
+
+function provenance(version: Version): CleanedProvenance {
+  const { shapes, ...rest } = version
+  assert(shapes.length > 0, 'a published version has shapes')
+  assert(rest.revision > 0, 'a published version has a revision')
+  return { ...rest, shapes_count: shapes.length }
+}
+
+function state_json(state: State): object {
+  assert(state.revision >= 0, 'a revision is never negative')
+  assert(state.history.length <= cleaned_history_count_max, 'history is bounded')
+  return { format: state_format, ...state }
+}
+
+// The saved file is untrusted like any input: each version is checked again with the same rules
+// as a publish. Damage stops the server instead of silently dropping a diagram.
+function state_read(bytes: Uint8Array): State {
+  const decoded = envelope_decode(bytes, 'cleaned')
+
+  if (!decoded.ok) throw new StorageError(`${file_name} is damaged: ${decoded.reason}`)
+
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(decoded.envelope.payload))
+  } catch {
+    throw new StorageError(`${file_name} is damaged: it is not JSON`)
+  }
+
+  // Valid JSON need not be an object: null, a number, text or a list are refused here.
+
+  const json = object_read(parsed)
+
+  if (json === null) throw new StorageError(`${file_name} is damaged: it is not a JSON object`)
+
+  const revision = json.revision
+
+  if (json.format !== state_format || !revision_valid(revision) || revision < 0) {
+    throw new StorageError(`${file_name} is damaged: unknown format or revision`)
+  }
+
+  const history_input = Array.isArray(json.history) ? (json.history as unknown[]) : null
+
+  if (history_input === null || history_input.length > cleaned_history_count_max) {
+    throw new StorageError(`${file_name} is damaged: history is malformed`)
+  }
+
+  const current = json.current === null ? null : version_read(json.current)
+  const history = history_input.map((value) => version_read(value))
+
+  if (!state_coherent(revision, current, history)) {
+    throw new StorageError(`${file_name} is damaged: revisions do not agree`)
+  }
+
+  assert(current === null || current.revision === revision, 'current is the latest revision')
+  assert(current !== null || history.length === 0, 'history follows a published diagram')
+  return { revision, current, history }
+}
+
+// Whether the three parts describe a state a publish or a restore can leave behind. Nothing
+// published means revision 0 and no history. Otherwise the current version is the revision, and
+// the history holds strictly older versions, oldest first.
+function state_coherent(revision: number, current: Version | null, history: Version[]): boolean {
+  assert(revision >= 0, 'a revision is never negative')
+  assert(history.length <= cleaned_history_count_max, 'history is bounded')
+
+  if (current === null) return revision === 0 && history.length === 0
+
+  if (current.revision !== revision) return false
+
+  let newer = current.revision
+
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const older = (history[index] as Version).revision
+
+    if (older >= newer) return false
+
+    newer = older
+  }
+
+  return true
+}
+
+function version_read(value: unknown): Version {
+  const version = object_read(value)
+
+  if (version === null) throw new StorageError(`${file_name} is damaged: a version is malformed`)
+
+  const parsed = proposal_parse({
+    format: proposal_format,
+    snapshot: version.source_hash,
+    base_revision: 0,
+    agent: version.agent,
+    summary: version.summary,
+    shapes: version.shapes,
+  })
+  const { revision, published_at_ms, restored_from } = version
+
+  // A restore copies a strictly older revision, so it can only name one below its own.
+  const valid =
+    parsed.ok &&
+    revision_valid(revision) &&
+    revision > 0 &&
+    typeof published_at_ms === 'number' &&
+    Number.isFinite(published_at_ms) &&
+    (restored_from === null ||
+      (revision_valid(restored_from) && restored_from > 0 && restored_from < revision))
+
+  if (!valid) throw new StorageError(`${file_name} is damaged: a version is malformed`)
+
+  assert(parsed.proposal.shapes.length > 0, 'a saved version has shapes')
+  assert(restored_from === null || restored_from < revision, 'a restore names an older revision')
+  return {
+    revision,
+    source_hash: parsed.proposal.snapshot,
+    agent: parsed.proposal.agent,
+    summary: parsed.proposal.summary,
+    published_at_ms,
+    restored_from,
+    shapes: parsed.proposal.shapes,
+  }
+}
+
+function revision_valid(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value)
+}
+
+// A JSON object with named fields, or null for null, a list or any other JSON value.
+function object_read(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+
+  return value as Record<string, unknown>
+}

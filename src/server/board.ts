@@ -12,10 +12,18 @@ import {
   type TLRecord,
 } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
+import type {
+  CleanedDocument,
+  CleanedStatus,
+  SketchBounds,
+  SketchSnapshot,
+} from '../shared/cleanup_types'
 import {
   document_hash_pattern,
   fetch_wait_ms_max,
   fetch_waiters_count_max,
+  image_bounds_units_max,
+  image_padding_px,
   image_size_bytes_max,
   restart_clock_jump,
   save_delay_ms,
@@ -26,7 +34,10 @@ import {
 } from '../shared/constants'
 import { document_hash, shapes_count, type DocumentRecord } from '../shared/document_hash'
 import type { Time, TimerHandle } from '../shared/time'
-import { envelope_decode, envelope_encode, type Disk } from './storage'
+import { Cleaned, type PublishResult, type RestoreResult } from './cleaned'
+import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
+
+export { StorageError } from './storage'
 
 export type BoardEnvironment = { readonly time: Time; readonly disk: Disk }
 
@@ -35,12 +46,9 @@ export type ImageResult =
   | { kind: 'empty' }
   | { kind: 'stale'; reason: 'stage_absent' | 'stage_slow' | 'busy' }
 
-// The saved board cannot be trusted. This is an operating error: the caller reports it and
-// refuses to start, because starting empty would silently discard someone's drawing.
-export class StorageError extends Error {}
-
 type Session = { role: Role; socket: WebSocketMinimal }
-type Image = { document_hash: string; bytes: Uint8Array }
+// The page-space bounds the stage rendered travel with the image they describe.
+type Image = { document_hash: string; bytes: Uint8Array; bounds: SketchBounds | null }
 type DocumentState = { clock: number; hash: string; shapes_count: number }
 type Waiter = { resolve: (result: ImageResult) => void; timer: TimerHandle }
 
@@ -62,6 +70,7 @@ export class Board {
     private readonly environment: BoardEnvironment,
     snapshot: RoomSnapshot,
     private image: Image | null,
+    private readonly cleaned: Cleaned,
   ) {
     this.room = new TLSocketRoom<TLRecord>({
       schema,
@@ -74,7 +83,8 @@ export class Board {
   static open(environment: BoardEnvironment): Board {
     const snapshot = snapshot_read(environment.disk) ?? snapshot_empty()
     const image = image_read(environment.disk)
-    const board = new Board(environment, snapshot, image)
+    const cleaned = Cleaned.open(environment.disk)
+    const board = new Board(environment, snapshot, image, cleaned)
 
     // Pair assertion: what was read from disk is what the room now serves.
     const records = snapshot.documents.map((document) => document.state)
@@ -168,15 +178,23 @@ export class Board {
 
   // Image.
 
-  image_put(hash: string, bytes: Uint8Array): void {
+  image_put(hash: string, bytes: Uint8Array, bounds: SketchBounds | null = null): void {
     assert(!this.closed, 'board is open')
     assert(document_hash_pattern.test(hash), 'hash is well formed')
     assert(bytes.byteLength > 0, 'image is not empty')
     assert(bytes.byteLength <= image_size_bytes_max, 'image is bounded')
+    assert(bounds === null || bounds_valid(bounds), 'bounds are a finite rectangle')
 
-    this.image = { document_hash: hash, bytes }
+    this.image = { document_hash: hash, bytes, bounds }
     const encoded = envelope_encode({ kind: 'image', label: hash, payload: bytes })
     this.environment.disk.write_atomic('drawing.image', encoded)
+    // The frame names the image it belongs to, so a crash between the two writes leaves an
+    // image without bounds, never bounds attached to the wrong image.
+    if (bounds !== null) {
+      const payload = new TextEncoder().encode(JSON.stringify(bounds))
+      const frame = envelope_encode({ kind: 'frame', label: hash, payload })
+      this.environment.disk.write_atomic('drawing.frame', frame)
+    }
     this.waiters_settle()
   }
 
@@ -227,6 +245,59 @@ export class Board {
       waiter.resolve(result)
     }
     assert(this.waiters.length === 0, 'every waiter was settled')
+  }
+
+  // Cleanup. The cleaned diagram is a document of its own: nothing here touches the room.
+
+  // The records of the sketch as it is, but only while it is the sketch the caller saw in its
+  // image. Null means the sketch has moved on, and the caller must fetch the image again.
+  sketch_snapshot(hash: string): SketchSnapshot | null {
+    assert(!this.closed, 'board is open')
+    assert(document_hash_pattern.test(hash), 'hash is well formed')
+    const state = this.document_state()
+    if (state.hash !== hash) return null
+    const image = this.image
+    const bounds = image !== null && image.document_hash === hash ? image.bounds : null
+    return {
+      document_hash: hash,
+      records: this.shapes(),
+      bounds,
+      image_padding: image_padding_px,
+      cleaned_revision: this.cleaned.status(hash).revision,
+    }
+  }
+
+  cleaned_status(): CleanedStatus {
+    assert(!this.closed, 'board is open')
+    const status = this.cleaned.status(this.document_state().hash)
+    assert(status.revision >= 0, 'a revision is never negative')
+    return status
+  }
+
+  cleaned_document(): CleanedDocument {
+    assert(!this.closed, 'board is open')
+    const document = this.cleaned.document(this.document_state().hash)
+    assert(document.revision >= 0, 'a revision is never negative')
+    return document
+  }
+
+  cleaned_publish(input: unknown): PublishResult {
+    assert(!this.closed, 'board is open')
+    const before = this.document_state()
+    const result = this.cleaned.publish(input, before.hash, this.environment.time.now_ms())
+    // Pair assertion: publishing a cleanup leaves the human ink exactly as it was.
+    const after = this.document_state()
+    assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')
+    return result
+  }
+
+  cleaned_restore(base_revision: number, revision: number | null): RestoreResult {
+    assert(!this.closed, 'board is open')
+    const before = this.document_state()
+    const result = this.cleaned.restore(base_revision, revision, this.environment.time.now_ms())
+    const after = this.document_state()
+    assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')
+    return result
   }
 
   // Saving.
@@ -352,5 +423,38 @@ function image_read(disk: Disk): Image | null {
   if (decoded.envelope.payload.byteLength === 0) return null
   assert(decoded.envelope.kind === 'image', 'the image file holds an image')
   assert(decoded.envelope.payload.byteLength < bytes.byteLength, 'payload lies inside the file')
-  return { document_hash: decoded.envelope.label, bytes: decoded.envelope.payload }
+  const hash = decoded.envelope.label
+  return { document_hash: hash, bytes: decoded.envelope.payload, bounds: frame_read(disk, hash) }
+}
+
+// The bounds of a saved image, if they were saved for that same image. Derived data, like the
+// image: anything missing or damaged is dropped, and the stage's next render replaces it.
+function frame_read(disk: Disk, hash: string): SketchBounds | null {
+  assert(document_hash_pattern.test(hash), 'hash is well formed')
+  const bytes = disk.read('drawing.frame')
+  if (bytes === null) return null
+  const decoded = envelope_decode(bytes, 'frame')
+  if (!decoded.ok || decoded.envelope.label !== hash) return null
+  let bounds: unknown
+  try {
+    bounds = JSON.parse(new TextDecoder().decode(decoded.envelope.payload))
+  } catch {
+    return null
+  }
+  if (!bounds_valid(bounds)) return null
+  assert(bounds.w >= 0 && bounds.h >= 0, 'valid bounds have a size')
+  return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+}
+
+export function bounds_valid(value: unknown): value is SketchBounds {
+  if (value === null || typeof value !== 'object') return false
+  const bounds = value as Record<string, unknown>
+  const numbers = [bounds.x, bounds.y, bounds.w, bounds.h]
+  const finite = numbers.every((number) => {
+    return typeof number === 'number' && Number.isFinite(number)
+      && Math.abs(number) <= image_bounds_units_max
+  })
+  assert(numbers.length === 4, 'a rectangle has four numbers')
+  assert(image_bounds_units_max > 0, 'the bounds limit is positive')
+  return finite && (bounds.w as number) >= 0 && (bounds.h as number) >= 0
 }

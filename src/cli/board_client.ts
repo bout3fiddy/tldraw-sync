@@ -63,6 +63,39 @@ export async function pairing_get(port: number): Promise<Pairing | null> {
   }
 }
 
+export type ApiAnswer =
+  | { kind: 'answer'; status: number; body: Record<string, unknown> }
+  | { kind: 'unreachable' }
+
+// One JSON request to the board. Any answer, success or error, is a JSON object.
+export async function api_request(
+  port: number,
+  pathname: string,
+  body: string | null,
+): Promise<ApiAnswer> {
+  assert(pathname.startsWith('/api/'), 'only the board API is asked')
+  let response: Response
+  try {
+    response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+      method: body === null ? 'GET' : 'POST',
+      headers: body === null ? {} : { 'content-type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(status_timeout_ms * 10),
+    })
+  } catch {
+    return { kind: 'unreachable' }
+  }
+  let parsed: unknown = null
+  try {
+    parsed = await response.json()
+  } catch {
+    parsed = null
+  }
+  const object = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+  const answer = object ? parsed as Record<string, unknown> : {}
+  return { kind: 'answer', status: response.status, body: answer }
+}
+
 export async function image_fetch(port: number): Promise<ImageFetched> {
   let response: Response
   try {

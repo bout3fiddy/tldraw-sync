@@ -5,13 +5,19 @@ import { useEffect, useState } from 'react'
 import { Tldraw, useEditor, useValue } from 'tldraw'
 import { path_pairing } from '../shared/constants'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
+import { CleanedPane } from './cleaned_pane'
+import { use_cleaned } from './cleaned_state'
 import { Notice } from './notice'
 import { stage_mount } from './stage_mount'
+import { use_view, ViewPanes, ViewTabs } from './views'
 
 type Pairing = { url: string; modules: string[] }
 
+// The sketch canvas stays mounted whichever view is chosen: it renders the image agents fetch.
 export function StagePage() {
   const board = use_board_store('stage')
+  const [view, view_choose] = use_view('stage')
+  const cleaned = use_cleaned()
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     const text = 'The board is not answering. Start it with “tldraw-sync start”, then reload.'
@@ -20,15 +26,22 @@ export function StagePage() {
 
   return (
     <main className="board board--stage">
-      <Tldraw
-        store={board.store}
-        hideUi
-        assetUrls={asset_urls}
-        components={components_quiet}
-        onMount={stage_mount}
-      >
-        <StageGuide />
-      </Tldraw>
+      <ViewPanes
+        view={view}
+        sketch={
+          <Tldraw
+            store={board.store}
+            hideUi
+            assetUrls={asset_urls}
+            components={components_quiet}
+            onMount={stage_mount}
+          >
+            <StageGuide />
+          </Tldraw>
+        }
+        cleaned={<CleanedPane cleaned={cleaned} />}
+      />
+      <ViewTabs view={view} stale={cleaned.status?.stale ?? false} onChoose={view_choose} />
       {board.connectionStatus === 'offline' && (
         <Notice
           floating

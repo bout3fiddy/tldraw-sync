@@ -27,6 +27,10 @@ export type Options = {
   readonly port: number | null
   readonly no_open: boolean
   readonly out: string | null
+  // The cleanup commands: a proposal file, and revisions for compare-and-swap and restore.
+  readonly file: string | null
+  readonly base_revision: number | null
+  readonly revision: number | null
   // Whether a person is reading: only then is the QR code worth printing.
   readonly terminal: boolean
 }
@@ -155,9 +159,16 @@ export async function status(): Promise<Outcome> {
     `  Draw      ${board.draw_url}  ${board.pen_connected ? 'iPad connected' : 'no iPad'}`,
     `  Present   ${board.stage_url}  ${board.stage_connected ? 'open' : 'not open'}`,
     `  Drawing   ${board.shapes_count} ${board.shapes_count === 1 ? 'shape' : 'shapes'}`,
+    `  Cleaned   ${cleaned_text(board)}`,
   ].join('\n')
   const { app: _, ...data } = board
   return success('running', human, board.draw_url, data)
+}
+
+function cleaned_text(board: BoardStatus): string {
+  if (board.cleaned_revision === 0) return 'none'
+  const stale = board.cleaned_stale ? ', the sketch changed since' : ''
+  return `revision ${board.cleaned_revision}${stale}`
 }
 
 export async function stop(): Promise<Outcome> {
@@ -178,6 +189,16 @@ export async function stop(): Promise<Outcome> {
 }
 
 export async function fetch_drawing(options: Options): Promise<Outcome> {
+  const image = await image_current(options)
+  if ('kind' in image) return image
+  assert(image.bytes.byteLength > 0, 'a fetch ends in an image or an outcome')
+  return image_save(image.bytes, image.document_hash, options.out)
+}
+
+export type ImageCurrent = { bytes: Uint8Array; document_hash: string; port: number }
+
+// The image of the drawing as it is now, opening the Mac page to render it if needed.
+export async function image_current(options: Options): Promise<ImageCurrent | Outcome> {
   const found = await board_find(data_directory())
   if (found.kind !== 'running') return not_running(found)
   const port = found.status.port
@@ -185,7 +206,9 @@ export async function fetch_drawing(options: Options): Promise<Outcome> {
 
   for (let attempt = 0; attempt < fetch_attempts_count_max; attempt += 1) {
     const image = await image_fetch(port)
-    if (image.kind === 'image') return image_save(image.bytes, image.document_hash, options.out)
+    if (image.kind === 'image') {
+      return { bytes: image.bytes, document_hash: image.document_hash, port }
+    }
     if (image.kind === 'unreachable') return not_running({ kind: 'not_running' })
     if (image.kind === 'empty') {
       return failure('board_empty', 'The board is empty.',

@@ -15,6 +15,8 @@ export const exit_codes = {
   not_running: 2,
   board_empty: 3,
   not_ready: 4,
+  // A cleanup was made from a sketch or a cleaned revision that has since changed.
+  conflict: 5,
 } as const
 
 export type ExitCode = (typeof exit_codes)[keyof typeof exit_codes]

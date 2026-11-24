@@ -13,6 +13,11 @@ export const path_drawing_png = '/api/drawing.png'
 export const path_drawing_json = '/api/drawing.json'
 export const path_pairing = '/api/pairing'
 export const path_status = '/api/status'
+// The cleanup flow: a coherent sketch snapshot for an external agent, and the cleaned canvas.
+export const path_sketch_json = '/api/sketch.json'
+export const path_cleaned_json = '/api/cleaned.json'
+export const path_cleaned_status = '/api/cleaned/status'
+export const path_cleaned_restore = '/api/cleaned/restore'
 
 // The response header that names the document an image shows.
 export const header_document_hash = 'x-document-hash'
@@ -31,6 +36,10 @@ export const sync_message_size_bytes_max = 16 * 1024 * 1024
 export const image_size_bytes_max = 32 * 1024 * 1024
 export const image_edge_pixels_max = 3072
 export const image_scale_max = 2
+// Space the stage leaves around the drawing in its image, in page units before scaling.
+export const image_padding_px = 32
+// The page-space rectangle of a rendered image is a small query parameter; this bounds it.
+export const image_bounds_units_max = 10_000_000
 
 // The stage renders once the pen has rested for this long.
 export const render_delay_ms = 300
@@ -70,6 +79,24 @@ export const poll_interval_ms = 100
 // A fetch asks for the image at most this many times; the server waits on each request.
 export const fetch_attempts_count_max = 4
 
+// Cleanup proposals come from an external agent and are untrusted. The bounds keep one
+// proposal, its derived tldraw records, and the retained history small enough to validate and
+// write synchronously.
+export const proposal_size_bytes_max = 512 * 1024
+export const proposal_shapes_count_max = 400
+export const proposal_text_length_max = 2000
+export const proposal_summary_length_max = 280
+export const proposal_coordinate_units_max = 1_000_000
+export const proposal_extent_units_max = 100_000
+// Prior cleaned revisions kept for an explicit restore. Older ones are dropped.
+export const cleaned_history_count_max = 8
+// A restore request names two revisions; anything larger is not a restore.
+export const restore_request_size_bytes_max = 1024
+// How often a page asks whether the cleaned diagram changed or went stale.
+export const cleaned_poll_interval_ms = 1500
+// A cleanup snapshot retries when the sketch changes between its image and its records.
+export const snapshot_attempts_count_max = 4
+
 export const document_hash_length = 16
 export const document_hash_pattern = /^[0-9a-f]{16}$/
 
@@ -77,4 +104,6 @@ assert(save_delay_ms < save_delay_ms_max, 'save_delay_ms < save_delay_ms_max')
 assert(render_delay_ms < fetch_wait_ms_max, 'render_delay_ms < fetch_wait_ms_max')
 assert(poll_interval_ms < status_timeout_ms, 'poll_interval_ms < status_timeout_ms')
 assert(image_size_bytes_max <= 64 * 1024 * 1024, 'image fits comfortably in memory')
+assert(proposal_size_bytes_max < image_size_bytes_max, 'a proposal fits the request limit')
+assert(cleaned_poll_interval_ms >= poll_interval_ms, 'pages poll no faster than the command')
 assert(Number.isSafeInteger(restart_clock_jump * 1_000_000), 'a million restarts stay exact')

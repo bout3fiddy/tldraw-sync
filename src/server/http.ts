@@ -6,21 +6,27 @@ import path from 'node:path'
 import type { Server, ServerWebSocket } from 'bun'
 import type { WebSocketMinimal } from '@tldraw/sync-core'
 import { assert, AssertionError } from '../shared/assert'
+import type { SketchBounds } from '../shared/cleanup_types'
 import {
   document_hash_pattern,
   header_document_hash,
   image_size_bytes_max,
+  path_cleaned_json,
+  path_cleaned_restore,
+  path_cleaned_status,
   path_draw,
   path_drawing_json,
   path_drawing_png,
   path_pairing,
+  path_sketch_json,
   path_status,
   path_sync,
   roles,
   sync_message_size_bytes_max,
   type Role,
 } from '../shared/constants'
-import type { Board, ImageResult } from './board'
+import { bounds_valid, type Board, type ImageResult } from './board'
+import { cleaned_publish_route, cleaned_restore_route, json_error } from './http_cleanup'
 import type { Pairing } from './pairing'
 
 export type ServerOptions = {
@@ -46,6 +52,9 @@ export type BoardStatus = {
   readonly stage_connected: boolean
   readonly shapes_count: number
   readonly document_hash: string
+  // The cleaned diagram: its revision (0 when none) and whether the sketch moved on since.
+  readonly cleaned_revision: number
+  readonly cleaned_stale: boolean
 }
 
 type SocketData = { session_id: string; role: Role }
@@ -122,9 +131,19 @@ function route(
     if (method === 'PUT') return image_put(request, url, options.board)
     return text(405, 'Use GET to fetch the drawing.')
   }
+  if (pathname === path_cleaned_json && method === 'POST') {
+    return cleaned_publish_route(request, options.board)
+  }
+  if (pathname === path_cleaned_restore) {
+    if (method === 'POST') return cleaned_restore_route(request, options.board)
+    return text(405, 'Use POST to restore a cleaned revision.')
+  }
   if (method !== 'GET') return text(405, 'Method not allowed.')
 
   if (pathname === path_drawing_json) return Response.json(options.board.shapes())
+  if (pathname === path_sketch_json) return sketch_response(url, options.board)
+  if (pathname === path_cleaned_json) return json_no_store(options.board.cleaned_document())
+  if (pathname === path_cleaned_status) return json_no_store(options.board.cleaned_status())
   if (pathname === path_pairing) return Response.json(options.pairing)
   if (pathname === path_status) return Response.json(status_read(options, server.port))
   if (pathname === '/' || pathname === path_draw) {
@@ -154,6 +173,7 @@ function status_read(options: ServerOptions, port: number | undefined): BoardSta
   assert(port > 0, 'the port is known once listening')
   const { board } = options
   const state = board.document_state()
+  const cleaned = board.cleaned_status()
   return {
     app: 'tldraw-sync',
     pid: process.pid,
@@ -164,7 +184,30 @@ function status_read(options: ServerOptions, port: number | undefined): BoardSta
     stage_connected: board.sessions_count('stage') > 0,
     shapes_count: state.shapes_count,
     document_hash: state.hash,
+    cleaned_revision: cleaned.revision,
+    cleaned_stale: cleaned.stale,
   }
+}
+
+// The sketch's records, for exactly the document an image showed. A newer document is a
+// conflict: the caller fetches the image again, so its image and records always agree.
+function sketch_response(url: URL, board: Board): Response {
+  const hash = url.searchParams.get('document_hash') ?? ''
+  if (!document_hash_pattern.test(hash)) {
+    return json_error(400, 'malformed_hash', 'Name the document_hash of the fetched image.')
+  }
+  const snapshot = board.sketch_snapshot(hash)
+  if (snapshot === null) {
+    return json_error(409, 'sketch_changed', 'The sketch changed after that image. Fetch again.')
+  }
+  assert(snapshot.document_hash === hash, 'the snapshot is of the named document')
+  return json_no_store(snapshot)
+}
+
+function json_no_store(value: object): Response {
+  assert(typeof value === 'object', 'a JSON response is an object')
+  assert(value !== null, 'a JSON response is not null')
+  return Response.json(value, { headers: { 'cache-control': 'no-store' } })
 }
 
 function image_response(result: ImageResult): Response {
@@ -200,10 +243,24 @@ async function image_put(request: Request, url: URL, board: Board): Promise<Resp
   if (!png_signature.every((byte, index) => bytes[index] === byte)) {
     return text(415, 'Image is not a PNG.')
   }
+  const bounds = bounds_parse(url.searchParams.get('bounds'))
+  if (bounds === 'malformed') return text(400, 'Malformed bounds.')
   assert(bytes.byteLength >= png_signature.length, 'a PNG is at least its signature')
   assert(bytes.byteLength <= image_size_bytes_max, 'image is bounded')
-  board.image_put(hash, bytes)
+  board.image_put(hash, bytes, bounds)
   return new Response(null, { status: 204 })
+}
+
+// Optional: `x,y,w,h` of the page area the stage rendered. Older stages send none.
+function bounds_parse(value: string | null): SketchBounds | null | 'malformed' {
+  if (value === null) return null
+  const numbers = value.length <= 128 ? value.split(',').map(Number) : []
+  const [x, y, w, h] = numbers
+  const bounds = { x, y, w, h }
+  if (numbers.length !== 4 || !bounds_valid(bounds)) return 'malformed'
+  assert(Number.isFinite(bounds.x) && Number.isFinite(bounds.y), 'bounds have a position')
+  assert(bounds.w >= 0 && bounds.h >= 0, 'bounds have a size')
+  return bounds
 }
 
 function static_response(static_files: StaticFiles, pathname: string): Response {

@@ -11,10 +11,16 @@ export type Disk = {
   write_atomic(name: FileName, bytes: Uint8Array): void
 }
 
-export const file_names = ['board.snapshot', 'drawing.image'] as const
+export const file_names = [
+  'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state',
+] as const
 export type FileName = (typeof file_names)[number]
 
-export type EnvelopeKind = 'board' | 'image'
+export type EnvelopeKind = 'board' | 'image' | 'frame' | 'cleaned'
+
+// A saved file cannot be trusted. This is an operating error: the caller reports it and
+// refuses to start, because starting empty would silently discard someone's work.
+export class StorageError extends Error {}
 export type Envelope = { kind: EnvelopeKind; label: string; payload: Uint8Array }
 export type Decoded = { ok: true; envelope: Envelope } | { ok: false; reason: string }
 

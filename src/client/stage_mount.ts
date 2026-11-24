@@ -4,6 +4,7 @@
 import { react, type Editor } from 'tldraw'
 import {
   image_edge_pixels_max,
+  image_padding_px,
   image_scale_max,
   path_drawing_png,
 } from '../shared/constants'
@@ -15,7 +16,6 @@ const fit_inset_px = 160
 // A small sketch is not blown up to fill a monitor: past this it only looks coarse.
 const fit_zoom_max = 2
 const fit_duration_ms = 180
-const image_padding_px = 32
 
 export function stage_mount(editor: Editor): () => void {
   editor.user.updateUserPreferences({ colorScheme: 'light' })
@@ -32,8 +32,8 @@ export function stage_mount(editor: Editor): () => void {
 }
 
 // The stage never follows the pen's zoom. It shows the whole drawing, and refits only when
-// the drawing's extent or the window's size changes.
-function fit_start(editor: Editor): () => void {
+// the drawing's extent or the window's size changes. The cleaned canvas fits the same way.
+export function fit_start(editor: Editor): () => void {
   let key_fitted = ''
   let frame = 0
 
@@ -74,8 +74,13 @@ function upload_start(editor: Editor): () => void {
       return editor.store.allRecords().filter((record) => types.has(record.typeName))
     },
     render: () => render(editor),
+    // Called straight after the uploader has checked that the records still hash to `hash`,
+    // so these bounds are the bounds of the drawing in the image.
     upload: async (hash, bytes) => {
-      const response = await fetch(`${path_drawing_png}?document_hash=${hash}`, {
+      const bounds = editor.getCurrentPageBounds()
+      const bounds_query = bounds === undefined ? ''
+        : `&bounds=${[bounds.x, bounds.y, bounds.w, bounds.h].map(rounded).join(',')}`
+      const response = await fetch(`${path_drawing_png}?document_hash=${hash}${bounds_query}`, {
         method: 'PUT',
         headers: { 'content-type': 'image/png' },
         body: bytes as Uint8Array<ArrayBuffer>,
@@ -91,6 +96,11 @@ function upload_start(editor: Editor): () => void {
     listen_stop()
     uploader.stop()
   }
+}
+
+// Bounds to a thousandth of a page unit keep the query short.
+function rounded(value: number): number {
+  return Math.round(value * 1000) / 1000
 }
 
 async function render(editor: Editor): Promise<Uint8Array | null> {
