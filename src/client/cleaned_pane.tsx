@@ -20,7 +20,7 @@ import type { CleanedProvenance, CleanedStatus } from '../shared/cleanup_types'
 import { asset_urls, components_quiet } from './board_store'
 import { cleaned_restore, type CleanedState, type RestoreOutcome } from './cleaned_state'
 import { Notice } from './notice'
-import { fit_start } from './stage_mount'
+import { fit_inset_cleaned_px, fit_start } from './stage_mount'
 
 const restore_confirm_ms = 3000
 const schema = createTLSchema()
@@ -81,7 +81,7 @@ function cleaned_mount(editor: Editor): () => void {
   editor.user.updateUserPreferences({ colorScheme: 'light' })
   editor.updateInstanceState({ isReadonly: true })
   editor.setCameraOptions({ isLocked: true })
-  return fit_start(editor)
+  return fit_start(editor, fit_inset_cleaned_px)
 }
 
 type CleanedBarProps = { status: CleanedStatus; shown: CleanedProvenance; onRestored: () => void }

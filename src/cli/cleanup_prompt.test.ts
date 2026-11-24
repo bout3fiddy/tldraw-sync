@@ -1,60 +1,75 @@
-// The prompt is the only place the tidy-only contract reaches the agent, so its wording is
-// tested: it must never tell the agent to approximate or drop what the format cannot hold.
+// The prompt is the only place the interpretation contract reaches the agent, so its wording is
+// tested: copy meaning exactly and invent nothing, read ambiguity best effort without asking,
+// and leave every position and style to the composer.
 
 import { expect, test } from 'bun:test'
-import { proposal_kinds } from '../shared/cleanup_types'
-import { cleanup_prompt, proposal_subset_text } from './cleanup_prompt'
+import { diagram_format, proposal_kinds } from '../shared/cleanup_types'
+import { cleanup_prompt, diagram_schema_text, proposal_subset_text } from './cleanup_prompt'
 import { help_commands } from './help'
 
-const prompt = cleanup_prompt({
+const facts = {
   image_path: '/tmp/cleanup/sketch.png',
   records_path: '/tmp/cleanup/sketch.json',
-  proposal_path: '/tmp/cleanup/proposal.json',
+  strokes_path: '/tmp/cleanup/strokes.json',
+  diagram_path: '/tmp/cleanup/diagram.json',
+  previous_path: null,
   snapshot: '0123456789abcdef',
   base_revision: 4,
   mapping: { x0: -32, y0: -32, ppu: 2 },
-})
+}
+const prompt = cleanup_prompt(facts)
 
 // Line breaks and indentation are layout: the wording is compared on one line.
 const flat = (text: string) => text.replace(/\s+/g, ' ')
 
-test('the prompt never tells the agent to leave content out or to draw a line as an arrow', () => {
-  expect(prompt).not.toContain('Leave out anything else')
-  expect(flat(prompt)).not.toMatch(/line between two shapes as an arrow/i)
-  expect(flat(prompt)).not.toMatch(/leave out anything/i)
-  expect(flat(prompt)).not.toMatch(/(omit|skip|ignore) (anything|whatever|the rest)/i)
-})
-
-test('the prompt tells the agent to stop and report what cannot be represented', () => {
+test('the prompt keeps meaning exact and invents nothing', () => {
   const text = flat(prompt)
-  expect(text).toContain('a plain line without an arrowhead')
-  expect(text).toContain('never turn one into an arrow')
-  expect(text).toContain('Draw an arrow only where the sketch shows an arrowhead')
-  expect(text).toContain('STOP. Do not publish.')
-  expect(text).toContain('Do not leave the part out, guess, or draw the nearest thing.')
-  expect(text).toContain('Tell the user which parts cannot be represented or are ambiguous')
-
-  // The check comes before the agent is told to write or publish anything.
-  expect(prompt.indexOf('STOP')).toBeLessThan(prompt.indexOf('Write one JSON object'))
-  expect(prompt.indexOf('STOP')).toBeLessThan(prompt.indexOf('cleanup-publish --file'))
+  expect(text).toContain('Copy every written word exactly as drawn.')
+  expect(text).toContain('Do not add, remove, merge, split, rename, reword, correct')
+  expect(text).toContain('Invent no items or connections.')
+  expect(text).toContain('Keep every arrowhead')
+  expect(text).toContain('Never add or drop one.')
 })
 
-test('the prompt keeps its tidy-only contract and the facts of its snapshot', () => {
-  expect(prompt).toContain('Tidy only.')
-  expect(prompt).toContain('Do not add, remove, merge, split, rename, reword, correct')
-  expect(prompt).toContain('"snapshot": "0123456789abcdef" and "base_revision": 4')
+test('the prompt reads ambiguity best effort and never asks the user to clarify', () => {
+  const text = flat(prompt)
+  expect(text).toContain('as best you can')
+  expect(text).toContain('Do not ask the user to clarify.')
+  expect(text).not.toMatch(/STOP|Do not publish|let them decide/)
+})
+
+test('the prompt leaves layout to the tool and names its files and snapshot', () => {
+  const text = flat(prompt)
+  expect(text).toContain('Choose no positions, sizes, colours or styles')
+  expect(text).toContain('/tmp/cleanup/strokes.json')
+  expect(prompt).toContain('\"snapshot\": \"0123456789abcdef\" and \"base_revision\": 4')
   expect(prompt).toContain('x = -32 + pixel_x / 2')
-  expect(prompt).toContain('tldraw-sync cleanup-publish --file /tmp/cleanup/proposal.json --json')
+  expect(prompt).toContain('tldraw-sync cleanup-publish --file /tmp/cleanup/diagram.json --json')
+  expect(prompt).toContain(diagram_format)
+
+  // The schema has no coordinates for the agent to choose.
+  expect(diagram_schema_text).not.toMatch(/"x"|"y"|"w"|"h"/)
+
+  // Writing comes before publishing.
+  expect(prompt.indexOf('Write one JSON object')).toBeLessThan(prompt.indexOf('cleanup-publish'))
 })
 
-test('the representable subset is stated once and shown in the prompt and both helps', () => {
-  expect(flat(prompt)).toContain(flat(proposal_subset_text))
-  expect(help_commands['cleanup-publish']).toContain(proposal_subset_text)
-  expect(help_commands['cleanup-snapshot']).toContain(proposal_subset_text)
-  expect(help_commands['cleanup-publish']).toContain('do not publish')
-  expect(help_commands['cleanup-publish']).toContain('proposal_unreadable')
+test('a previous interpretation is offered for its ids only when there is one', () => {
+  expect(prompt).not.toContain('previous interpretation')
+  const again = cleanup_prompt({ ...facts, previous_path: '/tmp/cleanup/diagram_previous.json' })
+  expect(flat(again)).toContain(
+    'The previous interpretation is /tmp/cleanup/diagram_previous.json. Keep its ids',
+  )
+})
 
-  // The subset names every kind the format has, and no kind the format lacks.
+test('the semantic schema is in the compose help; the shape subset stays for legacy', () => {
+  expect(help_commands['cleanup-compose']).toContain(diagram_schema_text)
+  expect(help_commands['cleanup-publish']).toContain(proposal_subset_text)
+  expect(help_commands['cleanup-publish']).toContain('proposal_unreadable')
+  expect(help_commands['cleanup-publish']).toContain('invalid_diagram')
+  expect(help_commands['cleanup-snapshot']).toContain('without asking the user to clarify')
+
+  // The subset names every kind the shape format has, and no kind it lacks.
   expect([...proposal_kinds].sort()).toEqual(['arrow', 'ellipse', 'rectangle', 'text'])
 
   for (const word of ['text', 'rectangles', 'ellipses', 'arrow']) {

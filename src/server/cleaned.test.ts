@@ -246,6 +246,25 @@ const states_damaged: Array<[string, unknown]> = [
   ['restored from revision zero', state_forged(2, version_forged(2, { restored_from: 0 }), [])],
   ['restored from text', state_forged(2, version_forged(2, { restored_from: '1' }), [])],
   ['published at no time', state_forged(1, version_forged(1, { published_at_ms: 'now' }), [])],
+  [
+    'a version of an unknown format',
+    state_forged(1, version_forged(1, { format: 'tldraw-sync.cleanup.v9' }), []),
+  ],
+  [
+    'a legacy version carrying a diagram',
+    state_forged(1, version_forged(1, { diagram: { nodes: [], edges: [] } }), []),
+  ],
+  [
+    'a diagram that disagrees with its shapes',
+    state_forged(
+      1,
+      version_forged(1, {
+        format: 'tldraw-sync.cleanup.v2',
+        diagram: { nodes: [{ id: 'b', kind: 'box', label: '' }], edges: [] },
+      }),
+      [],
+    ),
+  ],
 ]
 
 for (const [name, state] of states_damaged) {

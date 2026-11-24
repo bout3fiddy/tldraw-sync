@@ -33,6 +33,30 @@ export type ProposalColor = (typeof proposal_colors)[number]
 export const proposal_sizes = ['m', 's', 'l', 'xl'] as const
 export type ProposalSize = (typeof proposal_sizes)[number]
 
+// The styled proposal: the v1 shapes plus the few bounded styling and routing controls the
+// composer needs, and optionally the semantic diagram it was composed from. The command line
+// writes it from a diagram; v1 proposals stay valid and render exactly as before. In each list
+// below the first option is the default, which is also what a v1 shape gets.
+export const proposal_format_styled = 'tldraw-sync.cleanup.v2'
+export const proposal_formats = [proposal_format, proposal_format_styled] as const
+export type ProposalFormat = (typeof proposal_formats)[number]
+export const proposal_fills = ['none', 'semi', 'solid'] as const
+export type ProposalFill = (typeof proposal_fills)[number]
+export const proposal_label_aligns = ['middle', 'start'] as const
+export type ProposalLabelAlign = (typeof proposal_label_aligns)[number]
+export const proposal_text_aligns = ['start', 'middle'] as const
+export type ProposalTextAlign = (typeof proposal_text_aligns)[number]
+export const proposal_arrowheads = ['end', 'both', 'none'] as const
+export type ProposalArrowheads = (typeof proposal_arrowheads)[number]
+
+// An arc is straight unless it bends; an elbow runs in right angles.
+export const proposal_routes = ['arc', 'elbow'] as const
+export type ProposalRoute = (typeof proposal_routes)[number]
+
+// Where an arrow meets its shape, from (0, 0) at the top left to (1, 1) at the bottom right.
+// Null aims at the center, and tldraw stops the arrow at the outline.
+export type ProposalAnchor = { x: number; y: number }
+
 // One validated shape. Optional fields have been filled with their defaults.
 export type ProposalShape =
   | {
@@ -44,6 +68,7 @@ export type ProposalShape =
       w: number | null
       color: ProposalColor
       size: ProposalSize
+      align: ProposalTextAlign
     }
   | {
       kind: 'rectangle' | 'ellipse'
@@ -55,6 +80,13 @@ export type ProposalShape =
       text: string
       color: ProposalColor
       size: ProposalSize
+      fill: ProposalFill
+
+      // Null draws the label in the outline's colour, as v1 does.
+      label_color: ProposalColor | null
+      label_align: ProposalLabelAlign
+      label_valign: ProposalLabelAlign
+      label_bold: boolean
     }
   | {
       kind: 'arrow'
@@ -64,15 +96,72 @@ export type ProposalShape =
       text: string
       color: ProposalColor
       size: ProposalSize
+      arrowheads: ProposalArrowheads
+      route: ProposalRoute
+
+      // How far an arc's middle stands off the straight line, in page units, as tldraw's bend.
+      bend: number
+      from_anchor: ProposalAnchor | null
+      to_anchor: ProposalAnchor | null
     }
 
 // A validated proposal: what an agent asked to publish, tied to the sketch it saw.
 export type Proposal = {
+  format: ProposalFormat
   snapshot: string
   base_revision: number
   agent: string
   summary: string
   shapes: ProposalShape[]
+
+  // The semantic diagram the shapes were composed from, kept for the next interpretation.
+  diagram: Diagram | null
+}
+
+// The semantic diagram format an agent writes. It says what the sketch means: items, their
+// exact words, which group holds which, and how they connect. It has no coordinates; the
+// command line lays it out (cleanup-compose) and publishes the result as a styled proposal.
+export const diagram_format = 'tldraw-sync.diagram.v1'
+
+// A box, a circle or oval, free text, or a group drawn around other items.
+export const diagram_node_kinds = ['box', 'ellipse', 'text', 'group'] as const
+export type DiagramNodeKind = (typeof diagram_node_kinds)[number]
+
+// A connection points from its "from" end to its "to" end, both ways, or neither way.
+export const diagram_edge_directions = ['forward', 'both', 'none'] as const
+export type DiagramEdgeDirection = (typeof diagram_edge_directions)[number]
+
+// The way most connections run. The first is the default.
+export const diagram_flows = ['right', 'down'] as const
+export type DiagramFlow = (typeof diagram_flows)[number]
+
+export type DiagramNode = {
+  id: string
+  kind: DiagramNodeKind
+  label: string
+  parent: string | null
+  strokes: string[]
+}
+
+export type DiagramEdge = {
+  id: string
+  from: string
+  to: string
+  label: string
+  direction: DiagramEdgeDirection
+  strokes: string[]
+}
+
+// A validated diagram, in the order the agent listed it.
+export type Diagram = { flow: DiagramFlow; nodes: DiagramNode[]; edges: DiagramEdge[] }
+
+// A validated semantic proposal: a diagram tied to the sketch it was read from.
+export type DiagramProposal = {
+  snapshot: string
+  base_revision: number
+  agent: string
+  summary: string
+  diagram: Diagram
 }
 
 // Where one published diagram came from. Revisions only grow, across restarts too.
@@ -115,4 +204,8 @@ export type SketchSnapshot = {
   bounds: SketchBounds | null
   image_padding: number
   cleaned_revision: number
+
+  // The semantic diagram behind the current cleaned revision, when it was composed from one.
+  // An agent reuses its ids, so the same things keep their identity across revisions.
+  diagram_previous: Diagram | null
 }

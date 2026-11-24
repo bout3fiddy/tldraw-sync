@@ -1,0 +1,44 @@
+{
+  "format": "tldraw-sync.diagram.v1",
+  "snapshot": "0000000000000000",
+  "base_revision": 0,
+  "agent": "fixture-agent",
+  "summary": "Synthetic regression for standalone text, long oval labels and an empty group.",
+  "nodes": [
+    { "id": "ops", "kind": "group", "label": "Operations" },
+    {
+      "id": "runbook",
+      "kind": "text",
+      "label": "Runbook steps are reviewed every quarter by the on-call lead",
+      "parent": "ops"
+    },
+    {
+      "id": "oncall",
+      "kind": "ellipse",
+      "label": "On-call engineer with a fairly long descriptive label",
+      "parent": "ops"
+    },
+    { "id": "pager", "kind": "box", "label": "Pager", "parent": "ops" },
+    { "id": "customer", "kind": "ellipse", "label": "Customer" },
+    {
+      "id": "status",
+      "kind": "ellipse",
+      "label": "Status page announcements and incident updates for everyone"
+    },
+    { "id": "legend", "kind": "text", "label": "Plain lines join peers" },
+    { "id": "later", "kind": "group", "label": "Later" }
+  ],
+  "edges": [
+    {
+      "id": "customer-pager",
+      "from": "customer",
+      "to": "pager",
+      "direction": "forward",
+      "label": "reports"
+    },
+    { "id": "pager-oncall", "from": "pager", "to": "oncall", "direction": "forward" },
+    { "id": "oncall-status", "from": "oncall", "to": "status", "direction": "both" },
+    { "id": "status-customer", "from": "status", "to": "customer", "direction": "none" },
+    { "id": "runbook-oncall", "from": "runbook", "to": "oncall", "direction": "none" }
+  ]
+}

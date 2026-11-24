@@ -3,7 +3,10 @@
 
 import { expect, test } from 'bun:test'
 import { createTLSchema } from '@tldraw/tlschema'
+import fixture from '../../tests/fixtures/nested_groups.diagram.json'
+import { diagram_compose } from '../cli/diagram_compose'
 import { proposal_shapes_count_max, proposal_text_length_max } from '../shared/constants'
+import { diagram_proposal_parse } from '../shared/diagram_parse'
 import { Prng } from '../simulation/prng'
 import { proposal_example } from '../simulation/test_sketch'
 import { index_key, proposal_parse, proposal_records } from './cleanup_proposal'
@@ -374,3 +377,239 @@ test('randomly damaged proposals are refused or valid, never thrown', () => {
   expect(accepted).toBeGreaterThan(0)
   expect(accepted).toBeLessThan(2000)
 })
+
+// v1 proposals published before styling existed must render exactly as they always did.
+test('a v1 proposal keeps its v1 records: no fill, one head, centre bindings', () => {
+  const records = proposal_records(parse_ok(proposal_example(snapshot, 0)).shapes)
+  const props = (id: string) =>
+    (records.find((record) => record.id === id) as unknown as { props: Record<string, unknown> })
+      .props
+  expect(props('shape:cleaned-api')).toMatchObject({
+    fill: 'none',
+    align: 'middle',
+    verticalAlign: 'middle',
+    labelColor: 'black',
+  })
+  expect(props('shape:cleaned-title')).toMatchObject({ textAlign: 'start', autoSize: true })
+  expect(props('shape:cleaned-writes')).toMatchObject({
+    kind: 'arc',
+    bend: 0,
+    arrowheadStart: 'none',
+    arrowheadEnd: 'arrow',
+  })
+  expect(props('binding:cleaned-writes-start')).toMatchObject({
+    normalizedAnchor: { x: 0.5, y: 0.5 },
+    isPrecise: false,
+  })
+})
+
+test('styling controls belong to v2: a v1 proposal with them is refused', () => {
+  const styled = base()
+  styled.shapes[1]!.fill = 'solid'
+  expect(proposal_parse(styled)).toMatchObject({ ok: false, path: 'shapes[1].fill' })
+  expect(proposal_parse({ ...base(), diagram: {} })).toMatchObject({
+    ok: false,
+    path: 'proposal.diagram',
+  })
+})
+
+function styled(shapes: unknown[]) {
+  return { ...base(), format: 'tldraw-sync.cleanup.v2', shapes }
+}
+
+test('a v2 proposal without a diagram takes its bounded styling and routing controls', () => {
+  const proposal = parse_ok(
+    styled([
+      { kind: 'rectangle', id: 'a', x: 0, y: 0, w: 100, h: 60, fill: 'solid', label_bold: true },
+      { kind: 'ellipse', id: 'b', x: 300, y: 0, w: 100, h: 60, label_color: 'grey' },
+      {
+        kind: 'arrow',
+        id: 'ab',
+        from: 'a',
+        to: 'b',
+        arrowheads: 'both',
+        route: 'arc',
+        bend: -40,
+        from_anchor: { x: 1, y: 0.5 },
+      },
+    ]),
+  )
+  expect(proposal.format).toBe('tldraw-sync.cleanup.v2')
+  expect(proposal.diagram).toBeNull()
+  expect(proposal.shapes[2]).toMatchObject({ bend: -40, to_anchor: null, arrowheads: 'both' })
+  expect(proposal_records(proposal.shapes).length).toBe(5)
+
+  const refusals: Array<[Record<string, unknown>, string]> = [
+    [{ kind: 'arrow', id: 'ab', from: 'a', to: 'b', route: 'elbow', bend: 5 }, 'shapes[2].bend'],
+    [
+      { kind: 'arrow', id: 'ab', from: 'a', to: 'b', to_anchor: { x: 2, y: 0 } },
+      'shapes[2].to_anchor.x',
+    ],
+    [{ kind: 'arrow', id: 'ab', from: 'a', to: 'b', route: 'spline' }, 'shapes[2].route'],
+    [{ kind: 'arrow', id: 'ab', from: 'a', to: 'b', arrowheads: 'start' }, 'shapes[2].arrowheads'],
+  ]
+
+  for (const [arrow, path] of refusals) {
+    const parsed = proposal_parse(styled([...shapes_two(), arrow]))
+    expect(parsed).toMatchObject({ ok: false, path })
+  }
+})
+
+function shapes_two() {
+  return [
+    { kind: 'rectangle', id: 'a', x: 0, y: 0, w: 100, h: 60 },
+    { kind: 'rectangle', id: 'b', x: 300, y: 0, w: 100, h: 60 },
+  ]
+}
+
+async function composed_fixture(): Promise<Record<string, unknown> & { shapes: any[] }> {
+  const parsed = diagram_proposal_parse({ ...fixture, snapshot })
+
+  if (!parsed.ok) throw new Error(parsed.message)
+
+  const result = await diagram_compose(parsed.proposal)
+
+  if (!result.ok) throw new Error(result.message)
+
+  return JSON.parse(result.composed.text)
+}
+
+// A composed proposal must say exactly what its diagram says. Each tampering below is caught
+// by the board, however the proposal was produced.
+const tamperings: Array<[string, (shapes: any[]) => void, string]> = [
+  [
+    'a label reworded',
+    (s) => (s.find((x) => x.id === 'prod').text = 'Production'),
+    'diagram.nodes[2]',
+  ],
+  [
+    'endpoints swapped',
+    (s) => {
+      const arrow = s.find((x) => x.id === 'a-prod')
+      ;[arrow.from, arrow.to] = [arrow.to, arrow.from]
+    },
+    'diagram.edges[0]',
+  ],
+  [
+    'an arrowhead dropped',
+    (s) => (s.find((x) => x.id === 'audit-triage').arrowheads = 'end'),
+    'diagram.edges[7]',
+  ],
+  [
+    'a plain line given a head',
+    (s) => (s.find((x) => x.id === 'triage-approve').arrowheads = 'end'),
+    'diagram.edges[8]',
+  ],
+  [
+    'a box drawn as an oval',
+    (s) => (s.find((x) => x.id === 'a').kind = 'ellipse'),
+    'diagram.nodes[1]',
+  ],
+  [
+    'an item moved out of its group',
+    (s) => (s.find((x) => x.id === 'test').x -= 2000),
+    'diagram.nodes[3]',
+  ],
+  [
+    'an item over the heading',
+    (s) => (s.find((x) => x.id === 'a').y = s.find((x) => x.id === 'environments').y + 4),
+    'diagram.nodes[1]',
+  ],
+  [
+    'two items overlapping',
+    (s) => {
+      const [prod, test_box] = [s.find((x) => x.id === 'prod'), s.find((x) => x.id === 'test')]
+      test_box.y = prod.y + 10
+      test_box.x = prod.x + 10
+    },
+    'diagram.nodes[3]',
+  ],
+  [
+    'a label that no longer fits',
+    (s) => (s.find((x) => x.id === 'metrics').h = 40),
+    'diagram.nodes[4].label',
+  ],
+  [
+    'a label set larger than the size it was measured at',
+    (s) => (s.find((x) => x.id === 'prod').size = 'xl'),
+    'diagram.nodes[2]',
+  ],
+  [
+    'a group shrunk below its heading',
+    (s) => (s.find((x) => x.id === 'review').h = 30),
+    'diagram.nodes[7]',
+  ],
+  [
+    'a connector dropped',
+    (s) =>
+      s.splice(
+        s.findIndex((x) => x.id === 'a-test'),
+        1,
+      ),
+    'shapes',
+  ],
+]
+
+for (const [name, tamper, path] of tamperings) {
+  test(`a composed proposal is refused when ${name}`, async () => {
+    const proposal = await composed_fixture()
+    expect(proposal_parse(proposal).ok).toBe(true)
+    tamper(proposal.shapes)
+    const parsed = proposal_parse(proposal)
+    expect(parsed.ok).toBe(false)
+
+    if (!parsed.ok) expect(parsed.path).toBe(path)
+  })
+}
+
+// Standalone text and an empty group: shapes whose measurements the placement checks never
+// reach. A malformed one is an ordinary problem, never an assertion failure.
+async function composed_sparse(): Promise<Record<string, unknown> & { shapes: any[] }> {
+  const parsed = diagram_proposal_parse({
+    ...fixture,
+    snapshot,
+    nodes: [
+      { id: 'empty', kind: 'group', label: 'Release review board' },
+      { id: 'note', kind: 'text', label: 'Remember to check the rollout window' },
+      { id: 'api', kind: 'box', label: 'API' },
+    ],
+    edges: [{ id: 'note-api', from: 'note', to: 'api', direction: 'none' }],
+  })
+
+  if (!parsed.ok) throw new Error(parsed.message)
+
+  const result = await diagram_compose(parsed.proposal)
+
+  if (!result.ok) throw new Error(result.message)
+
+  return JSON.parse(result.composed.text)
+}
+
+const tamperings_sparse: Array<[string, (shapes: any[]) => void, string]> = [
+  ['text loses its width', (s) => delete s.find((x) => x.id === 'note').w, 'diagram.nodes[1]'],
+  ['text width set to null', (s) => (s.find((x) => x.id === 'note').w = null), 'diagram.nodes[1]'],
+  [
+    'an empty group shrunk below its heading',
+    (s) =>
+      Object.assign(
+        s.find((x) => x.id === 'empty'),
+        { w: 40, h: 24 },
+      ),
+    'diagram.nodes[0]',
+  ],
+  [
+    'an empty group narrower than its padding',
+    (s) => (s.find((x) => x.id === 'empty').w = 20),
+    'diagram.nodes[0]',
+  ],
+]
+
+for (const [name, tamper, path] of tamperings_sparse) {
+  test(`a composed proposal is refused, not asserted on, when ${name}`, async () => {
+    const proposal = await composed_sparse()
+    expect(proposal_parse(proposal)).toMatchObject({ ok: true })
+    tamper(proposal.shapes)
+    const parsed = proposal_parse(proposal)
+    expect(parsed).toMatchObject({ ok: false, path })
+  })
+}

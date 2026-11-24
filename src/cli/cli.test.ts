@@ -5,6 +5,8 @@ import { afterEach, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import diagram_fixture from '../../tests/fixtures/nested_groups.diagram.json'
+import { diagram_format } from '../shared/cleanup_types'
 import { proposal_size_bytes_max } from '../shared/constants'
 import { test_pen_draw } from '../simulation/test_pen'
 import { proposal_example } from '../simulation/test_sketch'
@@ -222,7 +224,7 @@ async function cleanup_first(directory: string, out: string, hash_one: string) {
   expect(fs.readFileSync(String(snapshot.json.path)).byteLength).toBe(33)
   const records = JSON.parse(fs.readFileSync(String(snapshot.json.records_path), 'utf8'))
   expect(records).toMatchObject({ snapshot: hash_one, records: [{ id: 'shape:one' }] })
-  expect(String(snapshot.json.prompt)).toContain('Tidy only')
+  expect(String(snapshot.json.prompt)).toContain('Invent no items or connections.')
   expect(String(snapshot.json.prompt)).toContain(`"snapshot": "${hash_one}"`)
 
   const proposal_path = String(snapshot.json.proposal_path)
@@ -317,3 +319,92 @@ test('a proposal file that is too large, or not a regular file, is refused unrea
 async function status_json(directory: string): Promise<Record<string, unknown>> {
   return (await cli(directory, 'status', '--json')).json
 }
+
+function diagram_write(file: string, snapshot: string, base_revision: number): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({ ...diagram_fixture, snapshot, base_revision }))
+}
+
+test('cleanup-compose lays out a diagram the same way every time, without a board', async () => {
+  const directory = directory_create()
+  const input = path.join(directory, 'diagram.json')
+  diagram_write(input, '0123456789abcdef', 0)
+  const first_path = path.join(directory, 'first.json')
+  const first = await cli(
+    directory, 'cleanup-compose', '--file', input, '--out', first_path, '--json',
+  )
+  expect(first.exit_code).toBe(0)
+  expect(first.json).toMatchObject({
+    code: 'composed',
+    path: first_path,
+    snapshot: '0123456789abcdef',
+    shapes_count: 20,
+    route_conflicts_count: 0,
+  })
+  const second_path = path.join(directory, 'second.json')
+  await cli(directory, 'cleanup-compose', '--file', input, '--out', second_path, '--json')
+  expect(fs.readFileSync(second_path, 'utf8')).toBe(fs.readFileSync(first_path, 'utf8'))
+  const composed = JSON.parse(fs.readFileSync(first_path, 'utf8'))
+  expect(composed.format).toBe('tldraw-sync.cleanup.v2')
+  expect(composed.diagram.nodes.map((node: { id: string }) => node.id)).toEqual(
+    diagram_fixture.nodes.map((node) => node.id),
+  )
+
+  // Mistakes are named with their path, and nothing is written.
+  const broken = { ...diagram_fixture, snapshot: '0123456789abcdef', base_revision: 0 }
+  broken.nodes = [...broken.nodes, { id: 'lost', kind: 'box', label: 'Lost', parent: 'nowhere' }]
+  const invalid = await cli_input(
+    directory, JSON.stringify(broken), 'cleanup-compose', '--file', '-', '--json',
+  )
+  expect(invalid.exit_code).toBe(1)
+  expect(invalid.json).toMatchObject({
+    code: 'invalid_diagram', next_action: { action: 'fix_usage' },
+  })
+  expect(String(invalid.json.message)).toContain('diagram.nodes[10].parent')
+  const garbage = await cli_input(directory, '{', 'cleanup-compose', '--file', '-', '--json')
+  expect(garbage.json).toMatchObject({ code: 'invalid_diagram' })
+  expect((await cli(directory, 'cleanup-compose', '--json')).json.code).toBe('usage_error')
+  expect((await cli(directory, 'cleanup-compose', '--help')).stdout).toContain(diagram_format)
+}, 30_000)
+
+test('a semantic diagram publishes through the board and returns in a snapshot', async () => {
+  const directory = directory_create()
+  const port = port_any()
+  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
+  const shapes_count = (count: number) => async () => {
+    return (await status_json(directory)).shapes_count === count
+  }
+  await test_pen_draw(port, 'shape:one', shapes_count(1))
+  const hash_one = await stage_upload(directory, port)
+  const out = path.join(directory, 'cleanup')
+  const snapshot = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
+  expect(snapshot.json).toMatchObject({ previous_diagram_path: null, strokes_truncated: false })
+  const strokes = JSON.parse(fs.readFileSync(String(snapshot.json.strokes_path), 'utf8'))
+  expect(strokes).toMatchObject({ snapshot: hash_one, strokes: [{ id: 'shape:one' }] })
+  expect(Object.keys(strokes.strokes[0]).sort()).toEqual(
+    ['h', 'id', 'points_count', 'type', 'w', 'x', 'y'],
+  )
+
+  const diagram_path = String(snapshot.json.diagram_path)
+  diagram_write(diagram_path, hash_one, 0)
+  expect(String(snapshot.json.publish_command)).toContain(diagram_path)
+  const published = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
+  expect(published.json).toMatchObject({ code: 'published', revision: 1, shapes_count: 20 })
+
+  const again = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
+  const previous = JSON.parse(fs.readFileSync(String(again.json.previous_diagram_path), 'utf8'))
+  expect(previous.format).toBe(diagram_format)
+  expect(previous.nodes.map((node: { label: string }) => node.label)).toEqual(
+    diagram_fixture.nodes.map((node) => node.label),
+  )
+  expect(String(again.json.prompt)).toContain('previous interpretation')
+
+  // The sketch moves on: a diagram of the old sketch is refused after composing, and the
+  // published diagram stays.
+  await test_pen_draw(port, 'shape:two', shapes_count(2))
+  diagram_write(diagram_path, hash_one, 1)
+  const stale = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
+  expect(stale.exit_code).toBe(5)
+  expect(stale.json).toMatchObject({ code: 'sketch_changed' })
+  expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1 })
+}, 60_000)

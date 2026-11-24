@@ -13,6 +13,7 @@ export const path_drawing_png = '/api/drawing.png'
 export const path_drawing_json = '/api/drawing.json'
 export const path_pairing = '/api/pairing'
 export const path_status = '/api/status'
+
 // The cleanup flow: a coherent sketch snapshot for an external agent, and the cleaned canvas.
 export const path_sketch_json = '/api/sketch.json'
 export const path_cleaned_json = '/api/cleaned.json'
@@ -36,8 +37,10 @@ export const sync_message_size_bytes_max = 16 * 1024 * 1024
 export const image_size_bytes_max = 32 * 1024 * 1024
 export const image_edge_pixels_max = 3072
 export const image_scale_max = 2
+
 // Space the stage leaves around the drawing in its image, in page units before scaling.
 export const image_padding_px = 32
+
 // The page-space rectangle of a rendered image is a small query parameter; this bounds it.
 export const image_bounds_units_max = 10_000_000
 
@@ -50,6 +53,7 @@ export const upload_retry_delay_ms = 1000
 // stretches timers in a hidden page to about a second, which is still quick enough to render
 // the image before a fetch gives up.
 export const hidden_frame_interval_ms = 50
+
 // Frames waiting at once. tldraw keeps a handful; thousands would mean a leak.
 export const hidden_frames_count_max = 1000
 
@@ -68,14 +72,19 @@ export const restart_clock_jump = 1_000_000_000
 
 // The command line. A board answers its status in well under this, or it is not answering.
 export const status_timeout_ms = 1000
+
 // A started board must be serving within this, including the first start of a cold machine.
 export const start_wait_ms_max = 15_000
+
 // A stopped board saves and exits within this.
 export const stop_wait_ms_max = 10_000
+
 // A browser opened by the command line has this long to load the stage and connect.
 export const stage_open_wait_ms_max = 20_000
+
 // How often the command line looks again while it waits for one of the above.
 export const poll_interval_ms = 100
+
 // A fetch asks for the image at most this many times; the server waits on each request.
 export const fetch_attempts_count_max = 4
 
@@ -88,12 +97,30 @@ export const proposal_text_length_max = 2000
 export const proposal_summary_length_max = 280
 export const proposal_coordinate_units_max = 1_000_000
 export const proposal_extent_units_max = 100_000
+
+// Semantic diagrams: what an agent says the sketch means, before the command line lays it out.
+// The bounds keep one layout well under a second, and keep the diagram together with its composed
+// shapes inside one proposal. Groups nest at most `diagram_depth_max` deep.
+export const diagram_nodes_count_max = 80
+export const diagram_edges_count_max = 160
+export const diagram_depth_max = 8
+export const diagram_label_length_max = 200
+
+// Source stroke ids an agent may attach to its nodes and edges, across the whole diagram.
+export const diagram_stroke_ids_count_max = 1000
+
+// Stroke summaries in a cleanup snapshot: ids and bounds, not every pen sample.
+export const stroke_summaries_count_max = 2000
+
 // Prior cleaned revisions kept for an explicit restore. Older ones are dropped.
 export const cleaned_history_count_max = 8
+
 // A restore request names two revisions; anything larger is not a restore.
 export const restore_request_size_bytes_max = 1024
+
 // How often a page asks whether the cleaned diagram changed or went stale.
 export const cleaned_poll_interval_ms = 1500
+
 // A cleanup snapshot retries when the sketch changes between its image and its records.
 export const snapshot_attempts_count_max = 4
 
@@ -105,5 +132,11 @@ assert(render_delay_ms < fetch_wait_ms_max, 'render_delay_ms < fetch_wait_ms_max
 assert(poll_interval_ms < status_timeout_ms, 'poll_interval_ms < status_timeout_ms')
 assert(image_size_bytes_max <= 64 * 1024 * 1024, 'image fits comfortably in memory')
 assert(proposal_size_bytes_max < image_size_bytes_max, 'a proposal fits the request limit')
+assert(
+  diagram_nodes_count_max + diagram_edges_count_max <= proposal_shapes_count_max,
+  'a composed diagram fits a proposal',
+)
+assert(diagram_label_length_max <= proposal_text_length_max, 'a diagram label fits a shape')
+assert(diagram_depth_max < diagram_nodes_count_max, 'nesting is bounded by the nodes')
 assert(cleaned_poll_interval_ms >= poll_interval_ms, 'pages poll no faster than the command')
 assert(Number.isSafeInteger(restart_clock_jump * 1_000_000), 'a million restarts stay exact')

@@ -1,0 +1,41 @@
+{
+  "format": "tldraw-sync.diagram.v1",
+  "snapshot": "0000000000000000",
+  "base_revision": 0,
+  "agent": "fixture-agent",
+  "summary": "Synthetic regression shaped like the live sketch: two groups, three outside items.",
+  "nodes": [
+    { "id": "environments", "kind": "group", "label": "Environments" },
+    { "id": "a", "kind": "box", "label": "A", "parent": "environments" },
+    { "id": "prod", "kind": "box", "label": "Prod", "parent": "environments" },
+    { "id": "test", "kind": "box", "label": "Test", "parent": "environments" },
+    {
+      "id": "metrics",
+      "kind": "box",
+      "label": "Metrics collector with a deliberately long handwritten label"
+    },
+    { "id": "alerts", "kind": "ellipse", "label": "Alerts" },
+    { "id": "audit", "kind": "box", "label": "Audit log" },
+    { "id": "review", "kind": "group", "label": "Release review board" },
+    { "id": "triage", "kind": "box", "label": "Triage", "parent": "review" },
+    { "id": "approve", "kind": "box", "label": "Approve", "parent": "review" }
+  ],
+  "edges": [
+    { "id": "a-prod", "from": "a", "to": "prod", "direction": "forward", "label": "deploys" },
+    { "id": "a-test", "from": "a", "to": "test", "direction": "forward" },
+    { "id": "prod-metrics", "from": "prod", "to": "metrics", "direction": "forward" },
+    { "id": "prod-alerts", "from": "prod", "to": "alerts", "direction": "forward" },
+    { "id": "test-audit", "from": "test", "to": "audit", "direction": "forward" },
+    { "id": "metrics-triage", "from": "metrics", "to": "triage", "direction": "forward" },
+    { "id": "alerts-review", "from": "alerts", "to": "review", "direction": "forward" },
+    { "id": "audit-triage", "from": "audit", "to": "triage", "direction": "both" },
+    { "id": "triage-approve", "from": "triage", "to": "approve", "direction": "none" },
+    {
+      "id": "approve-a",
+      "from": "approve",
+      "to": "a",
+      "direction": "forward",
+      "label": "feedback"
+    }
+  ]
+}

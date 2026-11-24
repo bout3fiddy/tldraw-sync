@@ -13,6 +13,9 @@ import { drawing_uploader_create } from './drawing_uploader'
 
 // Total space kept clear around the drawing, across both sides of each axis.
 const fit_inset_px = 160
+// A composed diagram is already padded and laid out for reading, so its canvas gives the
+// diagram more of the pane: a narrow split view keeps its labels as large as it can.
+export const fit_inset_cleaned_px = 48
 // A small sketch is not blown up to fill a monitor: past this it only looks coarse.
 const fit_zoom_max = 2
 const fit_duration_ms = 180
@@ -23,7 +26,7 @@ export function stage_mount(editor: Editor): () => void {
   // Locked against the viewer. The fit below moves the camera with `force`.
   editor.setCameraOptions({ isLocked: true })
 
-  const fit_stop = fit_start(editor)
+  const fit_stop = fit_start(editor, fit_inset_px)
   const upload_stop = upload_start(editor)
   return () => {
     fit_stop()
@@ -33,7 +36,7 @@ export function stage_mount(editor: Editor): () => void {
 
 // The stage never follows the pen's zoom. It shows the whole drawing, and refits only when
 // the drawing's extent or the window's size changes. The cleaned canvas fits the same way.
-export function fit_start(editor: Editor): () => void {
+export function fit_start(editor: Editor, inset_px: number): () => void {
   let key_fitted = ''
   let frame = 0
 
@@ -43,7 +46,7 @@ export function fit_start(editor: Editor): () => void {
     if (bounds === undefined) return
     editor.zoomToBounds(bounds, {
       force: true,
-      inset: fit_inset_px,
+      inset: inset_px,
       targetZoom: fit_zoom_max,
       animation: { duration: key_fitted === '' ? 0 : fit_duration_ms },
     })

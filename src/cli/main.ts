@@ -4,7 +4,9 @@
 
 import { parseArgs } from 'node:util'
 import { assert } from '../shared/assert'
-import { cleanup_publish, cleanup_restore, cleanup_snapshot } from './cleanup_commands'
+import {
+  cleanup_compose, cleanup_publish, cleanup_restore, cleanup_snapshot,
+} from './cleanup_commands'
 import { fetch_drawing, serve, start, status, stop, type Options } from './commands'
 import { commands, help_commands, help_top, type Command } from './help'
 import { failure, outcome_print, type Outcome, type OutputMode } from './output'
@@ -25,6 +27,7 @@ const options_by_command = {
   'cleanup-snapshot': {
     ...options_common, out: { type: 'string' }, 'no-open': { type: 'boolean' },
   },
+  'cleanup-compose': { ...options_common, file: { type: 'string' }, out: { type: 'string' } },
   'cleanup-publish': { ...options_common, file: { type: 'string' } },
   'cleanup-restore': {
     ...options_common, 'base-revision': { type: 'string' }, revision: { type: 'string' },
@@ -116,6 +119,7 @@ function revision_parse(value: string | boolean | undefined): number | null | 'm
 function command_run(command: Command, options: Options): Promise<Outcome> {
   if (command === 'start') return start(options)
   if (command === 'cleanup-snapshot') return cleanup_snapshot(options)
+  if (command === 'cleanup-compose') return cleanup_compose(options)
   if (command === 'cleanup-publish') return cleanup_publish(options)
   if (command === 'cleanup-restore') return cleanup_restore(options)
   if (command === 'fetch') return fetch_drawing(options)

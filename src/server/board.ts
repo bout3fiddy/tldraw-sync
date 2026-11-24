@@ -264,6 +264,7 @@ export class Board {
       bounds,
       image_padding: image_padding_px,
       cleaned_revision: this.cleaned.status(hash).revision,
+      diagram_previous: this.cleaned.diagram_current(),
     }
   }
 

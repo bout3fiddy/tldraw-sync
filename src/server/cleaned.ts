@@ -12,9 +12,11 @@ import { assert } from '../shared/assert'
 import { cleaned_history_count_max, document_hash_pattern } from '../shared/constants'
 import {
   proposal_format,
+  proposal_format_styled,
   type CleanedDocument,
   type CleanedProvenance,
   type CleanedStatus,
+  type Diagram,
   type ProposalShape,
 } from '../shared/cleanup_types'
 import { proposal_parse, proposal_records } from './cleanup_proposal'
@@ -31,7 +33,12 @@ export type RestoreResult =
   | { kind: 'revision_conflict'; revision: number }
   | { kind: 'not_found' }
 
-type Version = Omit<CleanedProvenance, 'shapes_count'> & { shapes: ProposalShape[] }
+// A version keeps the semantic diagram it was composed from, if any, so the next snapshot can
+// offer it to the agent and a restore brings it back with the shapes.
+type Version = Omit<CleanedProvenance, 'shapes_count'> & {
+  shapes: ProposalShape[]
+  diagram: Diagram | null
+}
 type State = { revision: number; current: Version | null; history: Version[] }
 
 const file_name = 'cleaned.state'
@@ -81,6 +88,7 @@ export class Cleaned {
       published_at_ms: now_ms,
       restored_from: null,
       shapes: proposal.shapes,
+      diagram: proposal.diagram,
     }
     this.commit(version)
     assert(this.state.current === version, 'the published version is current')
@@ -127,6 +135,15 @@ export class Cleaned {
     return status
   }
 
+  // The semantic diagram behind the current revision, stale or not: identities to reuse.
+  diagram_current(): Diagram | null {
+    const { current } = this.state
+    const diagram = current === null ? null : current.diagram
+    assert(diagram === null || current !== null, 'a diagram belongs to a published version')
+    assert(diagram === null || diagram.nodes.length > 0, 'a kept diagram has nodes')
+    return diagram
+  }
+
   document(sketch_hash: string): CleanedDocument {
     const status = this.status(sketch_hash)
     const records = this.records_current
@@ -159,7 +176,7 @@ export class Cleaned {
 }
 
 function provenance(version: Version): CleanedProvenance {
-  const { shapes, ...rest } = version
+  const { shapes, diagram: _, ...rest } = version
   assert(shapes.length > 0, 'a published version has shapes')
   assert(rest.revision > 0, 'a published version has a revision')
   return { ...rest, shapes_count: shapes.length }
@@ -168,7 +185,19 @@ function provenance(version: Version): CleanedProvenance {
 function state_json(state: State): object {
   assert(state.revision >= 0, 'a revision is never negative')
   assert(state.history.length <= cleaned_history_count_max, 'history is bounded')
-  return { format: state_format, ...state }
+  const current = state.current === null ? null : version_json(state.current)
+  return { format: state_format, ...state, current, history: state.history.map(version_json) }
+}
+
+// Saved shapes carry every styling default, so each version is saved in the styled format,
+// whichever format it was published in. A version saved before that has no format: v1.
+function version_json(version: Version): object {
+  const { diagram, ...rest } = version
+  assert(rest.shapes.length > 0, 'a saved version has shapes')
+  assert(rest.revision > 0, 'a saved version has a revision')
+  return diagram === null
+    ? { ...rest, format: proposal_format_styled }
+    : { ...rest, format: proposal_format_styled, diagram }
 }
 
 // The saved file is untrusted like any input: each version is checked again with the same rules
@@ -245,13 +274,15 @@ function version_read(value: unknown): Version {
 
   if (version === null) throw new StorageError(`${file_name} is damaged: a version is malformed`)
 
+  const format = version.format ?? proposal_format
   const parsed = proposal_parse({
-    format: proposal_format,
+    format,
     snapshot: version.source_hash,
     base_revision: 0,
     agent: version.agent,
     summary: version.summary,
     shapes: version.shapes,
+    ...(version.diagram === undefined ? {} : { diagram: version.diagram }),
   })
   const { revision, published_at_ms, restored_from } = version
 
@@ -277,6 +308,7 @@ function version_read(value: unknown): Version {
     published_at_ms,
     restored_from,
     shapes: parsed.proposal.shapes,
+    diagram: parsed.proposal.diagram,
   }
 }
 

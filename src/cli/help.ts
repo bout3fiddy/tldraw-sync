@@ -3,11 +3,11 @@
 
 import { port_default } from '../shared/constants'
 import { proposal_size_bytes_max } from '../shared/constants'
-import { proposal_schema_text, proposal_subset_text } from './cleanup_prompt'
+import { diagram_schema_text, proposal_schema_text, proposal_subset_text } from './cleanup_prompt'
 
 export const commands = [
-  'start', 'fetch', 'status', 'stop', 'serve', 'cleanup-snapshot', 'cleanup-publish',
-  'cleanup-restore',
+  'start', 'fetch', 'status', 'stop', 'serve', 'cleanup-snapshot', 'cleanup-compose',
+  'cleanup-publish', 'cleanup-restore',
 ] as const
 export type Command = (typeof commands)[number]
 
@@ -22,9 +22,10 @@ Commands:
   stop     Stop the board
   serve    Run the board in this terminal instead of the background
 
-Cleanup (an external agent tidies the sketch into a separate Cleaned canvas):
-  cleanup-snapshot  Save the sketch image and records, and print the tidy-only instructions
-  cleanup-publish   Publish a finished cleanup proposal as the new cleaned diagram
+Cleanup (an external agent reads the sketch; the tool typesets it on a separate Cleaned canvas):
+  cleanup-snapshot  Save the sketch image, stroke summaries and instructions for the agent
+  cleanup-compose   Lay out a semantic diagram locally, without publishing it
+  cleanup-publish   Lay out and publish a semantic diagram as the new cleaned diagram
   cleanup-restore   Bring back an earlier cleaned diagram
 
 Options:
@@ -190,21 +191,23 @@ Options:
   'cleanup-snapshot': `Usage: tldraw-sync cleanup-snapshot [--out <dir>] [--no-open] [--json]
 
 Saves a coherent snapshot of the sketch for cleanup: the PNG and the original pen records of
-the same drawing, its page bounds, a snapshot token, and the cleaned revision it builds on. It
-prints strict tidy-only instructions for the agent doing the cleanup. Nothing is cleaned and
-no model is called: you, the agent, do the tidying and publish it with cleanup-publish.
+the same drawing, a summary of each stroke (its id and page bounds, without the pen samples),
+a snapshot token, the cleaned revision it builds on, and the semantic diagram behind that
+revision when there is one, so its ids can be reused. It prints the instructions for the
+agent doing the cleanup. No model is called: you, the agent, read the sketch and write what it
+means as a semantic diagram; cleanup-publish lays it out and publishes it.
 
-${proposal_subset_text}
-If the sketch holds anything else, or a mark is ambiguous, do not publish: tell the user
-which parts cannot be represented, and let them decide.
+Read the sketch best effort, without asking the user to clarify: copy every word exactly,
+keep every arrowhead, and invent nothing. The tool chooses every position and style.
 
 Options:
-  --out <dir>  Where to save sketch.png and sketch.json (default: tldraw-sync/cleanup in the
-               system's temporary folder)
+  --out <dir>  Where to save the files (default: tldraw-sync/cleanup in the system's
+               temporary folder)
   --no-open    Fail with "stage_closed" instead of opening the Mac page
 
 Output:
   --json   {"status": "success", "code": "snapshot_saved", "path", "records_path",
+            "strokes_path", "strokes_truncated", "diagram_path", "previous_diagram_path",
             "proposal_path", "snapshot", "document_hash", "base_revision", "shapes_count",
             "bounds", "image", "mapping", "prompt", "publish_command"}
 
@@ -218,27 +221,63 @@ Failure codes:
 Example:
   tldraw-sync cleanup-snapshot --json`,
 
-  'cleanup-publish': `Usage: tldraw-sync cleanup-publish --file <proposal.json | -> [--json]
+  'cleanup-compose': `Usage: tldraw-sync cleanup-compose --file <diagram.json | -> [--out <file>]
+                                    [--json]
+
+Lays out a semantic diagram in the house style and saves the result as a styled shape proposal
+(tldraw-sync.cleanup.v2), without publishing it and without a running board. The layout is
+deterministic: the same diagram, in any item order, gives the same result. Labels, kinds,
+groups, endpoints and arrowheads are copied exactly; positions, sizes and connector routes are
+the tool's. cleanup-publish runs the same composition before it publishes.
+
+Diagram (JSON, not code):
+${diagram_schema_text}
+
+Options:
+  --out <file>  Where to save the composed proposal (default: tldraw-sync/cleanup/composed.json
+                in the system's temporary folder)
+
+Output:
+  --json   {"status": "success", "code": "composed", "path", "snapshot", "base_revision",
+            "shapes_count", "width_units", "height_units", "route_conflicts_count"}
+  "route_conflicts_count" counts connectors or labels predicted to cross an item they do not
+  join, which the layout could not avoid. 0 is the usual answer.
+
+Failure codes:
+  invalid_diagram     exit 1: the message names the field; fix the diagram
+  composition_failed  exit 1: the layout failed its own checks; report the diagram
+  diagram_too_large   exit 1: the diagram is over ${proposal_size_bytes_max} bytes
+  diagram_unreadable  exit 1: the diagram is not a readable regular file or stdin
+
+Example:
+  tldraw-sync cleanup-compose --file /tmp/tldraw-sync/cleanup/diagram.json --json`,
+
+  'cleanup-publish': `Usage: tldraw-sync cleanup-publish --file <diagram.json | -> [--json]
 
 Publishes a complete cleaned diagram, replacing the current one in one step. It is accepted
 only if the sketch is unchanged since the snapshot and nobody published since; otherwise
 nothing changes. The sketch itself is never modified.
 
-The proposal is read from a regular file, or from stdin with --file -. It may be at most
+The file is read from a regular file, or from stdin with --file -. It may be at most
 ${proposal_size_bytes_max} bytes. Reading stops at the first byte past that, without waiting for
 the end of the input.
 
-Proposal (JSON, not code):
+A semantic diagram ("format": "tldraw-sync.diagram.v1") is laid out here first, exactly as
+cleanup-compose does, and the styled result is published together with the diagram, which the
+next snapshot offers back for its ids. See tldraw-sync cleanup-compose --help for the schema.
+
+A shape proposal, the older format with coordinates chosen by the agent, is still accepted:
 ${proposal_schema_text}
 
 ${proposal_subset_text}
-Publish only a diagram that keeps everything in the sketch. If part of the sketch cannot be
-represented, or is ambiguous, do not publish: tell the user which part, and let them decide.
+Composed proposals (tldraw-sync.cleanup.v2) from cleanup-compose are accepted as they are.
 
 Output:
   --json   {"status": "success", "code": "published", "revision", "shapes_count", "stage_url"}
 
 Failure codes:
+  invalid_diagram     exit 1: the message names the field; fix the diagram
+  composition_failed  exit 1: the layout failed its own checks; report the diagram
   invalid_proposal    exit 1: the message names the field; fix the proposal
   proposal_too_large  exit 1: the proposal is over the size limit
   proposal_unreadable exit 1: the proposal is not a readable regular file or stdin

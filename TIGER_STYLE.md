@@ -116,6 +116,17 @@ Status: Customized. Host inspection and baseline checks completed on 2026-11-24.
 - Prefer bounded reusable state in repeated processing. Managed allocation is allowed where useful;
   synchronous disk writes are deliberate to avoid interleaved commits in this personal tool.
 
+### When a defect escapes a passing gate
+
+- Reproduce the failure at the boundary the caller uses. Record the missing class of inputs or the
+  incorrect test expectation, not just the code line that failed.
+- Keep a minimized regression and a valid neighboring case. Demonstrate that the new check fails for
+  the original reason before the fix and passes afterwards. Keep the seed for generated cases.
+- For rejected writes, check the observable error and that the previous state remains intact. For
+  rendering defects, inspect actual browser geometry; valid JSON does not prove a readable layout.
+- Put the regression in a required gate. Name that gate and the previously missed invariant in the
+  review evidence; a manual reproduction or an extra passing test count is not a substitute.
+
 ### Executable gates and evidence
 
 Run from the repository root:

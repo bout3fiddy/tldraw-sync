@@ -2,159 +2,117 @@
 // before anything changes, and turns a valid one into native tldraw records. A proposal is a
 // small structured description: text, rectangles, ellipses, and arrows bound to two of them.
 //
+// Two formats are read. v1 is what agents wrote by hand. v2 is what the command line composes
+// from a semantic diagram: the same shapes with a few bounded styling and routing controls, and
+// the diagram itself, which must agree with the shapes exactly (see `diagram_check.ts`).
+//
 // Reading never throws on bad input. The reader keeps the first problem it meets, with the path
 // to it, and the caller reports that problem as an ordinary error.
 
 import { createTLSchema, toRichText, type TLRecord } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
 import {
-  document_hash_pattern,
   proposal_coordinate_units_max,
   proposal_extent_units_max,
   proposal_shapes_count_max,
-  proposal_summary_length_max,
   proposal_text_length_max,
 } from '../shared/constants'
 import {
   cleaned_page_id,
+  diagram_format,
+  proposal_arrowheads,
   proposal_colors,
+  proposal_fills,
   proposal_format,
+  proposal_format_styled,
+  proposal_formats,
   proposal_kinds,
+  proposal_label_aligns,
+  proposal_routes,
   proposal_sizes,
+  proposal_text_aligns,
+  type ProposalAnchor,
   type Proposal,
   type ProposalShape,
 } from '../shared/cleanup_types'
+import { composition_check } from '../shared/diagram_check'
+import { diagram_read } from '../shared/diagram_parse'
+import { header_read, JsonReader, type Json } from '../shared/json_reader'
 
 export type ProposalParsed =
   { ok: true; proposal: Proposal } | { ok: false; path: string; message: string }
 
-type Json = Record<string, unknown>
-
 const schema = createTLSchema()
 const shape_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
-const agent_pattern = /^[A-Za-z0-9 ._:/-]{1,64}$/
-const agent_default = 'external agent'
-const keys_root = ['format', 'snapshot', 'base_revision', 'agent', 'summary', 'shapes'] as const
+const keys_root_v1 = ['format', 'snapshot', 'base_revision', 'agent', 'summary', 'shapes'] as const
+const keys_root_v2 = [...keys_root_v1, 'diagram'] as const
 const keys_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
   text: ['kind', 'id', 'x', 'y', 'text', 'w', 'color', 'size'],
   rectangle: ['kind', 'id', 'x', 'y', 'w', 'h', 'text', 'color', 'size'],
   ellipse: ['kind', 'id', 'x', 'y', 'w', 'h', 'text', 'color', 'size'],
   arrow: ['kind', 'id', 'from', 'to', 'text', 'color', 'size'],
 }
+
+// The styling and routing controls v2 adds to each kind. A v1 shape gets their defaults.
+const keys_geo_style = ['fill', 'label_color', 'label_align', 'label_valign', 'label_bold']
+const keys_styled_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
+  text: [...keys_by_kind.text, 'align'],
+  rectangle: [...keys_by_kind.rectangle, ...keys_geo_style],
+  ellipse: [...keys_by_kind.ellipse, ...keys_geo_style],
+  arrow: [...keys_by_kind.arrow, 'arrowheads', 'route', 'bend', 'from_anchor', 'to_anchor'],
+}
+const keys_by_kind_any = [...new Set(Object.values(keys_by_kind).flat())]
+const keys_any = [...new Set(Object.values(keys_styled_by_kind).flat())]
 const index_digits = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
-class Reader {
-  problem: { path: string; message: string } | null = null
-
-  fail(path: string, message: string): void {
-    assert(path.length > 0, 'a problem names where it is')
-    assert(message.endsWith('.'), 'a problem is a full sentence')
-
-    if (this.problem === null) this.problem = { path, message }
-  }
-
-  object(value: unknown, path: string, keys: readonly string[]): Json {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      this.fail(path, 'Expected a JSON object.')
-      return {}
-    }
-
-    const unknown = Object.keys(value).find((key) => !keys.includes(key))
-
-    if (unknown !== undefined) this.fail(`${path}.${unknown}`, 'Unknown field; see the schema.')
-
-    assert(typeof value === 'object', 'an object was read')
-    assert(keys.length > 0, 'an object has allowed fields')
-    return value as Json
-  }
-
-  number(source: Json, key: string, path: string, min: number, max: number): number {
-    assert(min < max, 'a number range is not empty')
-    const value = source[key]
-
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
-      this.fail(`${path}.${key}`, `Expected a number from ${min} to ${max}.`)
-      return min
-    }
-
-    assert(value >= min && value <= max, 'a read number is in range')
-    return value
-  }
-
-  text(source: Json, key: string, path: string, length_max: number, fallback: string | null) {
-    assert(length_max > 0, 'a text bound is positive')
-    const value = source[key]
-
-    if (value === undefined && fallback !== null) return fallback
-
-    if (typeof value !== 'string' || value.length > length_max) {
-      this.fail(`${path}.${key}`, `Expected text of at most ${length_max} characters.`)
-      return fallback ?? ''
-    }
-
-    assert(value.length <= length_max, 'read text is bounded')
-    return value
-  }
-
-  // A missing optional choice takes the first option, which is its default.
-  choice<T extends string>(
-    source: Json,
-    key: string,
-    path: string,
-    values: readonly T[],
-    required: boolean,
-  ): T {
-    assert(values.length > 0, 'a choice has options')
-    const value = required ? source[key] : (source[key] ?? values[0])
-    const found = values.find((candidate) => candidate === value)
-
-    if (found === undefined) {
-      this.fail(`${path}.${key}`, `Expected one of: ${values.join(', ')}.`)
-      return values[0] as T
-    }
-
-    assert(values.includes(found), 'a read choice is one of the options')
-    return found
-  }
-}
-
 export function proposal_parse(input: unknown): ProposalParsed {
-  const reader = new Reader()
-  const root = reader.object(input, 'proposal', keys_root)
+  const reader = new JsonReader()
+  const format = proposal_formats.find((candidate) => candidate === object_format(input))
+  const styled = format === proposal_format_styled
 
-  if (root.format !== proposal_format) {
-    reader.fail('proposal.format', `Expected "${proposal_format}".`)
+  // The format decides every other rule, so a wrong one is the first problem reported.
+  if (format === undefined) reader.fail('proposal.format', format_problem(object_format(input)))
+
+  const root = reader.object(input, 'proposal', styled ? keys_root_v2 : keys_root_v1)
+
+  const header = header_read(reader, root, 'proposal')
+  const shapes = shapes_read(reader, root.shapes, styled)
+  const diagram =
+    styled && root.diagram !== undefined ? diagram_read(reader, root.diagram, 'diagram') : null
+
+  if (reader.problem === null && diagram !== null) {
+    const problem = composition_check(diagram, shapes)
+
+    if (problem !== null) reader.fail(problem.path, problem.message)
   }
-
-  const snapshot = reader.text(root, 'snapshot', 'proposal', 16, null)
-
-  if (!document_hash_pattern.test(snapshot)) {
-    reader.fail('proposal.snapshot', 'Expected the snapshot token from cleanup-snapshot.')
-  }
-
-  const base_revision = reader.number(root, 'base_revision', 'proposal', 0, 2 ** 52)
-
-  if (!Number.isInteger(base_revision)) {
-    reader.fail('proposal.base_revision', 'Expected a whole revision number.')
-  }
-
-  const agent = reader.text(root, 'agent', 'proposal', 64, agent_default)
-
-  if (!agent_pattern.test(agent)) {
-    reader.fail('proposal.agent', 'Expected a short name of letters, digits and . _ - : /.')
-  }
-
-  const summary = reader.text(root, 'summary', 'proposal', proposal_summary_length_max, '')
-  const shapes = shapes_read(reader, root.shapes)
 
   if (reader.problem !== null) return { ok: false, ...reader.problem }
 
-  assert(shapes.length > 0, 'a valid proposal has shapes')
+  assert(format !== undefined, 'a valid proposal names its format')
   assert(shapes.length <= proposal_shapes_count_max, 'a valid proposal is bounded')
-  return { ok: true, proposal: { snapshot, base_revision, agent, summary, shapes } }
+  return { ok: true, proposal: { format, ...header, shapes, diagram } }
 }
 
-function shapes_read(reader: Reader, value: unknown): ProposalShape[] {
+// A semantic diagram sent straight to the board is a common mistake: say how to publish one.
+function format_problem(format: unknown): string {
+  const expected = `Expected "${proposal_format}" or "${proposal_format_styled}".`
+  const message =
+    format === diagram_format
+      ? `${expected} Publish a semantic diagram with tldraw-sync cleanup-publish, which lays ` +
+        'it out first.'
+      : expected
+  assert(message.endsWith('.'), 'a problem is a full sentence')
+  assert(message.startsWith('Expected'), 'a format problem names what is expected')
+  return message
+}
+
+function object_format(input: unknown): unknown {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined
+
+  return (input as Json).format
+}
+
+function shapes_read(reader: JsonReader, value: unknown, styled: boolean): ProposalShape[] {
   const count_max = proposal_shapes_count_max
 
   if (!Array.isArray(value) || value.length === 0 || value.length > count_max) {
@@ -162,7 +120,7 @@ function shapes_read(reader: Reader, value: unknown): ProposalShape[] {
     return []
   }
 
-  const shapes = value.map((item, index) => shape_read(reader, item, `shapes[${index}]`))
+  const shapes = value.map((item, index) => shape_read(reader, item, `shapes[${index}]`, styled))
   const kinds = new Map<string, ProposalShape['kind']>()
   shapes.forEach((shape, index) => {
     if (kinds.has(shape.id)) reader.fail(`shapes[${index}].id`, 'Shape ids must be unique.')
@@ -187,22 +145,15 @@ function shapes_read(reader: Reader, value: unknown): ProposalShape[] {
   return shapes
 }
 
-function shape_read(reader: Reader, value: unknown, path: string): ProposalShape {
-  const kind_source = reader.object(value, path, [
-    'kind',
-    'id',
-    'x',
-    'y',
-    'w',
-    'h',
-    'text',
-    'from',
-    'to',
-    'color',
-    'size',
-  ])
+function shape_read(
+  reader: JsonReader,
+  value: unknown,
+  path: string,
+  styled: boolean,
+): ProposalShape {
+  const kind_source = reader.object(value, path, styled ? keys_any : keys_by_kind_any)
   const kind = reader.choice(kind_source, 'kind', path, proposal_kinds, true)
-  const source = reader.object(value, path, keys_by_kind[kind])
+  const source = reader.object(value, path, (styled ? keys_styled_by_kind : keys_by_kind)[kind])
   const id = reader.text(source, 'id', path, 40, null)
 
   if (!shape_id_pattern.test(id)) {
@@ -219,7 +170,7 @@ function shape_read(reader: Reader, value: unknown, path: string): ProposalShape
   if (kind === 'arrow') {
     const from = reader.text(source, 'from', path, 40, null)
     const to = reader.text(source, 'to', path, 40, null)
-    return { kind, id, from, to, text, color, size }
+    return { kind, id, from, to, text, color, size, ...arrow_style_read(reader, source, path) }
   }
 
   const coordinate_max = proposal_coordinate_units_max
@@ -233,13 +184,60 @@ function shape_read(reader: Reader, value: unknown, path: string): ProposalShape
       source.w === undefined || source.w === null
         ? null
         : reader.number(source, 'w', path, 1, proposal_extent_units_max)
-    return { kind, id, x, y, text, w, color, size }
+    const align = reader.choice(source, 'align', path, proposal_text_aligns, false)
+    return { kind, id, x, y, text, w, color, size, align }
   }
 
   const w = reader.number(source, 'w', path, 1, proposal_extent_units_max)
   const h = reader.number(source, 'h', path, 1, proposal_extent_units_max)
   assert(kind === 'rectangle' || kind === 'ellipse', 'every kind is read')
-  return { kind, id, x, y, w, h, text, color, size }
+  return { kind, id, x, y, w, h, text, color, size, ...geo_style_read(reader, source, path) }
+}
+
+// Absent in a v1 shape, so each control reads as its default there.
+function geo_style_read(reader: JsonReader, source: Json, path: string) {
+  const fill = reader.choice(source, 'fill', path, proposal_fills, false)
+  const label_color =
+    source.label_color === undefined || source.label_color === null
+      ? null
+      : reader.choice(source, 'label_color', path, proposal_colors, true)
+  const label_align = reader.choice(source, 'label_align', path, proposal_label_aligns, false)
+  const label_valign = reader.choice(source, 'label_valign', path, proposal_label_aligns, false)
+  const label_bold = reader.boolean(source, 'label_bold', path, false)
+  assert(proposal_fills.includes(fill), 'a fill is known')
+  assert(proposal_label_aligns.includes(label_align), 'an alignment is known')
+  return { fill, label_color, label_align, label_valign, label_bold }
+}
+
+function arrow_style_read(reader: JsonReader, source: Json, path: string) {
+  const arrowheads = reader.choice(source, 'arrowheads', path, proposal_arrowheads, false)
+  const route = reader.choice(source, 'route', path, proposal_routes, false)
+  const bend_max = proposal_extent_units_max
+  const bend =
+    source.bend === undefined ? 0 : reader.number(source, 'bend', path, -bend_max, bend_max)
+
+  if (route === 'elbow' && bend !== 0) reader.fail(`${path}.bend`, 'Only an arc bends.')
+
+  const from_anchor = anchor_read(reader, source, 'from_anchor', path)
+  const to_anchor = anchor_read(reader, source, 'to_anchor', path)
+  assert(proposal_arrowheads.includes(arrowheads), 'arrowheads are known')
+  assert(proposal_routes.includes(route), 'a route is known')
+  return { arrowheads, route, bend, from_anchor, to_anchor }
+}
+
+function anchor_read(reader: JsonReader, source: Json, key: string, path: string) {
+  assert(key.endsWith('_anchor'), 'an anchor field is named so')
+  const value = source[key]
+
+  if (value === undefined || value === null) return null
+
+  const anchor = reader.object(value, `${path}.${key}`, ['x', 'y'])
+  const result: ProposalAnchor = {
+    x: reader.number(anchor, 'x', `${path}.${key}`, 0, 1),
+    y: reader.number(anchor, 'y', `${path}.${key}`, 0, 1),
+  }
+  assert(result.x >= 0 && result.x <= 1, 'an anchor is on its shape')
+  return result
 }
 
 // Native tldraw records for a valid proposal: one shape per proposal shape, and two bindings per
@@ -265,8 +263,8 @@ export function proposal_records(shapes: readonly ProposalShape[]): TLRecord[] {
     const to = centers.get(shape.to)
     assert(from !== undefined && to !== undefined, 'a valid arrow joins known shapes')
     records.push(arrow_record(shape, index_key(index), from, to))
-    records.push(binding_record(shape.id, 'start', shape.from))
-    records.push(binding_record(shape.id, 'end', shape.to))
+    records.push(binding_record(shape.id, 'start', shape.from, shape.from_anchor))
+    records.push(binding_record(shape.id, 'end', shape.to, shape.to_anchor))
   })
 
   for (const record of records) assert(record_valid(record), `record ${record.id} is valid`)
@@ -296,7 +294,7 @@ function shape_record(shape: ProposalShape, index: string): TLRecord {
         color: shape.color,
         size: shape.size,
         font: 'sans',
-        textAlign: 'start',
+        textAlign: shape.align,
         w: shape.w ?? 8,
         richText: rich_text,
         scale: 1,
@@ -316,16 +314,32 @@ function shape_record(shape: ProposalShape, index: string): TLRecord {
       h: shape.h,
       growY: 0,
       scale: 1,
-      labelColor: shape.color,
+      labelColor: shape.label_color ?? shape.color,
       color: shape.color,
-      fill: 'none',
+      fill: shape.fill,
       size: shape.size,
       font: 'sans',
-      align: 'middle',
-      verticalAlign: 'middle',
-      richText: rich_text,
+      align: shape.label_align,
+      verticalAlign: shape.label_valign,
+      richText: shape.label_bold ? rich_text_bold(shape.text) : rich_text,
     },
   } as unknown as TLRecord
+}
+
+// The same paragraphs as `toRichText`, each run of words marked bold: a group's heading.
+function rich_text_bold(text: string) {
+  const plain = toRichText(text)
+  const content = plain.content.map((value) => {
+    const paragraph = value as { type: string; content?: Array<Record<string, unknown>> }
+    const runs = paragraph.content
+
+    if (runs === undefined) return paragraph
+
+    return { ...paragraph, content: runs.map((run) => ({ ...run, marks: [{ type: 'bold' }] })) }
+  })
+  assert(content.length === plain.content.length, 'every paragraph is kept')
+  assert(content.length === text.split('\n').length, 'one paragraph per line')
+  return { ...plain, content }
 }
 
 // The arrow starts at its first shape's center; its bindings make tldraw draw it edge to edge.
@@ -341,18 +355,18 @@ function arrow_record(
     ...record_base(shape.id, index, from.x, from.y),
     type: 'arrow',
     props: {
-      kind: 'arc',
+      kind: shape.route === 'elbow' ? 'elbow' : 'arc',
       labelColor: shape.color,
       color: shape.color,
       fill: 'none',
       dash: 'solid',
       size: shape.size,
-      arrowheadStart: 'none',
-      arrowheadEnd: 'arrow',
+      arrowheadStart: shape.arrowheads === 'both' ? 'arrow' : 'none',
+      arrowheadEnd: shape.arrowheads === 'none' ? 'none' : 'arrow',
       font: 'sans',
       start: { x: 0, y: 0 },
       end: { x: to.x - from.x, y: to.y - from.y },
-      bend: 0,
+      bend: shape.bend,
       richText: toRichText(shape.text),
       labelPosition: 0.5,
       scale: 1,
@@ -361,7 +375,14 @@ function arrow_record(
   } as unknown as TLRecord
 }
 
-function binding_record(arrow_id: string, terminal: 'start' | 'end', target_id: string) {
+// A null anchor aims at the center, as v1 arrows do. A precise anchor is where the composer's
+// router attached the connection, so tldraw leaves and enters each shape on that side.
+function binding_record(
+  arrow_id: string,
+  terminal: 'start' | 'end',
+  target_id: string,
+  anchor: ProposalAnchor | null,
+) {
   const record = {
     id: `binding:cleaned-${arrow_id}-${terminal}`,
     typeName: 'binding',
@@ -371,9 +392,9 @@ function binding_record(arrow_id: string, terminal: 'start' | 'end', target_id: 
     meta: {},
     props: {
       terminal,
-      normalizedAnchor: { x: 0.5, y: 0.5 },
+      normalizedAnchor: anchor ?? { x: 0.5, y: 0.5 },
       isExact: false,
-      isPrecise: false,
+      isPrecise: anchor !== null,
       snap: 'none',
     },
   }

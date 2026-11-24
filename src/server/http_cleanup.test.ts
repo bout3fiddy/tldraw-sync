@@ -8,7 +8,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:te
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import fixture from '../../tests/fixtures/nested_groups.diagram.json'
+import { diagram_compose } from '../cli/diagram_compose'
 import { proposal_size_bytes_max } from '../shared/constants'
+import { diagram_proposal_parse } from '../shared/diagram_parse'
 import { time_real } from '../shared/time'
 import { SimulatedDisk } from '../simulation/simulated_disk'
 import { test_pen_draw } from '../simulation/test_pen'
@@ -109,6 +112,36 @@ test('the sketch records are served only for the document the image showed', asy
   const image = await fetch(`${origin}/api/drawing.png`)
   expect(await status_of(image)).toBe(200)
   expect(image.headers.get('x-document-hash')).toBe(hash)
+})
+
+// The board never lays anything out: a semantic diagram must arrive composed, and a composed
+// one must agree with its diagram. The diagram then comes back with the next sketch records.
+test('a composed diagram publishes over HTTP and comes back with the sketch records', async () => {
+  const hash = board.document_state().hash
+  const parsed = diagram_proposal_parse({ ...fixture, snapshot: hash })
+
+  if (!parsed.ok) throw new Error(parsed.message)
+
+  const composition = await diagram_compose(parsed.proposal)
+
+  if (!composition.ok) throw new Error(composition.message)
+
+  const raw = await post('/api/cleaned.json', { ...fixture, snapshot: hash })
+  expect(raw.status).toBe(400)
+  expect(await json(raw)).toMatchObject({ code: 'invalid_proposal', path: 'proposal.format' })
+
+  const tampered = JSON.parse(composition.composed.text)
+  tampered.shapes.find((shape: { id: string }) => shape.id === 'prod').text = 'Production'
+  const refused = await post('/api/cleaned.json', tampered)
+  expect(refused.status).toBe(400)
+  expect(await json(refused)).toMatchObject({ path: 'diagram.nodes[2]' })
+  expect(await revision_read()).toBe(0)
+
+  const published = await post('/api/cleaned.json', composition.composed.text)
+  expect(await json(published)).toEqual({ kind: 'published', revision: 1, shapes_count: 20 })
+  const sketch = await json(await fetch(`${origin}/api/sketch.json?document_hash=${hash}`))
+  expect(sketch.diagram_previous).toEqual(parsed.proposal.diagram)
+  expect(board.document_state().hash).toBe(hash)
 })
 
 test('a publish is checked whole, and refused bodies change nothing', async () => {
