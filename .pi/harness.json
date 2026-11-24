@@ -1,0 +1,42 @@
+{
+  "checks": [
+    {
+      "id": "typecheck",
+      "kind": "static",
+      "required": true,
+      "argv": ["npm", "run", "typecheck"],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "build",
+      "kind": "static",
+      "required": true,
+      "argv": ["npm", "run", "build"],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "test",
+      "kind": "test",
+      "required": true,
+      "runner": "host",
+      "argv": ["bun", "test"],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "simulation",
+      "kind": "test",
+      "required": true,
+      "runner": "host",
+      "argv": ["bun", "run", "simulate"],
+      "timeoutMs": 180000
+    },
+    {
+      "id": "browser",
+      "kind": "test",
+      "required": true,
+      "runner": "host",
+      "argv": ["npm", "run", "test:browser"],
+      "timeoutMs": 240000
+    }
+  ]
+}

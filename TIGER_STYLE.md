@@ -81,6 +81,9 @@ Status: Customized. Host inspection and baseline checks completed on 2026-11-24.
 ### Architecture and ownership
 
 - TypeScript with strict compiler checks, React 18, Bun 1.3.5, Vite 5, and tldraw 4.2.3.
+- Semantic composition is specified in `DIAGRAM_COMPOSITION.md`. Pinned `elkjs` 0.12.1 provides
+  compound graph layout; scrutinize graph limits and keep layout outside atomic publication. Pinned
+  Playwright 1.57.0 supplies the real-browser gate, with host-installed matching Chromium.
 - `src/server/board.ts` owns the sync state machine. Pass time and disk explicitly through
   deterministic interfaces; keep networking in `src/server/http.ts` and filesystem I/O in storage.
 - `src/server/cleaned.ts` owns the separate cleaned document and bounded revision history.
@@ -122,8 +125,11 @@ Run from the repository root:
 - `bun run build`: production browser bundle.
 - `bun run simulate [seed_first] [seeds_count]`: 1000 seeds of 500 steps by default. Replay a
   failure with the printed `SEED=<seed> STEPS=<steps> bun test simulation`, optionally `TRACE=1`.
-- For changed browser journeys, run a real Playwright check against the exact candidate; browser,
-  loopback, and process checks require the host when sandbox facilities are unavailable.
+- `bun run test:browser`: build and run real Playwright journeys against the exact candidate. On a
+  cold host, install Chromium with `bunx playwright install chromium --only-shell`.
+- `.pi/harness.json` keeps strict typecheck and build in the sandbox. Bun tests, simulation, and
+  browser checks use the host because they need Bun, loopback, process control, or a browser. These
+  remain required gates; moving their runner does not remove or replace them.
 - The harness `document_check` tool (not a repository script) formats and checks edited Markdown. No
   standalone lint script exists: mechanical source lint lives in `src/tiger_style.test.ts`; semantic
   checking is TypeScript's responsibility.
