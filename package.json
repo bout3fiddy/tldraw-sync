@@ -3,10 +3,12 @@
   "private": true,
   "version": "2.0.0",
   "type": "module",
+  "bin": {
+    "tldraw-sync": "./src/cli/main.ts"
+  },
   "scripts": {
-    "start": "vite build --logLevel warn && bun src/server/main.ts",
+    "start": "bun src/cli/main.ts serve",
     "build": "vite build",
-    "serve": "bun src/server/main.ts",
     "test": "bun test",
     "simulate": "NODE_ENV=test bun src/simulation/main.ts",
     "typecheck": "tsc --noEmit"

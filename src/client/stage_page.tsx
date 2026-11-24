@@ -14,7 +14,8 @@ export function StagePage() {
   const board = use_board_store('stage')
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
-    return <Notice text="The board is not answering. Start it with “bun start”, then reload." />
+    const text = 'The board is not answering. Start it with “tldraw-sync start”, then reload.'
+    return <Notice text={text} />
   }
 
   return (
@@ -29,7 +30,10 @@ export function StagePage() {
         <StageGuide />
       </Tldraw>
       {board.connectionStatus === 'offline' && (
-        <Notice floating text="The board has stopped. Start it again with “bun start”." />
+        <Notice
+          floating
+          text="The board has stopped. Start it again with “tldraw-sync start”."
+        />
       )}
     </main>
   )

@@ -5,12 +5,10 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { TLSyncClient } from '@tldraw/sync-core'
-import { atom, createTLSchema, createTLStore, type TLRecord, type TLStore } from 'tldraw'
 import { image_size_bytes_max } from '../shared/constants'
 import { time_real } from '../shared/time'
-import { ClientSocket } from '../simulation/simulated_client'
 import { SimulatedDisk } from '../simulation/simulated_disk'
+import { test_pen_draw } from '../simulation/test_pen'
 import { Board } from './board'
 import { server_start, static_files_load } from './http'
 import { pairing_create } from './pairing'
@@ -51,41 +49,6 @@ const image_url = (hash: string) => `${origin}/api/drawing.png?document_hash=${h
 const put = (hash: string, body: Uint8Array) =>
   fetch(image_url(hash), { method: 'PUT', body: body as Uint8Array<ArrayBuffer> })
 
-async function draw_a_shape(): Promise<void> {
-  const store = createTLStore({ schema: createTLSchema() })
-  // The sync library's own socket adapter needs a browser, so this bridges a plain WebSocket.
-  const sync_url = `ws://127.0.0.1:${server.port}/sync?role=draw&sessionId=test-pen`
-  const web_socket = new WebSocket(sync_url)
-  const socket = new ClientSocket((message) => web_socket.send(JSON.stringify(message)), () => {})
-  web_socket.onmessage = (event) => socket.message_deliver(JSON.parse(String(event.data)) as object)
-  web_socket.onopen = () => socket.status_set('online')
-  const loaded = Promise.withResolvers<void>()
-  const client = new TLSyncClient<TLRecord, TLStore>({
-    store,
-    socket,
-    presence: atom('presence', null),
-    didCancel: () => false,
-    onLoad: () => loaded.resolve(),
-    onSyncError: (reason) => loaded.reject(new Error(reason)),
-  })
-  await loaded.promise
-
-  store.put([{
-    id: 'shape:test', typeName: 'shape', type: 'geo', x: 0, y: 0, rotation: 0, index: 'a1',
-    parentId: 'page:page', isLocked: false, opacity: 1, meta: {},
-    props: {
-      w: 10, h: 10, geo: 'rectangle', color: 'black', labelColor: 'black', fill: 'none',
-      dash: 'draw', size: 'm', font: 'draw', align: 'middle', verticalAlign: 'middle',
-      growY: 0, url: '', scale: 1, richText: { type: 'doc', content: [] },
-    },
-  } as unknown as TLRecord])
-  for (let attempt = 0; attempt < 200 && board.shapes().length === 0; attempt += 1) {
-    await Bun.sleep(10)
-  }
-  client.close()
-  web_socket.close()
-}
-
 test('an empty board has no image, and says so', async () => {
   const response = await fetch(`${origin}/api/drawing.png`)
   expect(response.status).toBe(404)
@@ -94,7 +57,7 @@ test('an empty board has no image, and says so', async () => {
 })
 
 test('a drawn shape reaches the board, and the image follows the document', async () => {
-  await draw_a_shape()
+  await test_pen_draw(server.port as number, 'shape:test', () => board.shapes().length > 0)
   expect(board.shapes().map((shape) => shape.id)).toEqual(['shape:test'])
   const shapes = await (await fetch(`${origin}/api/drawing.json`)).json() as Array<{ id: string }>
   expect(shapes.map((shape) => shape.id)).toEqual(['shape:test'])
@@ -113,6 +76,7 @@ test('a drawn shape reaches the board, and the image follows the document', asyn
   const fresh = await fetch(`${origin}/api/drawing.png`)
   expect(fresh.status).toBe(200)
   expect(fresh.headers.get('content-type')).toBe('image/png')
+  expect(fresh.headers.get('x-document-hash')).toBe(board.document_state().hash)
   expect([...new Uint8Array(await fresh.arrayBuffer())]).toEqual([...png])
 })
 
@@ -151,8 +115,17 @@ test('both pages are the built client, and only built files are served', async (
   expect((await fetch(`${origin}/`, { method: 'POST' })).status).toBe(405)
 })
 
-test('the pairing endpoint describes the draw page', async () => {
+test('the pairing and status endpoints describe the board', async () => {
   const pairing = await (await fetch(`${origin}/api/pairing`)).json() as { url: string }
   expect(pairing.url).toBe('http://test.local:5173/draw')
-  expect(await (await fetch(`${origin}/api/health`)).json()).toEqual({ status: 'ok' })
+  const status = await (await fetch(`${origin}/api/status`)).json() as Record<string, unknown>
+  expect(status.app).toBe('tldraw-sync')
+  expect(status.pid).toBe(process.pid)
+  expect(status.port).toBe(server.port)
+  expect(status.draw_url).toBe('http://test.local:5173/draw')
+  expect(status.stage_url).toBe(`http://localhost:${server.port}`)
+  expect(status.shapes_count).toBe(1)
+  expect(status.document_hash).toBe(board.document_state().hash)
+  expect(status.pen_connected).toBe(false)
+  expect(status.stage_connected).toBe(false)
 })

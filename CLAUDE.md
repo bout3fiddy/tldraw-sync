@@ -3,41 +3,31 @@
 ## Overview
 
 A personal drawing board: draw on an iPad, present on a Mac, and let agents fetch the latest
-drawing. One Bun process, one port, local network only. See `README.md` for the design.
+drawing. One Bun process, local network only, driven by the `tldraw-sync` command. See
+`README.md` for the design.
 
-## Quick Start
+## Running it
 
 ```bash
-bun start
+bun src/cli/main.ts start    # or `tldraw-sync start` once `bun link` has run
+bun src/cli/main.ts fetch --json
+bun src/cli/main.ts stop
+bun start                    # the board in the foreground, for watching its log
 ```
 
-Builds the client and starts the server on port 5173. It prints a QR code for the iPad.
+`tldraw-sync --help` is the reference for agents and people alike. To look at the user's
+drawing, run `tldraw-sync fetch --json` and read the PNG at `path`.
 
-## Skills
-
-### /sketch - Look at the board
-
-Trigger with: "check the sketch", "check my sketch", "look at my sketch"
-
-Fetches the latest drawing from the running board and reads it.
-
-**Requires:** `bun start` running, and the stage (`http://localhost:5173`) open in a browser.
-
-## Endpoints
-
-All on `http://localhost:5173`:
-
-- `GET /api/drawing.png` - The latest drawing as a PNG (404 if empty, 503 if not yet rendered)
-- `GET /api/drawing.json` - The shapes as JSON
-- `GET /` - The stage (Mac presentation view)
-- `GET /draw` - The draw page (iPad)
+Tests and experiments must not touch the board in daily use: set `BOARD_DATA_DIR` to a
+scratch directory, and pass `--no-open` so no browser opens.
 
 ## Project Structure
 
+- `src/cli/` - The `tldraw-sync` command: help, output, finding and starting the board
 - `src/shared/` - Constants, assertions, document hash, clock interface
-- `src/server/` - Board state machine, storage, HTTP edge, QR pairing
+- `src/server/` - Board state machine, storage, HTTP edge, QR pairing, process lock
 - `src/client/` - Draw page, stage page, tool strip, image uploader
-- `src/simulation/` - Deterministic simulator and its tests
+- `src/simulation/` - Deterministic simulator, its tests, and the test pen
 
 ## Common Tasks
 
@@ -63,3 +53,6 @@ mechanical rules, so run `bun test` after any change.
   production code. Do not call `Date.now`, `setTimeout` or `fs` from `board.ts`.
 - Any change to the board, storage or uploader must keep the simulation passing. If it adds
   a new failure mode, add that fault to the simulator.
+- The command line is for agents first. Every command keeps `--json` (one object on stdout),
+  `--quiet`, the documented exit codes, and a `next_action` on every failure. A new failure
+  gets a code, a full-sentence message, and a line in the command's help.

@@ -31,7 +31,7 @@ import { envelope_decode, envelope_encode, type Disk } from './storage'
 export type BoardEnvironment = { readonly time: Time; readonly disk: Disk }
 
 export type ImageResult =
-  | { kind: 'image'; bytes: Uint8Array }
+  | { kind: 'image'; bytes: Uint8Array; document_hash: string }
   | { kind: 'empty' }
   | { kind: 'stale'; reason: 'stage_absent' | 'stage_slow' | 'busy' }
 
@@ -213,7 +213,7 @@ export class Board {
     if (state.shapes_count === 0) return { kind: 'empty' }
     if (this.image && this.image.document_hash === state.hash) {
       assert(this.image.bytes.byteLength > 0, 'a stored image is never empty')
-      return { kind: 'image', bytes: this.image.bytes }
+      return { kind: 'image', bytes: this.image.bytes, document_hash: state.hash }
     }
     return { kind: 'stale', reason: reason_if_stale }
   }

@@ -8,12 +8,13 @@ import type { WebSocketMinimal } from '@tldraw/sync-core'
 import { assert, AssertionError } from '../shared/assert'
 import {
   document_hash_pattern,
+  header_document_hash,
   image_size_bytes_max,
   path_draw,
   path_drawing_json,
   path_drawing_png,
-  path_health,
   path_pairing,
+  path_status,
   path_sync,
   roles,
   sync_message_size_bytes_max,
@@ -33,6 +34,19 @@ export type ServerOptions = {
 }
 
 export type StaticFiles = ReadonlyMap<string, string>
+
+// What the command line reads to find the board and report on it.
+export type BoardStatus = {
+  readonly app: 'tldraw-sync'
+  readonly pid: number
+  readonly port: number
+  readonly draw_url: string
+  readonly stage_url: string
+  readonly pen_connected: boolean
+  readonly stage_connected: boolean
+  readonly shapes_count: number
+  readonly document_hash: string
+}
 
 type SocketData = { session_id: string; role: Role }
 type Socket = ServerWebSocket<SocketData>
@@ -112,7 +126,7 @@ function route(
 
   if (pathname === path_drawing_json) return Response.json(options.board.shapes())
   if (pathname === path_pairing) return Response.json(options.pairing)
-  if (pathname === path_health) return Response.json({ status: 'ok' })
+  if (pathname === path_status) return Response.json(status_read(options, server.port))
   if (pathname === '/' || pathname === path_draw) {
     return static_response(options.static_files, '/index.html')
   }
@@ -135,11 +149,34 @@ function sync_upgrade(
   return upgraded ? undefined : text(400, 'Expected a WebSocket connection.')
 }
 
+function status_read(options: ServerOptions, port: number | undefined): BoardStatus {
+  assert(port !== undefined, 'a listening server has a port')
+  assert(port > 0, 'the port is known once listening')
+  const { board } = options
+  const state = board.document_state()
+  return {
+    app: 'tldraw-sync',
+    pid: process.pid,
+    port,
+    draw_url: options.pairing.url,
+    stage_url: `http://localhost:${port}`,
+    pen_connected: board.sessions_count('draw') > 0,
+    stage_connected: board.sessions_count('stage') > 0,
+    shapes_count: state.shapes_count,
+    document_hash: state.hash,
+  }
+}
+
 function image_response(result: ImageResult): Response {
   if (result.kind === 'image') {
     assert(result.bytes.byteLength > 0, 'an image is never empty')
+    assert(document_hash_pattern.test(result.document_hash), 'an image names its document')
     return new Response(result.bytes as Uint8Array<ArrayBuffer>, {
-      headers: { 'content-type': 'image/png', 'cache-control': 'no-store' },
+      headers: {
+        'content-type': 'image/png',
+        'cache-control': 'no-store',
+        [header_document_hash]: result.document_hash,
+      },
     })
   }
   if (result.kind === 'empty') return text(404, 'The board is empty. Nothing has been drawn.')
