@@ -83,8 +83,13 @@ Status: Customized. Host inspection and baseline checks completed on 2026-11-24.
 - TypeScript with strict compiler checks, React 18, Bun 1.3.5, Vite 5, and tldraw 4.2.3.
 - `src/server/board.ts` owns the sync state machine. Pass time and disk explicitly through
   deterministic interfaces; keep networking in `src/server/http.ts` and filesystem I/O in storage.
-- `src/client/` owns Pencil input, read-only presentation, and bounded image rendering/upload.
-  `src/cli/` owns process discovery and structured command outcomes, not model invocation.
+- `src/server/cleaned.ts` owns the separate cleaned document and bounded revision history.
+  `cleanup_proposal.ts` validates the external shape schema; publish and restore use revision
+  compare-and-swap. Persist before swapping the in-memory result; never write cleanup to the ink
+  room.
+- `src/client/` owns Pencil input, separate Sketch/Cleaned views, bounded rendering/upload, and
+  single-flight cleaned-status polling. `src/cli/` owns process discovery, bounded proposal reading,
+  coherent image/record snapshots, and structured outcomes, not model invocation.
 - This is a local-network tool without authentication. Preserve the trusted-network warning; never
   add cloud model calls, execute agent-supplied code, or log private drawing contents.
 
@@ -123,9 +128,13 @@ Run from the repository root:
   standalone lint script exists: mechanical source lint lives in `src/tiger_style.test.ts`; semantic
   checking is TypeScript's responsibility.
 
-Baseline evidence: 45 tests passed (742 expectations), typecheck passed, and production build
-passed. For `src/**/*.{ts,tsx,css}`, `src/tiger_style.test.ts` enforces 100-column lines, snake_case
-file names and TigerStyle's 70-line hard function limit. It also requires at least two `assert`
-calls per function declaration or method on average across non-test `src/server` and `src/shared`
-files. The approximately 60-line review target adapts NASA's Power of Ten rule 4. Keep these gates;
-do not add meaningless assertions or weaken checks to obtain a pass.
+Baseline evidence before cleanup: 45 tests passed (742 expectations), typecheck and build passed.
+Integration evidence at `5fafd53`: 140 tests passed (11314 expectations), typecheck, production
+build, 1000 simulation seeds, and the real Chromium CLI-to-canvas journey passed on the host. The
+candidate also passed five consecutive full-suite runs after the refused-body lifecycle repair.
+Harness lint introduced no findings versus the baseline; inherited formatting findings remain
+outside this scope. For `src/**/*.{ts,tsx,css}`, `src/tiger_style.test.ts` enforces 100-column
+lines, snake_case file names and TigerStyle's 70-line hard function limit. It also requires at least
+two `assert` calls per function declaration or method on average across non-test `src/server` and
+`src/shared` files. The approximately 60-line review target adapts NASA's Power of Ten rule 4. Keep
+these gates; do not add meaningless assertions or weaken checks to obtain a pass.
