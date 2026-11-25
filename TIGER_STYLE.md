@@ -161,3 +161,17 @@ lines, snake_case file names and TigerStyle's 70-line hard function limit. It al
 two `assert` calls per function declaration or method on average across non-test `src/server` and
 `src/shared` files. The approximately 60-line review target adapts NASA's Power of Ten rule 4. Keep
 these gates; do not add meaningless assertions or weaken checks to obtain a pass.
+
+### Unified Agent canvas transition
+
+This feature branch replaces separate output layers with one Agent graph and independent provenance
+per semantic element. Use one revision CAS. A change to sketch-origin content also requires a fresh
+source hash; agent-only changes must retain the previous interpretation hash. Migrate both current
+legacy outputs visibly, archive their histories without loss, and test interrupted migration.
+
+Bound unified proposals at 160 nodes, 320 edges, 800 shapes and 1 MiB, with eight saved revisions.
+Composer notes are exact paired-user input, limited to 4000 Unicode code points and 16 KiB requests.
+Keep their request idempotency, durable receipt and ACK status separate. Reject old-client text
+loss. Reuse native components and the existing visual system; verify typing cannot trigger canvas
+shortcuts. The host owns guide setup, dependencies, final browser integration and safe live-daemon
+upgrades.
