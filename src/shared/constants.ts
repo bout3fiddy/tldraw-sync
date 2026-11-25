@@ -127,6 +127,9 @@ export const diagram_edges_count_max = 160
 export const diagram_depth_max = 8
 export const diagram_label_length_max = 200
 
+// The largest coordinate or size an item's place in the sketch may have, in either unit.
+export const diagram_at_units_max = 10_000_000
+
 // Source stroke ids an agent may attach to its nodes and edges, across the whole diagram.
 export const diagram_stroke_ids_count_max = 1000
 

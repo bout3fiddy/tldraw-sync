@@ -150,12 +150,20 @@ export type DiagramEdgeDirection = (typeof diagram_edge_directions)[number]
 export const diagram_flows = ['right', 'down'] as const
 export type DiagramFlow = (typeof diagram_flows)[number]
 
+// Where an item sits in the sketch: the left, top, width and height of the box around its ink.
+// Only how the boxes lie relative to each other matters, so page units and image pixels both do.
+export type DiagramAt = readonly [number, number, number, number]
+
 export type DiagramNode = {
   id: string
   kind: DiagramNodeKind
   label: string
   parent: string | null
   strokes: string[]
+
+  // Present on every node of a diagram or on none. With it the diagram keeps the sketch's
+  // arrangement; without it the tool arranges the diagram by its connections alone.
+  at?: DiagramAt
 }
 
 export type DiagramEdge = {

@@ -32,6 +32,7 @@ import { edge_arrowheads, node_shape_kind, oval_label_box } from '../shared/diag
 import { depth_measure } from '../shared/diagram_parse'
 import { label_padding_units, style_font, text_block } from '../shared/text_measure'
 import { proposal_parse } from '../server/cleanup_proposal'
+import { diagram_place, pair_key, type Frame } from './diagram_place'
 import { routes_plan, type Box, type Point, type Ports, type RoutePlan } from './diagram_route'
 
 export type Composed = {
@@ -58,6 +59,9 @@ const composed_style: ProposalStyle = 'markerboard'
 const font = style_font(composed_style)
 const grid_units = 8
 const leaf_wrap_units = 168
+
+// Words placed from the sketch are notes as often as labels, so they run to a longer line.
+const note_wrap_units = 336
 const heading_wrap_units = 320
 const edge_label_wrap_units = 160
 const label_slack_units = 8
@@ -69,6 +73,10 @@ const heading_gap_units = 16
 const node_gap_units = 32
 const layer_gap_units = 64
 const edge_gap_units = 16
+
+// A diagram placed from the sketch: columns stand well apart, lines in a column sit close.
+const place_gap_across_units = 48
+const place_gap_down_units = 24
 
 // Room on each side of a connector label for the line to leave and enter it.
 const leg_room_units = 16
@@ -139,6 +147,9 @@ async function layouts_choose(
 ): Promise<Planned | string> {
   assert(sizes.size <= diagram.nodes.length, 'only nodes are sized')
 
+  // A diagram that says where its items sat in the sketch is arranged as the sketch was.
+  if (diagram.nodes.every((node) => node.at !== undefined)) return placed_plan(diagram, sizes)
+
   try {
     const first = await layout_plan(diagram, sizes, null)
     const elbows = new Set(
@@ -178,6 +189,70 @@ async function layout_plan(
   return { layout, plans, conflicts_count }
 }
 
+// The sketch's own arrangement, typeset: no layout engine, one deterministic pass. Connectors
+// aim from the middle of one item to the middle of the other, and the planner picks the sides.
+function placed_plan(diagram: Diagram, sizes: ReadonlyMap<string, Size>): Planned {
+  const frames = new Map(
+    diagram.nodes
+      .filter((node) => node.kind === 'group')
+      .map((node) => [node.id, group_frame(node)]),
+  )
+  const boxes = diagram_place(diagram, sizes, frames, {
+    across: place_gap_across_units,
+    down: place_gap_down_units,
+    pairs: pair_gaps_measure(diagram),
+  })
+  const middle = (id: string): Point => {
+    const box = boxes.get(id) as Box
+    return { x: box.x + box.w / 2, y: box.y + box.h / 2 }
+  }
+  const ports = new Map(
+    diagram.edges.map((edge) => [edge.id, { start: middle(edge.from), end: middle(edge.to) }]),
+  )
+  const plans = routes_plan(diagram, boxes, ports, font)
+  let conflicts_count = 0
+
+  for (const plan of plans.values()) conflicts_count += plan.conflicts_count
+
+  assert(boxes.size === diagram.nodes.length, 'every node is placed')
+  assert(plans.size === diagram.edges.length, 'every edge is planned')
+  return { layout: { boxes, routes: new Map() }, plans, conflicts_count }
+}
+
+// The gap a labelled connector needs between the two items it runs between: its ends, or the
+// groups that hold them where the ends are not siblings. Keyed by `pair_key`.
+function pair_gaps_measure(diagram: Diagram): Map<string, number> {
+  const parents = new Map(diagram.nodes.map((node) => [node.id, node.parent]))
+  const gaps = new Map<string, number>()
+
+  // The item directly inside `holder` that is, or holds, `id`.
+  const under = (id: string, holder: string | null): string => {
+    let current = id
+
+    for (let depth = 0; (parents.get(current) ?? null) !== holder; depth += 1) {
+      assert(depth < parents.size, 'containment is acyclic')
+      current = parents.get(current) as string
+    }
+
+    return current
+  }
+
+  for (const edge of diagram.edges) {
+    if (edge.label === '') continue
+
+    const holder = holder_common(parents, edge.from, edge.to)
+    const key = pair_key(under(edge.from, holder), under(edge.to, holder))
+    const label = text_block(edge.label, edge_label_wrap_units, false, font)
+    const room = Math.max(label.width_units, label.height_units)
+    const gap = grid_ceil(room + label_slack_units * 2 + leg_room_units * 2)
+    gaps.set(key, Math.max(gaps.get(key) ?? 0, gap))
+  }
+
+  assert(gaps.size <= diagram.edges.length, 'at most one gap per connector')
+  assert([...gaps.values()].every((gap) => gap > 0), 'a label needs room')
+  return gaps
+}
+
 // Items sorted by id, so the listing order an agent happened to use changes nothing.
 function diagram_canonical(diagram: Diagram): Diagram {
   const by_id = <T extends { id: string }>(a: T, b: T) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -215,7 +290,8 @@ function sizes_measure(diagram: Diagram): Map<string, Size> {
     if (node.kind === 'group') continue
 
     if (node.kind === 'text') {
-      const block = text_block(node.label, leaf_wrap_units, false, font)
+      const wrap = node.at === undefined ? leaf_wrap_units : note_wrap_units
+      const block = text_block(node.label, wrap, false, font)
       const w = grid_ceil(block.width_units + label_slack_units)
       sizes.set(node.id, { w, h: grid_ceil(text_block(node.label, w, false, font).height_units) })
       continue
@@ -376,14 +452,8 @@ function elk_node(
     return { id: node.id, width: size.w, height: size.h }
   }
 
-  const heading = heading_measure(node)
-  const top =
-    heading.h === 0
-      ? group_padding_units
-      : grid_ceil(label_padding_units + heading.h + heading_gap_units)
-  const w = grid_ceil(Math.max(heading.w + label_padding_units * 2 + label_slack_units, 96))
+  const { top, side, width_min: w } = group_frame(node)
   const h = top + group_padding_units + grid_units
-  const side = group_padding_units
 
   // ELK 0.12.1 applies a compound node's minimum size in its rotated frame when the flow runs
   // down, so the minimum is given transposed there (checked by `diagram_compose.test.ts`).
@@ -401,6 +471,22 @@ function elk_node(
       'elk.nodeSize.minimum': minimum,
     },
   }
+}
+
+// The room a group keeps around what it holds: its heading above, padding on the other sides,
+// and a width that fits the heading whatever it holds.
+function group_frame(node: DiagramNode): Frame {
+  const heading = heading_measure(node)
+  const top =
+    heading.h === 0
+      ? group_padding_units
+      : grid_ceil(label_padding_units + heading.h + heading_gap_units)
+  const width_min = grid_ceil(
+    Math.max(heading.w + label_padding_units * 2 + label_slack_units, 96),
+  )
+  assert(top >= group_padding_units, 'a heading only adds space')
+  assert(width_min % grid_units === 0, 'a group width is on the grid')
+  return { top, side: group_padding_units, width_min }
 }
 
 function elk_edge(edge: DiagramEdge): ElkExtendedEdge {
@@ -552,7 +638,9 @@ function item_shape(node: DiagramNode, box: Box): ProposalShape {
       text: node.label,
       color: 'black',
       size: 's',
-      align: 'middle',
+
+      // Words placed from the sketch are read as lines of notes, from a common left edge.
+      align: node.at === undefined ? 'middle' : 'start',
     }
   }
 

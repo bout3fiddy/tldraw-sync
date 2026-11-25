@@ -1,0 +1,31 @@
+{
+ "format": "tldraw-sync.diagram.v1",
+ "snapshot": "0123456789abcdef",
+ "base_revision": 0,
+ "flow": "right",
+ "nodes": [
+  {"id": "title", "kind": "ellipse", "label": "Stripe payment system", "at": [480, 25, 200, 75]},
+  {"id": "func", "kind": "group", "label": "functional requirements (features)", "at": [380, 140, 820, 510]},
+  {"id": "f1", "kind": "text", "label": "merchant can request payment that is executed by the service if user signs off on it", "at": [380, 200, 820, 250], "parent": "func"},
+  {"id": "f2", "kind": "text", "label": "merchant can follow the status of the payment.", "at": [380, 430, 780, 220], "parent": "func"},
+  {"id": "nonfunc", "kind": "group", "label": "non-functional requirements", "at": [1240, 20, 720, 680]},
+  {"id": "nf1", "kind": "text", "label": "no double payments (integrity)", "at": [1240, 140, 720, 110], "parent": "nonfunc"},
+  {"id": "nf2", "kind": "text", "label": "payment process needs to be durable", "at": [1240, 250, 660, 160], "parent": "nonfunc"},
+  {"id": "nf3", "kind": "text", "label": "should be able to handle high traffic bursts (eg. black friday).", "at": [1260, 380, 700, 320], "parent": "nonfunc"},
+  {"id": "core", "kind": "group", "label": "core entities", "at": [0, 790, 1420, 570]},
+  {"id": "merchant", "kind": "text", "label": "merchant", "at": [60, 880, 260, 90], "parent": "core"},
+  {"id": "merchant_d", "kind": "text", "label": "this is the entity that initiates a payment.", "at": [400, 790, 700, 190], "parent": "core"},
+  {"id": "intent", "kind": "text", "label": "payment Intent", "at": [50, 1000, 370, 130], "parent": "core"},
+  {"id": "intent_d", "kind": "text", "label": "A payment instance. more or less an entry in a dB with an ID unique to a payment request. Use it to track status.", "at": [450, 900, 970, 300], "parent": "core"},
+  {"id": "txn", "kind": "text", "label": "Transaction", "at": [90, 1250, 360, 110], "parent": "core"},
+  {"id": "txn_d", "kind": "text", "label": "whatever real money movement involves.\nan intent can involve several transactions.", "at": [500, 1130, 920, 230], "parent": "core"},
+  {"id": "api", "kind": "group", "label": "API", "at": [150, 1480, 550, 270]},
+  {"id": "api1", "kind": "text", "label": "/put/payment_intent", "at": [220, 1540, 480, 120], "parent": "api"},
+  {"id": "api2", "kind": "text", "label": "/get/fetch_status", "at": [220, 1640, 340, 110], "parent": "api"}
+ ],
+ "edges": [
+  {"id": "e1", "from": "merchant", "to": "merchant_d", "direction": "forward"},
+  {"id": "e2", "from": "intent", "to": "intent_d", "direction": "forward"},
+  {"id": "e3", "from": "txn", "to": "txn_d", "direction": "forward"}
+ ]
+}

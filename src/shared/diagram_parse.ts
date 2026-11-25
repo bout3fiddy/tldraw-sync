@@ -6,6 +6,7 @@
 
 import { assert } from './assert'
 import {
+  diagram_at_units_max,
   diagram_depth_max,
   diagram_edges_count_max,
   diagram_label_length_max,
@@ -18,6 +19,7 @@ import {
   diagram_format,
   diagram_node_kinds,
   type Diagram,
+  type DiagramAt,
   type DiagramEdge,
   type DiagramNode,
   type DiagramProposal,
@@ -34,7 +36,7 @@ export const diagram_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
 const stroke_id_pattern = /^shape:[A-Za-z0-9_-]{1,64}$/
 const keys_root = [...header_keys, 'flow', 'nodes', 'edges'] as const
 const keys_body = ['flow', 'nodes', 'edges'] as const
-const keys_node = ['id', 'kind', 'label', 'parent', 'strokes'] as const
+const keys_node = ['id', 'kind', 'label', 'parent', 'strokes', 'at'] as const
 const keys_edge = ['id', 'from', 'to', 'label', 'direction', 'strokes'] as const
 
 export function diagram_proposal_parse(input: unknown): DiagramParsed {
@@ -78,6 +80,8 @@ function diagram_body_read(reader: JsonReader, source: Json, path: string): Diag
 
   if (reader.problem === null) strokes_check(reader, nodes, edges, path)
 
+  if (reader.problem === null) places_check(reader, nodes, path)
+
   assert(nodes.length === nodes_input.length, 'every node was read')
   assert(edges.length === edges_input.length, 'every edge was read')
   return { flow, nodes, edges }
@@ -98,9 +102,40 @@ function node_read(reader: JsonReader, value: unknown, path: string): DiagramNod
       ? null
       : id_read(reader, source, 'parent', path)
   const strokes = strokes_read(reader, source, path)
+  const at = at_read(reader, source, path)
   assert(label.length <= diagram_label_length_max, 'a node label is bounded')
   assert(diagram_node_kinds.includes(kind), 'a node kind is known')
-  return { id, kind, label, parent, strokes }
+
+  // Left out when absent, so a diagram without places is stored as it always was.
+  const node = { id, kind, label, parent, strokes }
+  return at === null ? node : { ...node, at }
+}
+
+// An item's box in the sketch: [left, top, width, height], every number finite and bounded.
+function at_read(reader: JsonReader, source: Json, path: string): DiagramAt | null {
+  assert(path.length > 0, 'a place has a path')
+
+  if (source.at === undefined || source.at === null) return null
+
+  const items = reader.list(source.at, `${path}.at`, 4, 4)
+  const numbers: number[] = []
+  items.forEach((item, index) => {
+    const min = index < 2 ? -diagram_at_units_max : 0
+
+    if (typeof item !== 'number' || !Number.isFinite(item)) {
+      reader.fail(`${path}.at[${index}]`, 'Expected a number.')
+    } else if (item < min || item > diagram_at_units_max) {
+      const range = `${min} to ${diagram_at_units_max}`
+      reader.fail(`${path}.at[${index}]`, `Expected a number from ${range}.`)
+    } else {
+      numbers.push(item)
+    }
+  })
+
+  if (numbers.length !== 4) return null
+
+  assert(numbers.every((value) => Math.abs(value) <= diagram_at_units_max), 'a place is bounded')
+  return [numbers[0] as number, numbers[1] as number, numbers[2] as number, numbers[3] as number]
 }
 
 function edge_read(reader: JsonReader, value: unknown, path: string): DiagramEdge {
@@ -288,4 +323,21 @@ function strokes_check(
   }
 
   assert(count >= 0, 'a count is never negative')
+}
+
+// A diagram is placed from the sketch as a whole or not at all: a place on some nodes and not
+// on others would leave the rest with nowhere to go.
+function places_check(reader: JsonReader, nodes: DiagramNode[], path: string): void {
+  assert(reader.problem === null, 'places are checked only in a well-formed diagram')
+  const placed_count = nodes.filter((node) => node.at !== undefined).length
+
+  if (placed_count > 0 && placed_count < nodes.length) {
+    const index = nodes.findIndex((node) => node.at === undefined)
+    reader.fail(
+      `${path}.nodes[${index}].at`,
+      'Give "at" for every node or for none: this node has none and others do.',
+    )
+  }
+
+  assert(placed_count <= nodes.length, 'places are a subset of the nodes')
 }

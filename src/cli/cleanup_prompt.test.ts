@@ -3,8 +3,8 @@
 // and leave every position and style to the composer.
 
 import { expect, test } from 'bun:test'
-import { diagram_format, proposal_kinds } from '../shared/cleanup_types'
-import { cleanup_prompt, diagram_schema_text, proposal_subset_text } from './cleanup_prompt'
+import { diagram_format } from '../shared/cleanup_types'
+import { cleanup_prompt, diagram_schema_text } from './cleanup_prompt'
 import { help_commands } from './help'
 
 const facts = {
@@ -40,28 +40,46 @@ test('the prompt reads ambiguity best effort and never asks the user to clarify'
   expect(text).not.toMatch(/STOP|Do not publish|let them decide/)
 })
 
-test('the prompt leaves layout to the tool and names its files and snapshot', () => {
+test('the prompt leaves the look to the tool and names its files and snapshot', () => {
   const text = flat(prompt)
-  expect(text).toContain('Choose no positions, sizes, colours or styles')
+  expect(text).toContain('Choose no sizes, colours or styles.')
+  expect(text).toContain('a black-and-white whiteboard')
+  expect(text).toContain('Do not write a shape proposal with coordinates.')
   expect(text).toContain('/tmp/cleanup/strokes.json')
   expect(prompt).toContain('\"snapshot\": \"0123456789abcdef\" and \"base_revision\": 4')
   expect(prompt).toContain('x = -32 + pixel_x / 2')
   expect(prompt).toContain('tldraw-sync cleanup-publish --file /tmp/cleanup/diagram.json --json')
   expect(prompt).toContain(diagram_format)
 
-  // The schema has no coordinates for the agent to choose.
-  expect(diagram_schema_text).not.toMatch(/"x"|"y"|"w"|"h"/)
+  // The schema has no coordinates, sizes or colours for the agent to choose.
+  expect(diagram_schema_text).not.toMatch(/"x"|"y"|"w"|"h"|"color"|"size"/)
 
-  // Writing comes before publishing.
-  expect(prompt.indexOf('Write one JSON object')).toBeLessThan(prompt.indexOf('cleanup-publish'))
+  // Writing comes before a trial layout, which comes before publishing.
+  const steps = ['Write one JSON object', 'cleanup-compose --file', 'cleanup-publish --file']
+  const places = steps.map((step) => prompt.indexOf(step))
+  expect(places.every((place) => place >= 0)).toBe(true)
+  expect([...places].sort((a, b) => a - b)).toEqual(places)
 })
 
-test('a previous interpretation is offered for its ids only when there is one', () => {
+// The cleanup that escaped put a board of notes on one line: the prompt said to place nothing,
+// so the sketch's arrangement never reached the tool. Now it asks where every item sat.
+test('the prompt asks where each item sat, and for headings as groups', () => {
+  const text = flat(prompt)
+  expect(text).toContain('Keep the arrangement. Give every node "at"')
+  expect(text).toContain('is a group with the heading as its label')
+  expect(text).toContain('A sketch may be a diagram, notes, lists, or all of them at once.')
+  expect(diagram_schema_text).toContain('"at": [<left>, <top>, <width>, <height>]')
+  expect(flat(diagram_schema_text)).toContain('Give it for every node, or for none')
+})
+
+test('a previous interpretation is offered, to be edited in place, only when there is one', () => {
   expect(prompt).not.toContain('previous interpretation')
   const again = cleanup_prompt({ ...facts, previous_path: '/tmp/cleanup/diagram_previous.json' })
   expect(flat(again)).toContain(
-    'The previous interpretation is /tmp/cleanup/diagram_previous.json. Keep its ids',
+    'The previous interpretation is /tmp/cleanup/diagram_previous.json. Edit it rather than ' +
+      'start again: keep its ids, labels, groups and "at" for everything the sketch still shows',
   )
+  expect(flat(again)).toContain('so those parts stay where they are')
 })
 
 // A board other than the default is named in the diagram and in every command; a title is
@@ -81,17 +99,15 @@ test('the prompt binds the diagram to its board and asks for a title only when u
   expect(flat(other)).toContain('unless someone names it first')
 })
 
-test('the semantic schema is in the compose help; the shape subset stays for legacy', () => {
+test('the semantic schema is in the compose help; the shape format is no longer taught', () => {
   expect(help_commands['cleanup-compose']).toContain(diagram_schema_text)
-  expect(help_commands['cleanup-publish']).toContain(proposal_subset_text)
+  expect(help_commands['cleanup-compose']).toContain('keeps that\narrangement')
   expect(help_commands['cleanup-publish']).toContain('proposal_unreadable')
   expect(help_commands['cleanup-publish']).toContain('invalid_diagram')
   expect(help_commands['cleanup-snapshot']).toContain('without asking the user to clarify')
 
-  // The subset names every kind the shape format has, and no kind it lacks.
-  expect([...proposal_kinds].sort()).toEqual(['arrow', 'ellipse', 'rectangle', 'text'])
-
-  for (const word of ['text', 'rectangles', 'ellipses', 'arrow']) {
-    expect(proposal_subset_text).toContain(word)
+  // An agent that reads the help finds no colours and no coordinates to reach for.
+  for (const help of Object.values(help_commands)) {
+    expect(help).not.toMatch(/"color"|light-blue|"kind": "rectangle"/)
   }
 })

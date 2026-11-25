@@ -2,7 +2,7 @@
 // says what the board is and how to get the drawing; each command's help has the detail.
 
 import { board_name_length_max, port_default, proposal_size_bytes_max } from '../shared/constants'
-import { diagram_schema_text, proposal_schema_text, proposal_subset_text } from './cleanup_prompt'
+import { diagram_schema_text } from './cleanup_prompt'
 
 export const commands = [
   'start',
@@ -267,7 +267,10 @@ with hand-drawn outlines, open arrows and handwritten labels, and no colour), wi
 publishing it and without a running board. Earlier revisions keep their own look. The layout is
 deterministic: the same diagram, in any item order, gives the same result. Labels, kinds,
 groups, endpoints and arrowheads are copied exactly; positions, sizes and connector routes are
-the tool's. cleanup-publish runs the same composition before it publishes.
+the tool's. When every node says where it sat in the sketch ("at"), the layout keeps that
+arrangement: what was beside, above or below what, typeset and closed up to an even gap.
+Otherwise items are arranged by their connections alone. cleanup-publish runs the same
+composition before it publishes.
 
 Diagram (JSON, not code):
 ${diagram_schema_text}
@@ -312,10 +315,9 @@ A semantic diagram ("format": "tldraw-sync.diagram.v1") is laid out here first, 
 cleanup-compose does, and the styled result is published together with the diagram, which the
 next snapshot offers back for its ids. See tldraw-sync cleanup-compose --help for the schema.
 
-A shape proposal, the older format with coordinates chosen by the agent, is still accepted:
-${proposal_schema_text}
-
-${proposal_subset_text}
+A shape proposal ("format": "tldraw-sync.cleanup.v1"), the older format with coordinates and
+colours chosen by the agent, is still accepted from scripts written for it. New cleanups write a
+semantic diagram: only a diagram is drawn in the house style and keeps the sketch's arrangement.
 Composed proposals (tldraw-sync.cleanup.v2) from cleanup-compose are accepted as they are.
 
 Output:

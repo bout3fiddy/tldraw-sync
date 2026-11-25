@@ -18,6 +18,9 @@ tldraw-sync keeps the two apart:
 The Mac shows the whole drawing at all times, even while you zoom in on a detail on the iPad. That
 makes it easy to share the Mac screen on a call while you draw.
 
+Write at any zoom. The pen is as heavy on the screen zoomed far out as it is close in, and ink
+never thins to a hairline on either screen, however large the board grows.
+
 ## An example
 
 Say you are working through a checkout flow and sketch this in a few seconds:
@@ -32,6 +35,10 @@ Cleaned tab shows the same diagram in neat shapes: a straight-edged "API" box, a
 ellipse, a “writes” arrow between them, and a “Checkout” title. Switch to **Side by side** to
 compare it with your handwriting. Keep drawing and the board marks the cleanup as out of date.
 Earlier cleanups are kept, and your agent can bring one back.
+
+It works for notes as well as diagrams. The cleanup keeps your arrangement: what you wrote side by
+side stays side by side, a heading keeps its list under it, and adding a line to one section
+leaves the others where they were. It is always drawn in black ink, like a whiteboard.
 
 ## Quickstart
 
