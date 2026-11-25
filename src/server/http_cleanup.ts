@@ -8,16 +8,35 @@ import {
   proposal_size_bytes_max,
   restore_request_size_bytes_max,
 } from '../shared/constants'
-import type { Board } from './board'
+import type { BoardLookupFailure, BoardRegistry } from './board_registry'
 
 type Body = { ok: true; value: unknown } | { ok: false; response: Response }
 
-export async function cleaned_publish_route(request: Request, board: Board): Promise<Response> {
+// The board is looked up only once the body has arrived, so a board set aside meanwhile is
+// opened again rather than written to closed.
+export async function cleaned_publish_route(
+  request: Request,
+  registry: BoardRegistry,
+  id: string,
+): Promise<Response> {
   const body = await body_read(request, proposal_size_bytes_max)
 
   if (!body.ok) return body.response
 
-  const result = board.cleaned_publish(body.value)
+  const result = registry.publish(id, body.value)
+
+  if (result.kind === 'not_found' || result.kind === 'busy' || result.kind === 'damaged') {
+    return lookup_error(result)
+  }
+
+  if (result.kind === 'session_mismatch') {
+    return json_error(
+      409,
+      'session_mismatch',
+      'The proposal was made from a snapshot of another board. Take a snapshot of this board.',
+      { session: result.session },
+    )
+  }
 
   if (result.kind === 'invalid') {
     return json_error(400, 'invalid_proposal', `${result.path}: ${result.message}`, {
@@ -45,10 +64,18 @@ export async function cleaned_publish_route(request: Request, board: Board): Pro
 
   assert(result.kind === 'published', 'every publish result is handled')
   assert(result.revision > 0, 'a published revision is positive')
-  return Response.json(result, { headers: { 'cache-control': 'no-store' } })
+  const { kind, revision, shapes_count, title_applied } = result
+  return Response.json(
+    { kind, revision, shapes_count, title_applied },
+    { headers: { 'cache-control': 'no-store' } },
+  )
 }
 
-export async function cleaned_restore_route(request: Request, board: Board): Promise<Response> {
+export async function cleaned_restore_route(
+  request: Request,
+  registry: BoardRegistry,
+  id: string,
+): Promise<Response> {
   const body = await body_read(request, restore_request_size_bytes_max)
 
   if (!body.ok) return body.response
@@ -63,7 +90,14 @@ export async function cleaned_restore_route(request: Request, board: Board): Pro
     return json_error(400, 'invalid_request', 'Send {"base_revision": n, "revision": n|null}.')
   }
 
-  const result = board.cleaned_restore(value.base_revision as number, revision as number | null)
+  const lookup = registry.board(id)
+
+  if (lookup.kind !== 'board') return lookup_error(lookup)
+
+  const result = lookup.board.cleaned_restore(
+    value.base_revision as number,
+    revision as number | null,
+  )
 
   if (result.kind === 'revision_conflict') {
     return json_error(
@@ -81,6 +115,25 @@ export async function cleaned_restore_route(request: Request, board: Board): Pro
   assert(result.kind === 'restored', 'every restore result is handled')
   assert(result.revision > result.restored_from, 'a restore makes a newer revision')
   return Response.json(result, { headers: { 'cache-control': 'no-store' } })
+}
+
+// Why a named board cannot be served right now.
+export function lookup_error(lookup: BoardLookupFailure): Response {
+  if (lookup.kind === 'not_found') {
+    return json_error(404, 'unknown_session', 'No board has that session id. List the boards.')
+  }
+
+  if (lookup.kind === 'busy') {
+    return json_error(
+      503,
+      'boards_busy',
+      'Every board held open is in use. Close the page of a board you are done with.',
+    )
+  }
+
+  assert(lookup.kind === 'damaged', 'every lookup failure is handled')
+  assert(lookup.message.length > 0, 'damage is described')
+  return json_error(503, 'storage_damaged', `${lookup.message}. Nothing was overwritten.`)
 }
 
 export function json_error(
@@ -102,7 +155,7 @@ export function json_error(
 
 // JSON only: a browser cannot send it from another site without a preflight this server never
 // answers, so a page elsewhere on the network cannot publish through a visitor's browser.
-async function body_read(request: Request, size_bytes_max: number): Promise<Body> {
+export async function body_read(request: Request, size_bytes_max: number): Promise<Body> {
   assert(size_bytes_max > 0, 'a body limit is positive')
   assert(size_bytes_max <= image_size_bytes_max, 'a body limit fits the request limit')
   const refusal = headers_refusal(request, size_bytes_max)

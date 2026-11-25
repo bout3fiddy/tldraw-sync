@@ -4,7 +4,9 @@
 // silent about layout: copy every word and connection exactly, invent nothing, place nothing.
 
 import { assert } from '../shared/assert'
+import { board_default_id, board_id_pattern } from '../shared/board_session'
 import {
+  board_title_length_max,
   diagram_depth_max,
   diagram_edges_count_max,
   diagram_label_length_max,
@@ -31,6 +33,10 @@ export type PromptFacts = {
   readonly snapshot: string
   readonly base_revision: number
 
+  // The board session the sketch belongs to, and whether that board still needs a name.
+  readonly session: string
+  readonly title_wanted: boolean
+
   // How image pixels map onto page units, when the stage reported the bounds it rendered.
   readonly mapping: { readonly x0: number; readonly y0: number; readonly ppu: number } | null
 }
@@ -42,6 +48,8 @@ export const diagram_schema_text = `{
   "base_revision": <base_revision from cleanup-snapshot>,
   "agent": "<your name, optional>",
   "summary": "<one line, optional, at most ${proposal_summary_length_max} characters>",
+  "session": "<session from cleanup-snapshot>",
+  "title": "<a few words, optional: only when cleanup-snapshot asks for one>",
   "flow": "right" | "down",   optional, default "right": the way most connections run
   "nodes": [ 1 to ${diagram_nodes_count_max} of:
     {"id", "kind": "box" | "ellipse" | "text" | "group", "label": "<the exact words>",
@@ -64,6 +72,8 @@ export const diagram_schema_text = `{
 export function cleanup_prompt(facts: PromptFacts): string {
   assert(facts.base_revision >= 0, 'a base revision is never negative')
   assert(facts.snapshot.length > 0, 'a prompt names its snapshot')
+  assert(board_id_pattern.test(facts.session), 'a prompt names its board')
+  const flag = facts.session === board_default_id ? '' : ` --session ${facts.session}`
   const mapping =
     facts.mapping === null
       ? 'Stroke bounds are in page units.'
@@ -97,12 +107,26 @@ export function cleanup_prompt(facts: PromptFacts): string {
     `3. Write one JSON object to ${facts.diagram_path}, in this format:`,
     diagram_schema_text,
     `   Use "snapshot": "${facts.snapshot}" and "base_revision": ${facts.base_revision}.`,
-    `4. Run: tldraw-sync cleanup-publish --file ${facts.diagram_path} --json`,
+    `   Use "session": "${facts.session}": the diagram belongs to this board and no other.`,
+    ...title_lines(facts.title_wanted),
+    `4. Run: tldraw-sync cleanup-publish${flag} --file ${facts.diagram_path} --json`,
     '   It lays the diagram out, checks it, and publishes it to the Cleaned tab. On',
     '   "invalid_diagram", fix the field the message names and run it again. On',
-    '   "sketch_changed" or "revision_conflict", start again from',
-    '   tldraw-sync cleanup-snapshot --json. Never change the sketch itself.',
+    '   "sketch_changed", "revision_conflict" or "session_mismatch", start again from',
+    `   tldraw-sync cleanup-snapshot${flag} --json. Never change the sketch itself.`,
   ].join('\n')
+}
+
+// Asked only while the board has no name. The board applies it on an accepted publish, and
+// only if nobody named the board meanwhile: a person's name always wins.
+function title_lines(title_wanted: boolean): string[] {
+  if (!title_wanted) return []
+
+  return [
+    '   This board has no name yet. Also add "title": a few words, at most',
+    `   ${board_title_length_max} characters on one line, saying what the sketch is about, in its`,
+    '   own words where you can. It names the board unless someone names it first.',
+  ]
 }
 
 function round(value: number): string {
@@ -118,6 +142,7 @@ export const proposal_schema_text = `{
   "base_revision": <base_revision from cleanup-snapshot>,
   "agent": "<your name, optional>",
   "summary": "<one line, optional, at most ${proposal_summary_length_max} characters>",
+  "session": "<session from cleanup-snapshot; only the default board accepts none>",
   "shapes": [ 1 to ${proposal_shapes_count_max} of:
     {"kind": "text",      "id", "x", "y", "text", "w"?}
     {"kind": "rectangle", "id", "x", "y", "w", "h", "text"?}

@@ -9,10 +9,10 @@ import { Notice } from './notice'
 import { ToolStrip } from './tool_strip'
 import { use_view, ViewPanes, ViewTabs } from './views'
 
-export function DrawPage() {
-  const board = use_board_store('draw')
+export function DrawPage({ session }: { session: string }) {
+  const board = use_board_store('draw', session)
   const [view, view_choose] = use_view('draw')
-  const cleaned = use_cleaned()
+  const cleaned = use_cleaned(session)
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     return <Notice text="The board is not answering. Start it on your Mac, then reload." />

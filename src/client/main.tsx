@@ -1,22 +1,28 @@
-// One build, two pages. The address decides the role: the QR code leads to the draw page,
-// and the Mac opens the stage.
+// One build, two pages. The address decides the role and the board: the QR code leads to a
+// board's draw page, and the Mac opens its stage. `/` and `/draw` are the default board.
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import 'tldraw/tldraw.css'
 import { assert } from '../shared/assert'
-import { path_draw } from '../shared/constants'
-import { DrawPage } from './draw_page'
+import { board_default_id, board_page_parse } from '../shared/board_session'
+import { App } from './app'
 import { hidden_frames_install } from './hidden_frames'
-import { StagePage } from './stage_page'
 import './styles.css'
 
 const root = document.getElementById('root')
 assert(root !== null, 'the page has a root element')
 
-const drawing = window.location.pathname === path_draw
-document.documentElement.dataset.role = drawing ? 'draw' : 'stage'
+const page = board_page_parse(window.location.pathname) ?? {
+  id: board_default_id,
+  role: 'stage' as const,
+}
+document.documentElement.dataset.role = page.role
 // Only the stage: the iPad is in hand whenever it draws, and its pen path stays untouched.
-if (!drawing) hidden_frames_install()
+if (page.role === 'stage') hidden_frames_install()
 
-createRoot(root).render(<StrictMode>{drawing ? <DrawPage /> : <StagePage />}</StrictMode>)
+createRoot(root).render(
+  <StrictMode>
+    <App role={page.role} initial={page.id} />
+  </StrictMode>,
+)

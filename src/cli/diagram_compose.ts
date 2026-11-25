@@ -93,6 +93,10 @@ export async function diagram_compose(input: DiagramProposal): Promise<ComposeRe
     base_revision: input.base_revision,
     agent: input.agent,
     summary: input.summary,
+
+    // Only when given, so a diagram from before sessions composes byte for byte as it did.
+    ...(input.session === null ? {} : { session: input.session }),
+    ...(input.title === null ? {} : { title: input.title }),
     shapes,
     style: composed_style,
     diagram: input.diagram,

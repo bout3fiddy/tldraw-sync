@@ -22,7 +22,7 @@ import {
   type DiagramNode,
   type DiagramProposal,
 } from './cleanup_types'
-import { header_read, JsonReader, type Json } from './json_reader'
+import { header_keys, header_read, JsonReader, type Json } from './json_reader'
 
 export type DiagramParsed =
   { ok: true; proposal: DiagramProposal } | { ok: false; path: string; message: string }
@@ -32,16 +32,7 @@ export const diagram_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
 
 // The ids tldraw gives sketch shapes, which an agent may cite as the source of an item.
 const stroke_id_pattern = /^shape:[A-Za-z0-9_-]{1,64}$/
-const keys_root = [
-  'format',
-  'snapshot',
-  'base_revision',
-  'agent',
-  'summary',
-  'flow',
-  'nodes',
-  'edges',
-] as const
+const keys_root = [...header_keys, 'flow', 'nodes', 'edges'] as const
 const keys_body = ['flow', 'nodes', 'edges'] as const
 const keys_node = ['id', 'kind', 'label', 'parent', 'strokes'] as const
 const keys_edge = ['id', 'from', 'to', 'label', 'direction', 'strokes'] as const

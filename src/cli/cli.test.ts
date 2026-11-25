@@ -408,3 +408,84 @@ test('a semantic diagram publishes through the board and returns in a snapshot',
   expect(stale.json).toMatchObject({ code: 'sketch_changed' })
   expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1 })
 }, 60_000)
+
+// Boards as an agent addresses them: each command names its board with --session, writes where
+// no other board writes, and a proposal reaches only the board its snapshot came from.
+test('boards: list, create, rename, and --session on every board command', async () => {
+  const directory = directory_create()
+  const port = port_any()
+  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
+  const created = await cli(directory, 'session-create', '--json')
+  expect(created.json).toMatchObject({ code: 'session_created' })
+  const id = String((created.json.session as { id: string }).id)
+  expect(created.json.stage_url).toBe(`http://localhost:${port}/s/${id}`)
+  const listed = await cli(directory, 'session-list', '--json')
+  expect((listed.json.sessions as Array<{ id: string }>).map((session) => session.id)).toEqual([
+    'default', id,
+  ])
+
+  const board_status = async () => (await cli(directory, 'status', '--session', id, '--json')).json
+  await test_pen_draw(port, 'shape:one', async () => (await board_status()).shapes_count === 1, id)
+  expect(await status_json(directory)).toMatchObject({ session: 'default', shapes_count: 0 })
+  const { document_hash } = await board_status()
+  const query = `document_hash=${document_hash}&session=${id}&bounds=0,0,10,10`
+  await fetch(`http://127.0.0.1:${port}/api/drawing.png?${query}`, {
+    method: 'PUT', body: png_sized(148, 74) as Uint8Array<ArrayBuffer>,
+  })
+  await session_snapshot_and_publish(directory, id, String(document_hash))
+
+  // A person's name wins over the agent's title, and outlives a restart with everything else.
+  const renamed = await cli(
+    directory, 'session-rename', '--session', id, '--name', 'Mine', '--json',
+  )
+  expect(renamed.json).toMatchObject({ code: 'session_renamed', session: { name: 'Mine' } })
+  await cli(directory, 'stop', '--json')
+  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
+  expect(await board_status()).toMatchObject({
+    session: id, session_name: 'Mine', shapes_count: 1, cleaned_revision: 1,
+  })
+  expect(await status_json(directory)).toMatchObject({ shapes_count: 0, cleaned_revision: 0 })
+
+  const unknown = await cli(directory, 'status', '--session', 'ffffffffffffffff', '--json')
+  expect(unknown.json).toMatchObject({ code: 'unknown_session',
+    next_action: { action: 'run', command: 'tldraw-sync session-list --json' } })
+  expect((await cli(directory, 'fetch', '--session', '../x', '--json')).json.code)
+    .toBe('usage_error')
+  const restore = await cli(
+    directory, 'cleanup-restore', '--session', id, '--base-revision', '1', '--json',
+  )
+  expect(restore.json).toMatchObject({ code: 'nothing_to_restore' })
+}, 60_000)
+
+// A snapshot of one board, its output kept apart from the default board's, and its diagram
+// refused by the default board but published, and titled, on its own.
+async function session_snapshot_and_publish(directory: string, id: string, hash: string) {
+  const fetched = await cli(directory, 'fetch', '--session', id, '--no-open', '--json')
+  expect(fetched.json).toMatchObject({ code: 'image_saved', session: id, document_hash: hash })
+  expect(String(fetched.json.path)).toContain(path.join('tldraw-sync', 'sessions', id))
+  const snapshot = await cli(directory, 'cleanup-snapshot', '--session', id, '--no-open', '--json')
+  expect(snapshot.json).toMatchObject({ session: id, title_wanted: true, snapshot: hash })
+  expect(String(snapshot.json.path)).toContain(path.join('sessions', id, 'cleanup'))
+  expect(String(snapshot.json.prompt)).toContain(`"session": "${id}"`)
+  expect(String(snapshot.json.prompt)).toContain('no name yet')
+  expect(String(snapshot.json.publish_command)).toContain(`--session ${id}`)
+
+  const file = path.join(directory, 'board-proposal.json')
+  fs.writeFileSync(file, JSON.stringify({
+    ...proposal_example(hash, 0), session: id, title: 'Order flow',
+  }))
+  const wrong = await cli(directory, 'cleanup-publish', '--session', 'default', '--file', file,
+    '--json')
+  expect(wrong.exit_code).toBe(5)
+  expect(wrong.json).toMatchObject({ code: 'session_mismatch',
+    next_action: { action: 'run', command: 'tldraw-sync cleanup-snapshot --json' } })
+  const published = await cli(directory, 'cleanup-publish', '--file', file, '--json')
+  expect(published.json).toMatchObject({
+    code: 'published', session: id, revision: 1, title_applied: true,
+  })
+  const listed = await cli(directory, 'session-list', '--json')
+  expect(listed.json.sessions).toContainEqual(expect.objectContaining({
+    id, name: 'Order flow', named_by: 'agent',
+  }))
+  fs.rmSync(path.dirname(String(fetched.json.path)), { recursive: true, force: true })
+}

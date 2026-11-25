@@ -10,6 +10,9 @@ import {
 import { fetch_drawing, serve, start, status, stop, type Options } from './commands'
 import { commands, help_commands, help_top, type Command } from './help'
 import { failure, outcome_print, type Outcome, type OutputMode } from './output'
+import { session_create, session_list, session_rename } from './session_commands'
+import { board_id_pattern, board_name_clean } from '../shared/board_session'
+import { board_name_length_max } from '../shared/constants'
 import package_json from '../../package.json'
 
 const options_common = {
@@ -18,20 +21,29 @@ const options_common = {
   help: { type: 'boolean', short: 'h' },
 } as const
 
+// The board session a command works on. Without it, the default board.
+const option_session = { session: { type: 'string' } } as const
+
 const options_by_command = {
   start: { ...options_common, port: { type: 'string' }, 'no-open': { type: 'boolean' } },
-  fetch: { ...options_common, out: { type: 'string' }, 'no-open': { type: 'boolean' } },
-  status: options_common,
+  fetch: {
+    ...options_common, ...option_session, out: { type: 'string' }, 'no-open': { type: 'boolean' },
+  },
+  status: { ...options_common, ...option_session },
   stop: options_common,
   serve: { ...options_common, port: { type: 'string' } },
   'cleanup-snapshot': {
-    ...options_common, out: { type: 'string' }, 'no-open': { type: 'boolean' },
+    ...options_common, ...option_session, out: { type: 'string' }, 'no-open': { type: 'boolean' },
   },
   'cleanup-compose': { ...options_common, file: { type: 'string' }, out: { type: 'string' } },
-  'cleanup-publish': { ...options_common, file: { type: 'string' } },
+  'cleanup-publish': { ...options_common, ...option_session, file: { type: 'string' } },
   'cleanup-restore': {
-    ...options_common, 'base-revision': { type: 'string' }, revision: { type: 'string' },
+    ...options_common, ...option_session,
+    'base-revision': { type: 'string' }, revision: { type: 'string' },
   },
+  'session-list': options_common,
+  'session-create': { ...options_common, name: { type: 'string' } },
+  'session-rename': { ...options_common, ...option_session, name: { type: 'string' } },
 } as const
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -97,6 +109,18 @@ function arguments_parse(command: Command, rest: readonly string[]): Parsed {
     const message = 'A revision must be a whole number from 0 up.'
     return { outcome: usage_error(message, help_command) }
   }
+  const session = typeof values.session === 'string' ? values.session : null
+  if (session !== null && !board_id_pattern.test(session)) {
+    const message = '--session takes an id from session-list: 16 hex digits, or default.'
+    return { outcome: usage_error(message, help_command) }
+  }
+  const name = typeof values.name === 'string'
+    ? board_name_clean(values.name, board_name_length_max)
+    : null
+  if (typeof values.name === 'string' && name === null) {
+    const message = `--name takes 1 to ${board_name_length_max} characters on one line.`
+    return { outcome: usage_error(message, help_command) }
+  }
   const options: Options = {
     port,
     no_open: values['no-open'] === true,
@@ -105,6 +129,8 @@ function arguments_parse(command: Command, rest: readonly string[]): Parsed {
     file: typeof values.file === 'string' ? values.file : null,
     base_revision,
     revision,
+    session,
+    name,
   }
   assert(options.port === null || options.port > 0, 'a parsed port is positive')
   return { options, help: values.help === true }
@@ -123,7 +149,10 @@ function command_run(command: Command, options: Options): Promise<Outcome> {
   if (command === 'cleanup-publish') return cleanup_publish(options)
   if (command === 'cleanup-restore') return cleanup_restore(options)
   if (command === 'fetch') return fetch_drawing(options)
-  if (command === 'status') return status()
+  if (command === 'status') return status(options)
+  if (command === 'session-list') return session_list()
+  if (command === 'session-create') return session_create(options)
+  if (command === 'session-rename') return session_rename(options)
   if (command === 'stop') return stop()
   assert(command === 'serve', 'every command is dispatched')
   return serve(options)

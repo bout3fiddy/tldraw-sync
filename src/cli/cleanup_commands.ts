@@ -4,7 +4,6 @@
 // the sketch, and the composer lays out what the agent said it means.
 
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { assert } from '../shared/assert'
 import {
@@ -14,48 +13,66 @@ import {
   proposal_size_bytes_max,
   snapshot_attempts_count_max,
 } from '../shared/constants'
+import { board_default_id, board_id_pattern, board_query } from '../shared/board_session'
 import { diagram_format, type SketchSnapshot } from '../shared/cleanup_types'
 import { diagram_proposal_parse } from '../shared/diagram_parse'
-import { api_request, board_find, type ApiAnswer } from './board_client'
-import { data_directory } from './board_process'
+import { api_request, type ApiAnswer } from './board_client'
 import { cleanup_prompt } from './cleanup_prompt'
-import { image_current, not_running, type Options } from './commands'
+import {
+  command_session_list,
+  image_current,
+  not_running,
+  output_directory,
+  session_find,
+  session_flag,
+  type Options,
+} from './commands'
 import { diagram_compose, type Composed } from './diagram_compose'
 import { exit_codes, failure, success, type Outcome } from './output'
 import { file_read_bounded, stream_read_bounded } from './proposal_reader'
 import { strokes_summarize } from './stroke_summary'
 
-const command_snapshot = 'tldraw-sync cleanup-snapshot --json'
 const command_publish_help = 'tldraw-sync cleanup-publish --help'
 const command_compose_help = 'tldraw-sync cleanup-compose --help'
-const cleanup_directory_default = path.join(os.tmpdir(), 'tldraw-sync', 'cleanup')
+
+// The snapshot command for a board, as a next action names it.
+function command_snapshot(session: string): string {
+  return `tldraw-sync cleanup-snapshot${session_flag(session)} --json`
+}
+
+function cleanup_directory(session: string): string {
+  return path.join(output_directory(session), 'cleanup')
+}
 
 // The image and the records come from two requests. The records are served only for the
 // document the image showed, so a sketch that moves on in between is caught and read again.
 export async function cleanup_snapshot(options: Options): Promise<Outcome> {
+  const session = options.session ?? board_default_id
+
   for (let attempt = 0; attempt < snapshot_attempts_count_max; attempt += 1) {
     const image = await image_current(options)
 
     if ('kind' in image) return image
 
-    const query = `?document_hash=${image.document_hash}`
+    const query = `?document_hash=${image.document_hash}&${board_query(image.session)}`
     const answer = await api_request(image.port, `${path_sketch_json}${query}`, null)
 
     if (answer.kind === 'unreachable') return not_running({ kind: 'not_running' })
 
     if (answer.status === 409) continue
 
-    if (answer.status !== 200) return answer_failure(answer)
+    if (answer.status !== 200) return answer_failure(answer, image.session)
 
     const snapshot = answer.body as SketchSnapshot
     assert(snapshot.document_hash === image.document_hash, 'records match their image')
+    assert(snapshot.session === image.session, 'records are of the board asked for')
     return snapshot_save(image.bytes, snapshot, options.out)
   }
 
   return failure(
     'sketch_busy',
     'The sketch kept changing while the snapshot was taken.',
-    { action: 'retry', command: command_snapshot },
+    { action: 'retry', command: command_snapshot(session) },
     exit_codes.not_ready,
   )
 }
@@ -106,7 +123,7 @@ function snapshot_files_write(
 }
 
 function snapshot_save(png: Uint8Array, snapshot: SketchSnapshot, out: string | null): Outcome {
-  const directory = path.resolve(out ?? cleanup_directory_default)
+  const directory = path.resolve(out ?? cleanup_directory(snapshot.session))
   const { image_path, records_path, strokes_path, previous_path, strokes_truncated } =
     snapshot_files_write(directory, png, snapshot)
   const proposal_path = path.join(directory, 'proposal.json')
@@ -129,8 +146,14 @@ function snapshot_save(png: Uint8Array, snapshot: SketchSnapshot, out: string | 
     mapping,
     snapshot: snapshot.document_hash,
     base_revision: snapshot.cleaned_revision,
+    session: snapshot.session,
+    title_wanted: snapshot.title_wanted,
   })
+  const publish_flags = `${session_flag(snapshot.session)} --file ${diagram_path} --json`
+  const publish_command = `tldraw-sync cleanup-publish${publish_flags}`
   return success('snapshot_saved', `${prompt}\n`, image_path, {
+    session: snapshot.session,
+    title_wanted: snapshot.title_wanted,
     path: image_path,
     records_path,
     strokes_path,
@@ -146,7 +169,7 @@ function snapshot_save(png: Uint8Array, snapshot: SketchSnapshot, out: string | 
     image,
     mapping,
     prompt,
-    publish_command: `tldraw-sync cleanup-publish --file ${diagram_path} --json`,
+    publish_command,
   })
 }
 
@@ -173,12 +196,17 @@ export async function cleanup_compose(options: Options): Promise<Outcome> {
 
   if ('kind' in composed) return composed
 
-  const out = path.resolve(options.out ?? path.join(cleanup_directory_default, 'composed.json'))
+  // The composed proposal is filed with the board its diagram names.
+  const named = composed.proposal.session
+  const session =
+    typeof named === 'string' && board_id_pattern.test(named) ? named : board_default_id
+  const out = path.resolve(options.out ?? path.join(cleanup_directory(session), 'composed.json'))
   fs.mkdirSync(path.dirname(out), { recursive: true })
   file_write_atomic(out, new TextEncoder().encode(composed.text))
   const { proposal } = composed
   return success('composed', `Composed the diagram into ${out}.`, out, {
     path: out,
+    session,
     snapshot: proposal.snapshot,
     base_revision: proposal.base_revision,
     shapes_count: composed.shapes.length,
@@ -224,19 +252,27 @@ async function diagram_compose_text(text: string, help: string): Promise<Compose
   return result.composed
 }
 
-// A semantic diagram names its format; anything else goes to the board as a shape proposal,
-// which validates it.
-function diagram_is(text: string): boolean {
+// What the command line reads from an input before the board checks it whole: whether it is a
+// semantic diagram, which is laid out here first, and which board it says it was made from.
+function input_peek(text: string): { diagram: boolean; session: string | null } {
+  let json: unknown = null
+
   try {
-    const json = JSON.parse(text) as unknown
-    return (
-      typeof json === 'object' &&
-      json !== null &&
-      (json as Record<string, unknown>).format === diagram_format
-    )
+    json = JSON.parse(text) as unknown
   } catch {
-    return false
+    return { diagram: false, session: null }
   }
+
+  const object =
+    typeof json === 'object' && json !== null && !Array.isArray(json)
+      ? (json as Record<string, unknown>)
+      : {}
+  const session =
+    typeof object.session === 'string' && board_id_pattern.test(object.session)
+      ? object.session
+      : null
+  assert(session === null || session.length > 0, 'a peeked session is not empty')
+  return { diagram: object.format === diagram_format, session }
 }
 
 export async function cleanup_publish(options: Options): Promise<Outcome> {
@@ -253,20 +289,25 @@ export async function cleanup_publish(options: Options): Promise<Outcome> {
 
   // Layout happens here, before the board is asked anything: the board's publish stays one
   // synchronous check-and-swap against the snapshot and revision named in the diagram.
-  const composed = diagram_is(text) ? await diagram_compose_text(text, command_publish_help) : null
+  const peeked = input_peek(text)
+  const composed = peeked.diagram ? await diagram_compose_text(text, command_publish_help) : null
 
   if (composed !== null && 'kind' in composed) return composed
 
+  // Sent to the board named, or else the board the proposal says it came from. The board
+  // refuses a proposal made from another board's snapshot either way.
   const body = composed === null ? text : composed.text
-  const found = await board_find(data_directory())
+  const found = await session_find(options.session ?? peeked.session)
 
-  if (found.kind !== 'running') return not_running(found)
+  if ('kind' in found) return found
 
-  const answer = await api_request(found.status.port, path_cleaned_json, body)
+  const session = found.status.session
+  const pathname = `${path_cleaned_json}?${board_query(session)}`
+  const answer = await api_request(found.port, pathname, body)
 
   if (answer.kind === 'unreachable') return not_running({ kind: 'not_running' })
 
-  if (answer.status !== 200) return answer_failure(answer)
+  if (answer.status !== 200) return answer_failure(answer, session)
 
   const revision = Number(answer.body.revision)
   assert(Number.isInteger(revision) && revision > 0, 'a publish names its revision')
@@ -275,8 +316,10 @@ export async function cleanup_publish(options: Options): Promise<Outcome> {
     `Published cleaned revision ${revision}. See it on the Cleaned tab.`,
     String(revision),
     {
+      session,
       revision,
       shapes_count: answer.body.shapes_count,
+      title_applied: answer.body.title_applied === true,
       stage_url: found.status.stage_url,
     },
   )
@@ -290,16 +333,18 @@ export async function cleanup_restore(options: Options): Promise<Outcome> {
     })
   }
 
-  const found = await board_find(data_directory())
+  const found = await session_find(options.session)
 
-  if (found.kind !== 'running') return not_running(found)
+  if ('kind' in found) return found
 
+  const session = found.status.session
   const body = JSON.stringify({ base_revision: options.base_revision, revision: options.revision })
-  const answer = await api_request(found.status.port, path_cleaned_restore, body)
+  const pathname = `${path_cleaned_restore}?${board_query(session)}`
+  const answer = await api_request(found.port, pathname, body)
 
   if (answer.kind === 'unreachable') return not_running({ kind: 'not_running' })
 
-  if (answer.status !== 200) return answer_failure(answer)
+  if (answer.status !== 200) return answer_failure(answer, session)
 
   const revision = Number(answer.body.revision)
   const restored_from = Number(answer.body.restored_from)
@@ -308,7 +353,7 @@ export async function cleanup_restore(options: Options): Promise<Outcome> {
     'restored',
     `Restored revision ${restored_from} as revision ${revision}.`,
     String(revision),
-    { revision, restored_from },
+    { session, revision, restored_from },
   )
 }
 
@@ -348,7 +393,7 @@ async function input_read(
 }
 
 // The board's own error codes are passed on, each with what to do about it.
-function answer_failure(answer: Extract<ApiAnswer, { kind: 'answer' }>): Outcome {
+function answer_failure(answer: Extract<ApiAnswer, { kind: 'answer' }>, session: string): Outcome {
   const code = typeof answer.body.code === 'string' ? answer.body.code : 'request_failed'
   const message_raw =
     typeof answer.body.message === 'string'
@@ -356,8 +401,19 @@ function answer_failure(answer: Extract<ApiAnswer, { kind: 'answer' }>): Outcome
       : `The board answered ${answer.status}.`
   const message = message_raw.endsWith('.') ? message_raw : `${message_raw}.`
 
-  if (code === 'sketch_changed' || code === 'revision_conflict') {
-    return failure(code, message, { action: 'run', command: command_snapshot }, exit_codes.conflict)
+  // A proposal for another board is a conflict like a stale one: snapshot this board afresh.
+  if (code === 'sketch_changed' || code === 'revision_conflict' || code === 'session_mismatch') {
+    const command = command_snapshot(session)
+    return failure(code, message, { action: 'run', command }, exit_codes.conflict)
+  }
+
+  if (code === 'unknown_session') {
+    return failure(code, message, { action: 'run', command: command_session_list })
+  }
+
+  if (code === 'boards_busy') {
+    const command = command_snapshot(session)
+    return failure(code, message, { action: 'retry', command }, exit_codes.not_ready)
   }
 
   if (code === 'invalid_proposal' || code === 'invalid_json' || code === 'too_large') {
@@ -376,7 +432,7 @@ function answer_failure(answer: Extract<ApiAnswer, { kind: 'answer' }>): Outcome
 
   return failure(/^[a-z_]+$/.test(code) ? code : 'request_failed', message, {
     action: 'retry',
-    command: command_snapshot,
+    command: command_snapshot(session),
   })
 }
 

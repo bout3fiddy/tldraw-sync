@@ -12,6 +12,10 @@
   --rule-on-graphite: rgb(246 247 244 / 0.14);
   --warning: #e03131;
   --type: 'Avenir Next', 'Avenir', system-ui, sans-serif;
+  /* The list of boards: a shade under the paper, so it reads as the desk beside the sheet. */
+  --rail: #eceee9;
+  --rail-rule: rgb(30 34 39 / 0.12);
+  --rail-width: 272px;
 }
 
 html,
@@ -36,6 +40,19 @@ body,
 .board {
   position: absolute;
   inset: 0;
+}
+
+/* The shell: the board, and the list of boards beside or over it. Pinned open, the list takes
+   its width from the board; otherwise the board keeps the whole screen. */
+
+.shell,
+.shell__board {
+  position: absolute;
+  inset: 0;
+}
+
+.shell[data-rail='docked'] .shell__board {
+  left: var(--rail-width);
 }
 
 /* The stage is for looking at. Nothing on it responds to the pointer but its tabs. */
@@ -419,6 +436,269 @@ body,
   font-size: 1.0625rem;
 }
 
+/* The list of boards. Closed, it is one button in the corner, the same graphite as the strip. */
+
+.rail-toggle {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 14px);
+  left: calc(env(safe-area-inset-left) + 14px);
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: var(--graphite);
+  color: var(--paper-on-graphite);
+  box-shadow: 0 10px 28px -10px rgb(30 34 39 / 0.45);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.rail-toggle:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: -4px;
+}
+
+.rail-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 590;
+  background: rgb(30 34 39 / 0.16);
+}
+
+.rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(var(--rail-width), 86vw);
+  padding: calc(env(safe-area-inset-top) + 14px) 12px calc(env(safe-area-inset-bottom) + 14px)
+    calc(env(safe-area-inset-left) + 12px);
+  border-right: 1px solid var(--rail-rule);
+  background: var(--rail);
+  font-size: 0.9375rem;
+  touch-action: manipulation;
+}
+
+.shell[data-rail='open'] .rail {
+  box-shadow: 0 0 48px -12px rgb(30 34 39 / 0.4);
+  animation: rail-arrive 160ms ease-out both;
+}
+
+.rail__header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 46px;
+  padding-left: 6px;
+}
+
+.rail__title {
+  flex: 1;
+  margin: 0;
+  color: var(--graphite-soft);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rail__icon,
+.rail__rename {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--graphite-soft);
+  cursor: pointer;
+}
+
+.rail__icon svg,
+.rail__rename svg,
+.rail__new svg {
+  width: 20px;
+  height: 20px;
+}
+
+.rail__icon:hover,
+.rail__rename:hover {
+  background: rgb(30 34 39 / 0.06);
+  color: var(--graphite);
+}
+
+.rail__icon[aria-pressed='true'] {
+  background: var(--graphite);
+  color: var(--paper);
+}
+
+.rail__new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--rail-rule);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--graphite);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rail__new:hover {
+  border-color: rgb(30 34 39 / 0.28);
+}
+
+.rail__new:disabled {
+  color: var(--graphite-soft);
+  cursor: progress;
+}
+
+.rail__problem {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--graphite-soft);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.rail__nav {
+  flex: 1;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 0 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.rail__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+}
+
+.rail__item {
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+}
+
+.rail__item:hover {
+  background: rgb(30 34 39 / 0.04);
+}
+
+.rail__link {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 10px;
+  color: var(--graphite);
+  text-decoration: none;
+}
+
+/* The board on screen: the sheet itself, with a graphite edge. */
+.rail__link[aria-current='page'] {
+  background: var(--paper);
+  box-shadow: inset 3px 0 0 var(--graphite), 0 1px 2px rgb(30 34 39 / 0.08);
+  font-weight: 500;
+}
+
+.rail__name,
+.rail__meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail__name--untitled {
+  color: var(--graphite-soft);
+}
+
+.rail__meta {
+  margin-top: 1px;
+  color: var(--graphite-soft);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.rail__meta--problem {
+  color: var(--warning);
+}
+
+/* Rename stays quiet until the board is pointed at, focused or shown. */
+.rail__rename {
+  opacity: 0;
+}
+
+.rail__item:hover .rail__rename,
+.rail__item:focus-within .rail__rename,
+.rail__link[aria-current='page'] + .rail__rename {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .rail__rename {
+    opacity: 0.55;
+  }
+}
+
+.rail__rename-form {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail__input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--graphite);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--graphite);
+  font: inherit;
+  /* Sixteen pixels: Safari on the iPad zooms the page into any smaller field it focuses. */
+  font-size: 16px;
+  /* A name is typed and selected like any text, unlike the drawing surface around it. */
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: manipulation;
+}
+
+.rail__icon:focus-visible,
+.rail__rename:focus-visible,
+.rail__new:focus-visible,
+.rail__link:focus-visible,
+.rail__input:focus-visible {
+  outline: 2px solid var(--graphite);
+  outline-offset: 1px;
+}
+
+@keyframes rail-arrive {
+  from {
+    transform: translateX(-12px);
+    opacity: 0;
+  }
+}
+
 @keyframes guide-arrive {
   from {
     opacity: 0;
@@ -426,7 +706,8 @@ body,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .guide--card {
+  .guide--card,
+  .shell[data-rail='open'] .rail {
     animation: none;
   }
 

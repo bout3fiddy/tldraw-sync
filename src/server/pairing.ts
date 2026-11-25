@@ -19,7 +19,22 @@ export function pairing_create(host: string, port: number): Pairing {
   assert(port > 0, 'port is positive')
   assert(port < 65536, 'port fits sixteen bits')
 
-  const url = `http://${host}:${port}${path_draw}`
+  return pairing_encode(`http://${host}:${port}${path_draw}`)
+}
+
+// The pairing for one board's draw page: the same host and port, that board's path. The QR
+// code of the default board is the one it always was.
+export function pairing_board(pairing: Pairing, draw_path: string): Pairing {
+  assert(pairing.url.endsWith(path_draw), 'a pairing leads to a draw page')
+  assert(draw_path.startsWith('/'), 'a draw path is absolute')
+  if (draw_path === path_draw) return pairing
+
+  const origin = pairing.url.slice(0, pairing.url.length - path_draw.length)
+  return pairing_encode(`${origin}${draw_path}`)
+}
+
+function pairing_encode(url: string): Pairing {
+  assert(url.startsWith('http://'), 'a pairing is a plain-HTTP address')
   const code = qrcode(0, 'M')
   code.addData(url)
   code.make()

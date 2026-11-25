@@ -5,7 +5,11 @@ import { expect, test } from 'bun:test'
 import { createTLSchema } from '@tldraw/tlschema'
 import fixture from '../../tests/fixtures/nested_groups.diagram.json'
 import { diagram_compose } from '../cli/diagram_compose'
-import { proposal_shapes_count_max, proposal_text_length_max } from '../shared/constants'
+import {
+  board_title_length_max,
+  proposal_shapes_count_max,
+  proposal_text_length_max,
+} from '../shared/constants'
 import { diagram_proposal_parse } from '../shared/diagram_parse'
 import { Prng } from '../simulation/prng'
 import { proposal_example } from '../simulation/test_sketch'
@@ -269,7 +273,44 @@ const mistakes: Array<[string, (proposal: ReturnType<typeof base>) => void, stri
     },
     'shapes[4].to',
   ],
+  [
+    'session that no board could have',
+    (p) => {
+      ;(p as Record<string, unknown>).session = '../default'
+    },
+    'proposal.session',
+  ],
+  [
+    'title on two lines',
+    (p) => {
+      ;(p as Record<string, unknown>).title = 'Checkout\nflow'
+    },
+    'proposal.title',
+  ],
+  [
+    'title too long',
+    (p) => {
+      ;(p as Record<string, unknown>).title = 'x'.repeat(board_title_length_max + 1)
+    },
+    'proposal.title',
+  ],
+  [
+    'title of only spaces',
+    (p) => {
+      ;(p as Record<string, unknown>).title = '   '
+    },
+    'proposal.title',
+  ],
 ]
+
+test('a session and a title are read as given, and null reads as none', () => {
+  const bound = proposal_parse({ ...base(), session: 'default', title: ' Order  flow ' })
+  expect(bound.ok && [bound.proposal.session, bound.proposal.title]).toEqual([
+    'default', 'Order flow',
+  ])
+  const none = proposal_parse({ ...base(), session: null, title: null })
+  expect(none.ok && [none.proposal.session, none.proposal.title]).toEqual([null, null])
+})
 
 function base() {
   return proposal_example(snapshot, 0) as ReturnType<typeof proposal_example> & {

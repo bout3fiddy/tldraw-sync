@@ -12,6 +12,7 @@ import {
   type TLRecord,
 } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
+import { board_default_id, board_id_pattern } from '../shared/board_session'
 import type {
   CleanedDocument,
   CleanedStatus,
@@ -39,7 +40,13 @@ import { envelope_decode, envelope_encode, StorageError, type Disk } from './sto
 
 export { StorageError } from './storage'
 
-export type BoardEnvironment = { readonly time: Time; readonly disk: Disk }
+// `session` names the board session this board is. A board opened without one is the default
+// board, which is what every board was before there were sessions.
+export type BoardEnvironment = {
+  readonly time: Time
+  readonly disk: Disk
+  readonly session?: string
+}
 
 export type ImageResult =
   | { kind: 'image'; bytes: Uint8Array; document_hash: string }
@@ -65,6 +72,7 @@ export class Board {
   private clock_saved: number
   private closed = false
   private readonly room: TLSocketRoom<TLRecord>
+  readonly session: string
 
   private constructor(
     private readonly environment: BoardEnvironment,
@@ -78,6 +86,8 @@ export class Board {
       onDataChange: () => this.save_schedule(),
     })
     this.clock_saved = this.room.getCurrentDocumentClock()
+    this.session = environment.session ?? board_default_id
+    assert(board_id_pattern.test(this.session), 'the board session is well formed')
   }
 
   static open(environment: BoardEnvironment): Board {
@@ -139,6 +149,14 @@ export class Board {
       this.sessions.delete(session_id)
       this.room.handleSocketClose(session_id)
     }
+  }
+
+  // Nothing depends on this board being in memory: no page is connected and no fetch waits.
+  // An idle board can be closed to make room for another, and opened again unchanged.
+  idle(): boolean {
+    assert(!this.closed, 'board is open')
+    assert(this.waiters.length <= fetch_waiters_count_max, 'waiters are bounded')
+    return this.sessions.size === 0 && this.waiters.length === 0
   }
 
   sessions_count(role: Role): number {
@@ -251,7 +269,7 @@ export class Board {
 
   // The records of the sketch as it is, but only while it is the sketch the caller saw in its
   // image. Null means the sketch has moved on, and the caller must fetch the image again.
-  sketch_snapshot(hash: string): SketchSnapshot | null {
+  sketch_snapshot(hash: string): Omit<SketchSnapshot, 'title_wanted'> | null {
     assert(!this.closed, 'board is open')
     assert(document_hash_pattern.test(hash), 'hash is well formed')
     const state = this.document_state()
@@ -259,6 +277,7 @@ export class Board {
     const image = this.image
     const bounds = image !== null && image.document_hash === hash ? image.bounds : null
     return {
+      session: this.session,
       document_hash: hash,
       records: this.shapes(),
       bounds,
@@ -285,7 +304,8 @@ export class Board {
   cleaned_publish(input: unknown): PublishResult {
     assert(!this.closed, 'board is open')
     const before = this.document_state()
-    const result = this.cleaned.publish(input, before.hash, this.environment.time.now_ms())
+    const now_ms = this.environment.time.now_ms()
+    const result = this.cleaned.publish(input, before.hash, this.session, now_ms)
     // Pair assertion: publishing a cleanup leaves the human ink exactly as it was.
     const after = this.document_state()
     assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')

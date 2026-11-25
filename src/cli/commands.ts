@@ -4,8 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { assert } from '../shared/assert'
+import { board_default_id, board_id_pattern, board_query } from '../shared/board_session'
 import {
   fetch_attempts_count_max,
+  path_status,
   poll_interval_ms,
   port_default,
   stage_open_wait_ms_max,
@@ -16,7 +18,9 @@ import type { BoardStatus } from '../server/http'
 import { pairing_terminal } from '../server/pairing'
 import { server_run } from '../server/server_run'
 import { process_alive } from '../server/server_state'
-import { board_find, image_fetch, pairing_get, type Found } from './board_client'
+import {
+  api_request, board_find, image_fetch, pairing_get, type Found,
+} from './board_client'
 import {
   browser_open, build, build_stale, data_directory, installed, log_file, log_tail, port_any,
   port_free, repo_root, server_spawn, static_directory,
@@ -31,13 +35,68 @@ export type Options = {
   readonly file: string | null
   readonly base_revision: number | null
   readonly revision: number | null
+  // The board session a command is about: null for the default board. A name for a board.
+  readonly session: string | null
+  readonly name: string | null
   // Whether a person is reading: only then is the QR code worth printing.
   readonly terminal: boolean
 }
 
+// A running board, and the status of the one board session a command is about.
+export type SessionFound = { port: number; status: BoardStatus }
+
 const command_start = 'tldraw-sync start'
 const command_fetch = 'tldraw-sync fetch'
 const command_stop = 'tldraw-sync stop'
+export const command_session_list = 'tldraw-sync session-list --json'
+const output_directory_root = path.join(os.tmpdir(), 'tldraw-sync')
+
+// What to add to a suggested command so it stays on the same board: nothing for the default.
+export function session_flag(session: string): string {
+  assert(board_id_pattern.test(session), 'a board id is well formed')
+  return session === board_default_id ? '' : ` --session ${session}`
+}
+
+// Where a command writes for a board when it is not told: the default board keeps the paths it
+// always had, and every other board has a folder of its own, so two boards never overwrite each
+// other's image or snapshot.
+export function output_directory(session: string): string {
+  assert(board_id_pattern.test(session), 'a board id is well formed')
+  const directory = session === board_default_id
+    ? output_directory_root
+    : path.join(output_directory_root, 'sessions', session)
+  assert(path.isAbsolute(directory), 'an output directory is absolute')
+  return directory
+}
+
+// Finds the running board and the status of the named session, or the outcome that says why
+// there is none. The default board's status is the one the board reports anyway.
+export async function session_find(session: string | null): Promise<SessionFound | Outcome> {
+  const found = await board_find(data_directory())
+  if (found.kind !== 'running') return not_running(found)
+
+  const port = found.status.port
+  if (session === null || session === board_default_id) return { port, status: found.status }
+
+  const answer = await api_request(port, `${path_status}?${board_query(session)}`, null)
+  if (answer.kind === 'unreachable') return not_running({ kind: 'not_running' })
+  if (answer.status === 404) return session_unknown(session)
+  if (answer.status !== 200) {
+    return failure('board_unavailable', `The board ${session} cannot be opened right now.`,
+      { action: 'retry', command: `tldraw-sync status --session ${session} --json` },
+      exit_codes.not_ready)
+  }
+
+  const status = answer.body as unknown as BoardStatus
+  assert(status.session === session, 'the status is of the board asked for')
+  return { port, status }
+}
+
+export function session_unknown(session: string): Outcome {
+  assert(session.length > 0, 'an unknown session is named')
+  return failure('unknown_session', `No board has the session id ${session}.`,
+    { action: 'run', command: command_session_list })
+}
 
 export async function start(options: Options): Promise<Outcome> {
   const directory = data_directory()
@@ -150,12 +209,14 @@ export function not_running(found: Found): Outcome {
     { action: 'run', command: command_start }, exit_codes.not_running)
 }
 
-export async function status(): Promise<Outcome> {
-  const found = await board_find(data_directory())
-  if (found.kind !== 'running') return not_running(found)
+export async function status(options: Options): Promise<Outcome> {
+  const found = await session_find(options.session)
+  if ('kind' in found) return found
   const board = found.status
+  const name = board.session_name === null ? 'untitled' : `“${board.session_name}”`
   const human = [
     `The board is running on port ${board.port} (pid ${board.pid}).`,
+    `  Board     ${board.session} (${name})`,
     `  Draw      ${board.draw_url}  ${board.pen_connected ? 'iPad connected' : 'no iPad'}`,
     `  Present   ${board.stage_url}  ${board.stage_connected ? 'open' : 'not open'}`,
     `  Drawing   ${board.shapes_count} ${board.shapes_count === 1 ? 'shape' : 'shapes'}`,
@@ -192,22 +253,30 @@ export async function fetch_drawing(options: Options): Promise<Outcome> {
   const image = await image_current(options)
   if ('kind' in image) return image
   assert(image.bytes.byteLength > 0, 'a fetch ends in an image or an outcome')
-  return image_save(image.bytes, image.document_hash, options.out)
+  const out = options.out ?? path.join(output_directory(image.session), 'drawing.png')
+  return image_save(image.bytes, image.document_hash, image.session, out)
 }
 
-export type ImageCurrent = { bytes: Uint8Array; document_hash: string; port: number }
+export type ImageCurrent = {
+  bytes: Uint8Array
+  document_hash: string
+  port: number
+  session: string
+}
 
 // The image of the drawing as it is now, opening the Mac page to render it if needed.
 export async function image_current(options: Options): Promise<ImageCurrent | Outcome> {
-  const found = await board_find(data_directory())
-  if (found.kind !== 'running') return not_running(found)
-  const port = found.status.port
+  const found = await session_find(options.session)
+  if ('kind' in found) return found
+  const { port } = found
+  const session = found.status.session
+  const retry = `${command_fetch}${session_flag(session)} --json`
   let stage_opened = false
 
   for (let attempt = 0; attempt < fetch_attempts_count_max; attempt += 1) {
-    const image = await image_fetch(port)
+    const image = await image_fetch(port, session)
     if (image.kind === 'image') {
-      return { bytes: image.bytes, document_hash: image.document_hash, port }
+      return { bytes: image.bytes, document_hash: image.document_hash, port, session }
     }
     if (image.kind === 'unreachable') return not_running({ kind: 'not_running' })
     if (image.kind === 'empty') {
@@ -215,9 +284,9 @@ export async function image_current(options: Options): Promise<ImageCurrent | Ou
         { action: 'ask_human', message: 'Draw something on the iPad, then ask again.' },
         exit_codes.board_empty)
     }
-    // The image is behind the drawing. Without the Mac page, nothing will render it.
-    const board = await board_find(data_directory())
-    if (board.kind !== 'running') return not_running(board)
+    // The image is behind the drawing. Without the board's Mac page, nothing will render it.
+    const board = await session_find(session)
+    if ('kind' in board) return board
     if (!board.status.stage_connected) {
       const opened = await stage_open(board.status, options.no_open, stage_opened)
       if (opened !== null) return opened
@@ -225,7 +294,7 @@ export async function image_current(options: Options): Promise<ImageCurrent | Ou
     }
   }
   return failure('image_not_ready', 'The Mac page did not render the drawing in time.',
-    { action: 'retry', command: `${command_fetch} --json` }, exit_codes.not_ready)
+    { action: 'retry', command: retry }, exit_codes.not_ready)
 }
 
 // Opens the Mac page and waits for it to connect. Returns a failure, or null once connected.
@@ -245,8 +314,8 @@ async function stage_open(
       { action: 'ask_human', message: ask }, exit_codes.not_ready)
   }
   for (let waited_ms = 0; waited_ms < stage_open_wait_ms_max; waited_ms += poll_interval_ms) {
-    const found = await board_find(data_directory())
-    if (found.kind !== 'running') return not_running(found)
+    const found = await session_find(board.session)
+    if ('kind' in found) return found
     if (found.status.stage_connected) return null
     await Bun.sleep(poll_interval_ms)
   }
@@ -254,9 +323,15 @@ async function stage_open(
     { action: 'ask_human', message: ask }, exit_codes.not_ready)
 }
 
-function image_save(bytes: Uint8Array, document_hash: string, out: string | null): Outcome {
+function image_save(
+  bytes: Uint8Array,
+  document_hash: string,
+  session: string,
+  out: string,
+): Outcome {
   assert(bytes.byteLength > 0, 'an image is never empty')
-  const file = path.resolve(out ?? path.join(os.tmpdir(), 'tldraw-sync', 'drawing.png'))
+  assert(out.length > 0, 'an image is saved somewhere')
+  const file = path.resolve(out)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   // Written aside and renamed, so a reader never sees half an image.
   const partial = `${file}.${process.pid}.partial`
@@ -265,6 +340,7 @@ function image_save(bytes: Uint8Array, document_hash: string, out: string | null
   assert(fs.statSync(file).size === bytes.byteLength, 'the saved image is complete')
   return success('image_saved', `Saved the drawing to ${file}`, file, {
     path: file,
+    session,
     document_hash,
     bytes_count: bytes.byteLength,
   })

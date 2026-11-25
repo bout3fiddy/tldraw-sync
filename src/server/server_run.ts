@@ -6,7 +6,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { assert } from '../shared/assert'
 import { time_real } from '../shared/time'
-import { Board, StorageError } from './board'
+import { StorageError } from './board'
+import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
 import { pairing_create, pairing_host, type Pairing } from './pairing'
 import { server_state_claim, server_state_release, type ServerState } from './server_state'
@@ -47,9 +48,15 @@ export function server_run(options: ServerRunOptions): ServerRunResult {
 
 function board_serve(options: ServerRunOptions): ServerRunResult {
   assert(Number.isInteger(options.port), 'port is an integer')
-  let board: Board
+  let registry: BoardRegistry
   try {
-    board = Board.open({ time: time_real, disk: disk_open(options.data_directory) })
+    registry = BoardRegistry.open({
+      time: time_real,
+      disk: disk_open(options.data_directory),
+      // Each other board in a directory of its own, made when the board first opens.
+      disk_board: (id) => disk_open(path.join(options.data_directory, 'sessions', id)),
+      id_create: board_id_random,
+    })
   } catch (error) {
     if (!(error instanceof StorageError)) throw error
     return { kind: 'storage_damaged', message: error.message }
@@ -58,7 +65,7 @@ function board_serve(options: ServerRunOptions): ServerRunResult {
   const pairing = pairing_create(pairing_host(), options.port)
   try {
     server_start({
-      board,
+      registry,
       port: options.port,
       // All interfaces: the iPad reaches the board over the local network.
       hostname: '0.0.0.0',
@@ -72,17 +79,25 @@ function board_serve(options: ServerRunOptions): ServerRunResult {
     })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error
-    board.close()
+    registry.close()
     return { kind: 'port_busy' }
   }
 
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     process.on(signal, () => {
-      board.close()
+      registry.close()
       server_state_release(options.data_directory)
       process.exit(0)
     })
   }
   assert(pairing.url.includes(`:${options.port}/`), 'the QR code carries the real port')
   return { kind: 'serving', pairing, port: options.port }
+}
+
+// Sixty-four random bits, so an id cannot be guessed from another or from the time.
+function board_id_random(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(8))
+  const id = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  assert(id.length === 16, 'an id is sixteen hex digits')
+  return id
 }

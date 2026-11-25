@@ -121,6 +121,11 @@ export type Proposal = {
   base_revision: number
   agent: string
   summary: string
+
+  // The board session the snapshot came from (null: a proposal from before sessions), and a
+  // title offered for a board nobody has named yet.
+  session: string | null
+  title: string | null
   shapes: ProposalShape[]
   style: ProposalStyle
 
@@ -171,6 +176,8 @@ export type DiagramProposal = {
   base_revision: number
   agent: string
   summary: string
+  session: string | null
+  title: string | null
   diagram: Diagram
 }
 
@@ -209,6 +216,11 @@ export type CleanedDocument = CleanedStatus & { records: Array<{ id: string; typ
 export type SketchBounds = { x: number; y: number; w: number; h: number }
 
 export type SketchSnapshot = {
+
+  // The board session the sketch belongs to, and whether that board still has no name, so
+  // the agent is asked for a title. Proposals made from this snapshot name the same session.
+  session: string
+  title_wanted: boolean
   document_hash: string
   records: Array<{ id: string; typeName: string }>
   bounds: SketchBounds | null

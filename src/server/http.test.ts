@@ -7,14 +7,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { image_size_bytes_max } from '../shared/constants'
 import { time_real } from '../shared/time'
-import { SimulatedDisk } from '../simulation/simulated_disk'
+import { board_default_id } from '../shared/board_session'
+import { registry_environment_simulated } from '../simulation/simulated_registry'
 import { test_pen_draw } from '../simulation/test_pen'
-import { Board } from './board'
+import type { Board } from './board'
+import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
 import { pairing_create } from './pairing'
 
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'board-static-'))
+let registry: BoardRegistry
 let board: Board
 let server: ReturnType<typeof server_start>
 let origin: string
@@ -25,9 +28,10 @@ beforeAll(() => {
   fs.writeFileSync(path.join(directory, 'assets', 'app.js'), 'export {}')
   fs.writeFileSync(path.join(os.tmpdir(), 'board-secret.txt'), 'secret')
 
-  board = Board.open({ time: time_real, disk: new SimulatedDisk() })
+  registry = BoardRegistry.open(registry_environment_simulated(time_real))
+  board = registry.board_open(board_default_id) as Board
   server = server_start({
-    board,
+    registry,
     port: 0,
     hostname: '127.0.0.1',
     static_files: static_files_load(directory),
@@ -41,7 +45,7 @@ beforeAll(() => {
 
 afterAll(() => {
   server.stop(true)
-  board.destroy()
+  registry.destroy()
   fs.rmSync(directory, { recursive: true })
 })
 

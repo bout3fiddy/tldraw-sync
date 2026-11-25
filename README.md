@@ -73,11 +73,22 @@ and a coding agent that can run commands and read images, such as Claude Code or
 
 To update, stop the board, run `git pull` in the clone, then start it again.
 
+## Several boards
+
+Keep a separate board for each topic. Tap the **Boards** button in the top-left corner to open the
+list, start a **New board**, switch between boards, or rename one. Each board has its own sketch,
+cleanup history, QR code and address, so you can open two boards side by side in separate browser
+windows. The board you had before is still there, at the same addresses.
+
+A new board is untitled until you name it. If you haven't named it by the first cleanup, your agent
+suggests a short title. A name you give always wins. Agents find boards with
+`tldraw-sync session-list` and pick one with `--session <id>`.
+
 ## What runs where
 
 The board runs entirely on your Mac and serves your iPad over the local network. It has no cloud
 service, no account and no model of its own. Your drawing is saved in `data/` inside the clone,
-unless you set `BOARD_DATA_DIR`.
+unless you set `BOARD_DATA_DIR`. Each extra board gets its own folder in `data/sessions/`.
 
 The cleanup is done by your agent, not by the board. The agent reads an image of your sketch, writes
 the tidy diagram as plain data, and hands it back to the board, which checks it before showing it.

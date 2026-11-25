@@ -44,7 +44,12 @@ export function CleanedPane({ cleaned }: { cleaned: CleanedState }) {
   return (
     <div className="cleaned">
       <CleanedCanvas key={document.revision} document={document} />
-      <CleanedBar status={status} shown={document.current} onRestored={cleaned.refresh} />
+      <CleanedBar
+        session={cleaned.session}
+        status={status}
+        shown={document.current}
+        onRestored={cleaned.refresh}
+      />
     </div>
   )
 }
@@ -84,9 +89,14 @@ function cleaned_mount(editor: Editor): () => void {
   return fit_start(editor, fit_inset_cleaned_px)
 }
 
-type CleanedBarProps = { status: CleanedStatus; shown: CleanedProvenance; onRestored: () => void }
+type CleanedBarProps = {
+  session: string
+  status: CleanedStatus
+  shown: CleanedProvenance
+  onRestored: () => void
+}
 
-function CleanedBar({ status, shown, onRestored }: CleanedBarProps) {
+function CleanedBar({ session, status, shown, onRestored }: CleanedBarProps) {
   const published = new Date(shown.published_at_ms).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -104,13 +114,15 @@ function CleanedBar({ status, shown, onRestored }: CleanedBarProps) {
           The sketch has changed since this cleanup.
         </p>
       )}
-      <RestoreButton status={status} onRestored={onRestored} />
+      <RestoreButton session={session} status={status} onRestored={onRestored} />
     </aside>
   )
 }
 
 // Two taps, like Clear: the first arms, the second restores the most recent earlier revision.
-function RestoreButton({ status, onRestored }: { status: CleanedStatus; onRestored: () => void }) {
+type RestoreButtonProps = { session: string; status: CleanedStatus; onRestored: () => void }
+
+function RestoreButton({ session, status, onRestored }: RestoreButtonProps) {
   const [armed, armed_set] = useState(false)
   const [outcome, outcome_set] = useState<RestoreOutcome | null>(null)
   const previous = status.history.at(-1)
@@ -128,7 +140,7 @@ function RestoreButton({ status, onRestored }: { status: CleanedStatus; onRestor
     if (!armed) return armed_set(true)
 
     armed_set(false)
-    const result = await cleaned_restore(status.revision, previous.revision)
+    const result = await cleaned_restore(session, status.revision, previous.revision)
     outcome_set(result)
     onRestored()
   }

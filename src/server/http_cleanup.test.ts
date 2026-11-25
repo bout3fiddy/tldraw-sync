@@ -13,10 +13,12 @@ import { diagram_compose } from '../cli/diagram_compose'
 import { proposal_size_bytes_max } from '../shared/constants'
 import { diagram_proposal_parse } from '../shared/diagram_parse'
 import { time_real } from '../shared/time'
-import { SimulatedDisk } from '../simulation/simulated_disk'
+import { board_default_id } from '../shared/board_session'
+import { registry_environment_simulated } from '../simulation/simulated_registry'
 import { test_pen_draw } from '../simulation/test_pen'
 import { proposal_example } from '../simulation/test_sketch'
-import { Board } from './board'
+import type { Board } from './board'
+import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
 import { cleaned_publish_route } from './http_cleanup'
 import { pairing_create } from './pairing'
@@ -26,6 +28,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'board-cleanup-static-')
 
 // Enough refusals in a row that a connection left unusable by one would be reused by another.
 const refusal_rounds_count = 8
+let registry: BoardRegistry
 let board: Board
 let server: ReturnType<typeof server_start>
 let origin: string
@@ -39,9 +42,10 @@ afterAll(() => {
 })
 
 beforeEach(async () => {
-  board = Board.open({ time: time_real, disk: new SimulatedDisk() })
+  registry = BoardRegistry.open(registry_environment_simulated(time_real))
+  board = registry.board_open(board_default_id) as Board
   server = server_start({
-    board,
+    registry,
     port: 0,
     hostname: '127.0.0.1',
     static_files: static_files_load(directory),
@@ -56,7 +60,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   server.stop(true)
-  board.destroy()
+  registry.destroy()
 })
 
 const post = (pathname: string, body: unknown, content_type = 'application/json') =>
@@ -138,7 +142,9 @@ test('a composed diagram publishes over HTTP and comes back with the sketch reco
   expect(await revision_read()).toBe(0)
 
   const published = await post('/api/cleaned.json', composition.composed.text)
-  expect(await json(published)).toEqual({ kind: 'published', revision: 1, shapes_count: 20 })
+  expect(await json(published)).toEqual({
+    kind: 'published', revision: 1, shapes_count: 20, title_applied: false,
+  })
   const sketch = await json(await fetch(`${origin}/api/sketch.json?document_hash=${hash}`))
   expect(sketch.diagram_previous).toEqual(parsed.proposal.diagram)
   expect(board.document_state().hash).toBe(hash)
@@ -163,7 +169,9 @@ test('a publish is checked whole, and refused bodies change nothing', async () =
 
   const published = await post('/api/cleaned.json', valid)
   expect(published.status).toBe(200)
-  expect(await json(published)).toEqual({ kind: 'published', revision: 1, shapes_count: 4 })
+  expect(await json(published)).toEqual({
+    kind: 'published', revision: 1, shapes_count: 4, title_applied: false,
+  })
   const conflict = await post('/api/cleaned.json', valid)
   expect(conflict.status).toBe(409)
   expect(await json(conflict)).toMatchObject({ code: 'revision_conflict', revision: 1 })
@@ -192,7 +200,7 @@ test('a refused body is received before its refusal, so the next request is answ
     body: oversized,
   })
   expect(request.bodyUsed).toBe(false)
-  expect((await cleaned_publish_route(request, board)).status).toBe(415)
+  expect((await cleaned_publish_route(request, registry, board_default_id)).status).toBe(415)
   expect(request.bodyUsed).toBe(true)
 
   // And the board still publishes afterwards, on whichever connection it is given.

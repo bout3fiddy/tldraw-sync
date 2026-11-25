@@ -8,6 +8,7 @@ import {
   image_scale_max,
   path_drawing_png,
 } from '../shared/constants'
+import { board_query } from '../shared/board_session'
 import { time_real } from '../shared/time'
 import { drawing_uploader_create } from './drawing_uploader'
 
@@ -20,14 +21,15 @@ export const fit_inset_cleaned_px = 48
 const fit_zoom_max = 2
 const fit_duration_ms = 180
 
-export function stage_mount(editor: Editor): () => void {
+// `session` is the board this stage presents, and renders the image of.
+export function stage_mount(editor: Editor, session: string): () => void {
   editor.user.updateUserPreferences({ colorScheme: 'light' })
   editor.updateInstanceState({ isReadonly: true })
   // Locked against the viewer. The fit below moves the camera with `force`.
   editor.setCameraOptions({ isLocked: true })
 
   const fit_stop = fit_start(editor, fit_inset_px)
-  const upload_stop = upload_start(editor)
+  const upload_stop = upload_start(editor, session)
   return () => {
     fit_stop()
     upload_stop()
@@ -69,7 +71,7 @@ export function fit_start(editor: Editor, inset_px: number): () => void {
   }
 }
 
-function upload_start(editor: Editor): () => void {
+function upload_start(editor: Editor, session: string): () => void {
   const uploader = drawing_uploader_create({
     time: time_real,
     records: () => {
@@ -83,7 +85,8 @@ function upload_start(editor: Editor): () => void {
       const bounds = editor.getCurrentPageBounds()
       const bounds_query = bounds === undefined ? ''
         : `&bounds=${[bounds.x, bounds.y, bounds.w, bounds.h].map(rounded).join(',')}`
-      const response = await fetch(`${path_drawing_png}?document_hash=${hash}${bounds_query}`, {
+      const query = `document_hash=${hash}&${board_query(session)}${bounds_query}`
+      const response = await fetch(`${path_drawing_png}?${query}`, {
         method: 'PUT',
         headers: { 'content-type': 'image/png' },
         body: bytes as Uint8Array<ArrayBuffer>,

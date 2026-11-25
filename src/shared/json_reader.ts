@@ -3,14 +3,33 @@
 // and the caller reports that problem as an ordinary error.
 
 import { assert } from './assert'
-import { document_hash_pattern, proposal_summary_length_max } from './constants'
+import { board_id_pattern, board_name_clean } from './board_session'
+import {
+  board_title_length_max,
+  document_hash_pattern,
+  proposal_summary_length_max,
+} from './constants'
 
 export type Json = Record<string, unknown>
 
 export type Problem = { path: string; message: string }
 
 // Every proposal and diagram starts with the same header: what it was made from, and by whom.
-export type Header = { snapshot: string; base_revision: number; agent: string; summary: string }
+// The board session is the one the snapshot was taken from; null only in a proposal written
+// before sessions, which only the default board accepts. A title is offered for a board that
+// has no name yet.
+export type Header = {
+  snapshot: string
+  base_revision: number
+  agent: string
+  summary: string
+  session: string | null
+  title: string | null
+}
+
+export const header_keys = [
+  'format', 'snapshot', 'base_revision', 'agent', 'summary', 'session', 'title',
+] as const
 
 const agent_pattern = /^[A-Za-z0-9 ._:/-]{1,64}$/
 const agent_default = 'external agent'
@@ -139,5 +158,37 @@ export function header_read(reader: JsonReader, root: Json, path: string): Heade
 
   const summary = reader.text(root, 'summary', path, proposal_summary_length_max, '')
   assert(summary.length <= proposal_summary_length_max, 'a summary is bounded')
-  return { snapshot, base_revision, agent, summary }
+  const session = header_session_read(reader, root, path)
+  const title = header_title_read(reader, root, path)
+  return { snapshot, base_revision, agent, summary, session, title }
+}
+
+// Null reads as absent, as a parsed header writes it, so a read header can be written back.
+function header_session_read(reader: JsonReader, root: Json, path: string): string | null {
+  if (root.session === undefined || root.session === null) return null
+
+  const session = reader.text(root, 'session', path, 16, null)
+
+  if (!board_id_pattern.test(session)) {
+    reader.fail(`${path}.session`, 'Expected the session from cleanup-snapshot.')
+    return null
+  }
+
+  assert(session.length > 0, 'a read session is not empty')
+  return session
+}
+
+function header_title_read(reader: JsonReader, root: Json, path: string): string | null {
+  if (root.title === undefined || root.title === null) return null
+
+  const title = board_name_clean(root.title, board_title_length_max)
+
+  if (title === null) {
+    const message = `Expected a title of 1 to ${board_title_length_max} characters on one line.`
+    reader.fail(`${path}.title`, message)
+    return null
+  }
+
+  assert(title.length <= board_title_length_max, 'a read title is bounded')
+  return title
 }

@@ -40,7 +40,7 @@ import {
 } from '../shared/cleanup_types'
 import { composition_check } from '../shared/diagram_check'
 import { diagram_read } from '../shared/diagram_parse'
-import { header_read, JsonReader, type Json } from '../shared/json_reader'
+import { header_keys, header_read, JsonReader, type Json } from '../shared/json_reader'
 import { style_font } from '../shared/text_measure'
 
 export type ProposalParsed =
@@ -48,7 +48,7 @@ export type ProposalParsed =
 
 const schema = createTLSchema()
 const shape_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
-const keys_root_v1 = ['format', 'snapshot', 'base_revision', 'agent', 'summary', 'shapes'] as const
+const keys_root_v1 = [...header_keys, 'shapes'] as const
 const keys_root_v2 = [...keys_root_v1, 'style', 'diagram'] as const
 const keys_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
   text: ['kind', 'id', 'x', 'y', 'text', 'w', 'color', 'size'],

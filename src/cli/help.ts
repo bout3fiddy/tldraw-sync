@@ -1,8 +1,7 @@
 // The help is the documentation, for people and for agents alike. It is layered: the top level
 // says what the board is and how to get the drawing; each command's help has the detail.
 
-import { port_default } from '../shared/constants'
-import { proposal_size_bytes_max } from '../shared/constants'
+import { board_name_length_max, port_default, proposal_size_bytes_max } from '../shared/constants'
 import { diagram_schema_text, proposal_schema_text, proposal_subset_text } from './cleanup_prompt'
 
 export const commands = [
@@ -15,7 +14,14 @@ export const commands = [
   'cleanup-compose',
   'cleanup-publish',
   'cleanup-restore',
+  'session-list',
+  'session-create',
+  'session-rename',
 ] as const
+
+// Every board command takes this; it is described once here and named in each command's help.
+const session_option_text =
+  '  --session <id>  Work on this board (see session-list); without it, the default board'
 export type Command = (typeof commands)[number]
 
 export const help_top = `tldraw-sync: draw on an iPad, see it on the Mac, let agents fetch it.
@@ -35,11 +41,17 @@ Cleanup (an external agent reads the sketch; the tool typesets it on a separate 
   cleanup-publish   Lay out and publish a semantic diagram as the new cleaned diagram
   cleanup-restore   Bring back an earlier cleaned diagram
 
+Boards (each is a separate board, listed in the side rail and opened by its own address):
+  session-list    List the boards, their ids, names and addresses
+  session-create  Make a new, empty board
+  session-rename  Rename a board
+
 Options:
   --json       Print one JSON object on stdout (every command)
   --quiet, -q  Print one bare value on stdout, for piping
   --help, -h   Show help for a command
   --version    Show the version
+  --session    The board a board command works on (default: the default board)
 
 For agents:
   The user sketches on an iPad while talking to you. When they mention their drawing,
@@ -55,6 +67,10 @@ For agents:
     tldraw-sync cleanup-snapshot --json
 
   and follow its "prompt". More: tldraw-sync cleanup-snapshot --help
+
+  The user may keep several boards. When they name one, find its id with
+  tldraw-sync session-list --json and add --session <id> to each command. Without it, every
+  command works on the default board.
 
 Exit codes:
   0  success
@@ -116,7 +132,8 @@ Examples:
   tldraw-sync start --json
   tldraw-sync start --port 8080`,
 
-  fetch: `Usage: tldraw-sync fetch [--out <file>] [--no-open] [--json | --quiet]
+  fetch: `Usage: tldraw-sync fetch [--session <id>] [--out <file>] [--no-open]
+                         [--json | --quiet]
 
 Saves the current drawing as a PNG and prints where. The image always shows the drawing as it
 is now: if it has just changed, fetch waits for the new image rather than return an old one.
@@ -125,14 +142,15 @@ The Mac page renders the image. If the drawing has changed and that page is not 
 opens it in the default browser and waits for it.
 
 Options:
+${session_option_text}
   --out <file>  Where to save the PNG (default: tldraw-sync/drawing.png in the system's
-                temporary folder)
+                temporary folder; tldraw-sync/sessions/<id>/drawing.png for another board)
   --no-open     Fail with "stage_closed" instead of opening the Mac page
 
 Output:
   default  a sentence with the path
   --quiet  the path
-  --json   {"status": "success", "code": "image_saved", "path", "document_hash",
+  --json   {"status": "success", "code": "image_saved", "path", "session", "document_hash",
             "bytes_count"}
 
 Reading the drawing:
@@ -145,6 +163,7 @@ Reading the drawing:
 
 Failure codes:
   not_running      exit 2: run \`tldraw-sync start\`
+  unknown_session  exit 1: no board has that id; run \`tldraw-sync session-list\`
   board_empty      exit 3: nothing has been drawn; ask the user to draw on the iPad
   stage_closed     exit 4: the Mac page is not open and --no-open was given
   image_not_ready  exit 4: the Mac page did not render in time; fetch again
@@ -153,16 +172,19 @@ Examples:
   tldraw-sync fetch --json
   tldraw-sync fetch --out ./whiteboard.png`,
 
-  status: `Usage: tldraw-sync status [--json | --quiet]
+  status: `Usage: tldraw-sync status [--session <id>] [--json | --quiet]
 
 Reports whether the board is running, where, and what is connected to it.
+
+Options:
+${session_option_text}
 
 Output:
   default  the addresses, whether the iPad and the Mac page are connected, the shape count
   --quiet  the iPad address
-  --json   {"status": "success", "code": "running", "pid", "port", "draw_url", "stage_url",
-            "pen_connected", "stage_connected", "shapes_count", "document_hash",
-            "cleaned_revision", "cleaned_stale"}
+  --json   {"status": "success", "code": "running", "pid", "port", "session",
+            "session_name", "draw_url", "stage_url", "pen_connected", "stage_connected",
+            "shapes_count", "document_hash", "cleaned_revision", "cleaned_stale"}
 
 Failure codes:
   not_running     exit 2: run \`tldraw-sync start\`
@@ -195,7 +217,8 @@ background; use it to watch the board while working on it.
 Options:
   --port <n>  Use exactly this port, and fail if it is taken`,
 
-  'cleanup-snapshot': `Usage: tldraw-sync cleanup-snapshot [--out <dir>] [--no-open] [--json]
+  'cleanup-snapshot': `Usage: tldraw-sync cleanup-snapshot [--session <id>] [--out <dir>]
+                                    [--no-open] [--json]
 
 Saves a coherent snapshot of the sketch for cleanup: the PNG and the original pen records of
 the same drawing, a summary of each stroke (its id and page bounds, without the pen samples),
@@ -207,13 +230,20 @@ means as a semantic diagram; cleanup-publish lays it out and publishes it.
 Read the sketch best effort, without asking the user to clarify: copy every word exactly,
 keep every arrowhead, and invent nothing. The tool chooses every position and style.
 
+The snapshot names its board in "session", and the diagram must carry it: a board refuses a
+diagram made from another board's snapshot. While the board has no name, "title_wanted" is
+true and the prompt asks for a short "title"; an accepted publish names the board with it,
+unless someone named the board first.
+
 Options:
+${session_option_text}
   --out <dir>  Where to save the files (default: tldraw-sync/cleanup in the system's
-               temporary folder)
+               temporary folder; tldraw-sync/sessions/<id>/cleanup for another board)
   --no-open    Fail with "stage_closed" instead of opening the Mac page
 
 Output:
-  --json   {"status": "success", "code": "snapshot_saved", "path", "records_path",
+  --json   {"status": "success", "code": "snapshot_saved", "session", "title_wanted",
+            "path", "records_path",
             "strokes_path", "strokes_truncated", "diagram_path", "previous_diagram_path",
             "proposal_path", "snapshot", "document_hash", "base_revision", "shapes_count",
             "bounds", "image", "mapping", "prompt", "publish_command"}
@@ -261,11 +291,18 @@ Failure codes:
 Example:
   tldraw-sync cleanup-compose --file /tmp/tldraw-sync/cleanup/diagram.json --json`,
 
-  'cleanup-publish': `Usage: tldraw-sync cleanup-publish --file <diagram.json | -> [--json]
+  'cleanup-publish': `Usage: tldraw-sync cleanup-publish [--session <id>]
+                                   --file <diagram.json | -> [--json]
 
 Publishes a complete cleaned diagram, replacing the current one in one step. It is accepted
 only if the sketch is unchanged since the snapshot and nobody published since; otherwise
 nothing changes. The sketch itself is never modified.
+
+It goes to the board --session names, or else to the board the diagram's "session" names, or
+else to the default board. A board accepts only a diagram made from its own snapshot.
+
+Options:
+${session_option_text}
 
 The file is read from a regular file, or from stdin with --file -. It may be at most
 ${proposal_size_bytes_max} bytes. Reading stops at the first byte past that, without waiting for
@@ -282,7 +319,9 @@ ${proposal_subset_text}
 Composed proposals (tldraw-sync.cleanup.v2) from cleanup-compose are accepted as they are.
 
 Output:
-  --json   {"status": "success", "code": "published", "revision", "shapes_count", "stage_url"}
+  --json   {"status": "success", "code": "published", "session", "revision", "shapes_count",
+            "title_applied", "stage_url"}
+  "title_applied" is true when the diagram's title named a board that had no name.
 
 Failure codes:
   invalid_diagram     exit 1: the message names the field; fix the diagram
@@ -292,21 +331,26 @@ Failure codes:
   proposal_unreadable exit 1: the proposal is not a readable regular file or stdin
   sketch_changed      exit 5: the sketch changed; take a new snapshot
   revision_conflict   exit 5: another cleanup was published; take a new snapshot
+  session_mismatch    exit 5: the diagram came from another board; snapshot this one
+  unknown_session     exit 1: no board has that id; run \`tldraw-sync session-list\`
   not_running         exit 2: run \`tldraw-sync start\`
 
 Example:
   tldraw-sync cleanup-publish --file /tmp/tldraw-sync/cleanup/proposal.json --json`,
 
-  'cleanup-restore': `Usage: tldraw-sync cleanup-restore --base-revision <n> [--revision <n>]
-                                   [--json]
+  'cleanup-restore': `Usage: tldraw-sync cleanup-restore [--session <id>] --base-revision <n>
+                                   [--revision <n>] [--json]
 
 Brings back an earlier cleaned diagram as a new revision. The board keeps a few earlier
 revisions. --base-revision must be the current cleaned revision ("cleaned_revision" in
 \`tldraw-sync status --json\`), so a restore can never overwrite a newer publish. Without
 --revision, the most recent earlier revision is restored.
 
+Options:
+${session_option_text}
+
 Output:
-  --json   {"status": "success", "code": "restored", "revision", "restored_from"}
+  --json   {"status": "success", "code": "restored", "session", "revision", "restored_from"}
 
 Failure codes:
   revision_conflict   exit 5: the cleaned diagram changed; read status and decide again
@@ -314,4 +358,52 @@ Failure codes:
 
 Example:
   tldraw-sync cleanup-restore --base-revision 3 --json`,
+
+  'session-list': `Usage: tldraw-sync session-list [--json | --quiet]
+
+Lists every board, oldest first. The default board, id "default", is the board from before
+there were several, at the addresses it always had. A board nobody has named is untitled; the
+first cleanup of it may name it.
+
+Output:
+  default  one line per board: its id and name
+  --quiet  the ids, one per line
+  --json   {"status": "success", "code": "sessions", "sessions": [{"id", "name", "named_by",
+            "created_at_ms", "stage_url"}]}
+  "name" is null for an untitled board. "named_by" is "person", "agent" or null.
+
+Example:
+  tldraw-sync session-list --json`,
+
+  'session-create': `Usage: tldraw-sync session-create [--name <name>] [--json | --quiet]
+
+Makes a new, empty board and prints its id and address. Open the address in a browser to
+present it; its own QR code leads the iPad to it. Without --name it is untitled until a
+person names it, or its first cleanup does.
+
+Options:
+  --name <name>  Plain text on one line, at most ${board_name_length_max} characters
+
+Output:
+  --quiet  the new id
+  --json   {"status": "success", "code": "session_created", "session", "stage_url"}
+
+Failure codes:
+  sessions_full  exit 1: the board holds as many boards as it can
+
+Example:
+  tldraw-sync session-create --name "Checkout flow" --json`,
+
+  'session-rename': `Usage: tldraw-sync session-rename --session <id> --name <name> [--json]
+
+Renames a board. A rename always wins: a later cleanup never replaces a name a person gave.
+
+Output:
+  --json   {"status": "success", "code": "session_renamed", "session"}
+
+Failure codes:
+  unknown_session  exit 1: no board has that id; run \`tldraw-sync session-list\`
+
+Example:
+  tldraw-sync session-rename --session 0123456789abcdef --name "Checkout flow" --json`,
 }

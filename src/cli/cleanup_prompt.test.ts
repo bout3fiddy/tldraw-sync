@@ -15,6 +15,8 @@ const facts = {
   previous_path: null,
   snapshot: '0123456789abcdef',
   base_revision: 4,
+  session: 'default',
+  title_wanted: false,
   mapping: { x0: -32, y0: -32, ppu: 2 },
 }
 const prompt = cleanup_prompt(facts)
@@ -60,6 +62,23 @@ test('a previous interpretation is offered for its ids only when there is one', 
   expect(flat(again)).toContain(
     'The previous interpretation is /tmp/cleanup/diagram_previous.json. Keep its ids',
   )
+})
+
+// A board other than the default is named in the diagram and in every command; a title is
+// asked for only while the board has no name.
+test('the prompt binds the diagram to its board and asks for a title only when unnamed', () => {
+  expect(prompt).toContain('"session": "default"')
+  expect(prompt).not.toContain('--session')
+  expect(prompt).not.toContain('no name yet')
+
+  const other = cleanup_prompt({ ...facts, session: '0123456789abcdef', title_wanted: true })
+  expect(other).toContain('"session": "0123456789abcdef"')
+  expect(other).toContain(
+    'tldraw-sync cleanup-publish --session 0123456789abcdef --file /tmp/cleanup/diagram.json',
+  )
+  expect(other).toContain('tldraw-sync cleanup-snapshot --session 0123456789abcdef --json')
+  expect(flat(other)).toContain('This board has no name yet. Also add "title"')
+  expect(flat(other)).toContain('unless someone names it first')
 })
 
 test('the semantic schema is in the compose help; the shape subset stays for legacy', () => {

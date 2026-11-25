@@ -9,6 +9,7 @@
 
 import type { TLRecord } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
+import { board_default_id, board_id_pattern } from '../shared/board_session'
 import { cleaned_history_count_max, document_hash_pattern } from '../shared/constants'
 import {
   proposal_format,
@@ -23,9 +24,12 @@ import {
 import { proposal_parse, proposal_records } from './cleanup_proposal'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
+// A published result carries the title the proposal offered, for the board's registry to apply
+// to a board that is still unnamed. The cleaned diagram itself keeps no title.
 export type PublishResult =
-  | { kind: 'published'; revision: number; shapes_count: number }
+  | { kind: 'published'; revision: number; shapes_count: number; title: string | null }
   | { kind: 'invalid'; path: string; message: string }
+  | { kind: 'session_mismatch'; session: string }
   | { kind: 'sketch_changed'; sketch_hash: string }
   | { kind: 'revision_conflict'; revision: number }
 
@@ -68,14 +72,23 @@ export class Cleaned {
     return cleaned
   }
 
-  publish(input: unknown, sketch_hash: string, now_ms: number): PublishResult {
+  // `session` is the board this diagram belongs to. A proposal is bound to the session of its
+  // snapshot: two boards can hold the same sketch at the same revision, so the hash and the
+  // revision alone cannot tell a proposal for one from a replay against the other. Only the
+  // default board accepts a proposal that names no session, as every proposal once did.
+  publish(input: unknown, sketch_hash: string, session: string, now_ms: number): PublishResult {
     assert(document_hash_pattern.test(sketch_hash), 'the sketch hash is well formed')
+    assert(board_id_pattern.test(session), 'the board session is well formed')
     assert(Number.isFinite(now_ms), 'time is a number')
     const parsed = proposal_parse(input)
 
     if (!parsed.ok) return { kind: 'invalid', path: parsed.path, message: parsed.message }
 
     const { proposal } = parsed
+
+    if ((proposal.session ?? board_default_id) !== session) {
+      return { kind: 'session_mismatch', session }
+    }
 
     if (proposal.snapshot !== sketch_hash) return { kind: 'sketch_changed', sketch_hash }
 
@@ -96,7 +109,12 @@ export class Cleaned {
     }
     this.commit(version)
     assert(this.state.current === version, 'the published version is current')
-    return { kind: 'published', revision: version.revision, shapes_count: version.shapes.length }
+    return {
+      kind: 'published',
+      revision: version.revision,
+      shapes_count: version.shapes.length,
+      title: proposal.title,
+    }
   }
 
   // Restores a prior revision, the most recent one when none is named.

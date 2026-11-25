@@ -2,6 +2,7 @@
 // which port to ask; the board's own answer is what says it is running.
 
 import { assert } from '../shared/assert'
+import { board_query } from '../shared/board_session'
 import {
   document_hash_pattern,
   fetch_wait_ms_max,
@@ -96,10 +97,10 @@ export async function api_request(
   return { kind: 'answer', status: response.status, body: answer }
 }
 
-export async function image_fetch(port: number): Promise<ImageFetched> {
+export async function image_fetch(port: number, session: string): Promise<ImageFetched> {
   let response: Response
   try {
-    response = await fetch(`http://127.0.0.1:${port}${path_drawing_png}`, {
+    response = await fetch(`http://127.0.0.1:${port}${path_drawing_png}?${board_query(session)}`, {
       // The board itself waits up to `fetch_wait_ms_max` for a render.
       signal: AbortSignal.timeout(fetch_wait_ms_max + status_timeout_ms),
     })

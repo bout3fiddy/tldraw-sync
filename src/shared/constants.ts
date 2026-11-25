@@ -20,6 +20,11 @@ export const path_cleaned_json = '/api/cleaned.json'
 export const path_cleaned_status = '/api/cleaned/status'
 export const path_cleaned_restore = '/api/cleaned/restore'
 
+// Board sessions: the list, a new one, and a rename. Every board route takes `?session=<id>`;
+// without it, a route serves the default board, which is the board from before sessions.
+export const path_sessions = '/api/sessions'
+export const path_sessions_rename = '/api/sessions/rename'
+
 // The response header that names the document an image shows.
 export const header_document_hash = 'x-document-hash'
 
@@ -29,6 +34,22 @@ export type Role = (typeof roles)[number]
 // The board is a personal tool: one iPad, one Mac page, and some slack for reloads that have
 // not yet timed out on the server.
 export const sessions_count_max = 16
+
+// Board sessions are listed in one registry. Each is a whole board, so only a few are held in
+// memory at once: an idle one is saved and set aside to open another. A request for a board
+// beyond that, while every open one is in use, is refused rather than queued.
+export const board_sessions_count_max = 64
+export const boards_open_count_max = 8
+export const board_name_length_max = 80
+
+// A title an agent proposes on the first cleanup of an untitled board: a few words.
+export const board_title_length_max = 60
+
+// A create or rename request names one board; anything larger is not one.
+export const session_request_size_bytes_max = 1024
+
+// How often a page asks for the list of boards, for names set elsewhere.
+export const board_sessions_poll_interval_ms = 3000
 
 // A single sync message. Strokes are small; this bound only stops a runaway client.
 export const sync_message_size_bytes_max = 16 * 1024 * 1024
@@ -139,4 +160,10 @@ assert(
 assert(diagram_label_length_max <= proposal_text_length_max, 'a diagram label fits a shape')
 assert(diagram_depth_max < diagram_nodes_count_max, 'nesting is bounded by the nodes')
 assert(cleaned_poll_interval_ms >= poll_interval_ms, 'pages poll no faster than the command')
+assert(board_title_length_max <= board_name_length_max, 'a title fits a name')
+assert(boards_open_count_max <= board_sessions_count_max, 'open boards are listed boards')
+assert(
+  boards_open_count_max * sessions_count_max <= 256,
+  'connections across open boards stay a personal handful',
+)
 assert(Number.isSafeInteger(restart_clock_jump * 1_000_000), 'a million restarts stay exact')

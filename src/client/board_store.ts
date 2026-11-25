@@ -4,6 +4,7 @@ import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite'
 import { useSync } from '@tldraw/sync'
 import { useMemo } from 'react'
 import type { TLAssetStore, TLComponents } from 'tldraw'
+import { board_query } from '../shared/board_session'
 import { path_sync, type Role } from '../shared/constants'
 
 // Fonts and icons are served by the Mac, so the board works with no internet connection.
@@ -26,11 +27,12 @@ const asset_store: TLAssetStore = {
   resolve: (asset) => asset.props.src,
 }
 
-export function use_board_store(role: Role) {
+// One board session's room. The sync library adds its own `sessionId` for this connection.
+export function use_board_store(role: Role, session: string) {
   const uri = useMemo(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${protocol}://${window.location.host}${path_sync}?role=${role}`
-  }, [role])
+    return `${protocol}://${window.location.host}${path_sync}?role=${role}&${board_query(session)}`
+  }, [role, session])
   // The stage tells a connected pen apart from another stage by this name.
   const user = useMemo(() => ({ id: `${role}-${user_suffix()}`, name: role }), [role])
 

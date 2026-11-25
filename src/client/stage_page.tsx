@@ -1,8 +1,9 @@
 // The Mac presentation view: the whole drawing, fitted to the window, and nothing else.
 // Until an iPad is connected it also shows how to connect one.
 
-import { useEffect, useState } from 'react'
-import { Tldraw, useEditor, useValue } from 'tldraw'
+import { useCallback, useEffect, useState } from 'react'
+import { Tldraw, useEditor, useValue, type Editor } from 'tldraw'
+import { board_query } from '../shared/board_session'
 import { path_pairing } from '../shared/constants'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
@@ -14,10 +15,11 @@ import { use_view, ViewPanes, ViewTabs } from './views'
 type Pairing = { url: string; modules: string[] }
 
 // The sketch canvas stays mounted whichever view is chosen: it renders the image agents fetch.
-export function StagePage() {
-  const board = use_board_store('stage')
+export function StagePage({ session }: { session: string }) {
+  const board = use_board_store('stage', session)
   const [view, view_choose] = use_view('stage')
-  const cleaned = use_cleaned()
+  const cleaned = use_cleaned(session)
+  const mount = useCallback((editor: Editor) => stage_mount(editor, session), [session])
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     const text = 'The board is not answering. Start it with “tldraw-sync start”, then reload.'
@@ -34,9 +36,9 @@ export function StagePage() {
             hideUi
             assetUrls={asset_urls}
             components={components_quiet}
-            onMount={stage_mount}
+            onMount={mount}
           >
-            <StageGuide />
+            <StageGuide session={session} />
           </Tldraw>
         }
         cleaned={<CleanedPane cleaned={cleaned} />}
@@ -54,9 +56,9 @@ export function StagePage() {
 
 // Shown only while it is useful: large on an empty board, tucked in a corner once there is
 // a drawing, and gone the moment a pen connects.
-function StageGuide() {
+function StageGuide({ session }: { session: string }) {
   const editor = useEditor()
-  const pairing = use_pairing()
+  const pairing = use_pairing(session)
   const pen_connected = useValue(
     'pen connected',
     () => editor.getCollaborators().some((collaborator) => collaborator.userName === 'draw'),
@@ -79,11 +81,12 @@ function StageGuide() {
   )
 }
 
-function use_pairing(): Pairing | null {
+// Each board has a QR code of its own, which leads the iPad to that board.
+function use_pairing(session: string): Pairing | null {
   const [pairing, pairing_set] = useState<Pairing | null>(null)
   useEffect(() => {
     let cancelled = false
-    fetch(path_pairing)
+    fetch(`${path_pairing}?${board_query(session)}`)
       .then((response) => (response.ok ? (response.json() as Promise<Pairing>) : null))
       .then((loaded) => {
         if (!cancelled) pairing_set(loaded)
@@ -92,7 +95,7 @@ function use_pairing(): Pairing | null {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [session])
   return pairing
 }
 

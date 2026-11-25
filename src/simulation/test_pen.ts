@@ -10,15 +10,19 @@ import { ClientSocket } from './simulated_client'
 const applied_checks_count_max = 300
 const applied_check_interval_ms = 10
 
-// Draws a square with the given id, and returns once `applied` says the server has it.
+// Draws a square with the given id on the given board session, and returns once `applied` says
+// the server has it.
 export async function test_pen_draw(
   port: number,
   shape_id: string,
   applied: () => boolean | Promise<boolean>,
+  session = 'default',
 ): Promise<void> {
   assert(shape_id.startsWith('shape:'), 'a shape id has the shape prefix')
+  assert(/^[0-9a-z]{1,16}$/.test(session), 'a board session is an id')
   const store = createTLStore({ schema: createTLSchema() })
-  const web_socket = new WebSocket(`ws://127.0.0.1:${port}/sync?role=draw&sessionId=test-pen`)
+  const query = `role=draw&sessionId=test-pen&session=${session}`
+  const web_socket = new WebSocket(`ws://127.0.0.1:${port}/sync?${query}`)
   const socket = new ClientSocket((message) => web_socket.send(JSON.stringify(message)), () => {})
   web_socket.onmessage = (event) => socket.message_deliver(JSON.parse(String(event.data)) as object)
   web_socket.onopen = () => socket.status_set('online')

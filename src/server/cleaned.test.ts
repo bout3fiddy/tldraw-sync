@@ -40,7 +40,7 @@ test('a publish replaces the cleaned diagram whole and leaves the ink untouched'
   const board = board_open(sketch_disk([sketch_square('shape:a', 0)]))
   const before = ink(board)
   const result = board.cleaned_publish(proposal_example(before.hash, 0))
-  expect(result).toEqual({ kind: 'published', revision: 1, shapes_count: 4 })
+  expect(result).toEqual({ kind: 'published', revision: 1, shapes_count: 4, title: null })
   expect(ink(board)).toEqual(before)
 
   const document = board.cleaned_document()

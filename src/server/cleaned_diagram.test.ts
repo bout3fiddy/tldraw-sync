@@ -50,7 +50,7 @@ test('a composed diagram publishes with its styling, and the next snapshot offer
   expect(board.sketch_snapshot(before.hash)?.diagram_previous).toBeNull()
 
   const result = board.cleaned_publish(composed(before.hash, 0))
-  expect(result).toEqual({ kind: 'published', revision: 1, shapes_count: 20 })
+  expect(result).toEqual({ kind: 'published', revision: 1, shapes_count: 20, title: null })
   expect(ink(board)).toEqual(before)
 
   const records = board.cleaned_document().records as unknown as Array<{

@@ -1,11 +1,22 @@
 // The network edge. Everything arriving here is untrusted, so it is validated and bounded
 // before it reaches the board, which only asserts.
+//
+// Every board route names its board with `?session=<id>`; without it, a route serves the
+// default board, so every address from before sessions works as it did. The server has no
+// active board: two pages, or a page and an agent, can each work on a board of their own.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Server, ServerWebSocket } from 'bun'
 import type { WebSocketMinimal } from '@tldraw/sync-core'
 import { assert, AssertionError } from '../shared/assert'
+import {
+  board_default_id,
+  board_draw_path,
+  board_id_pattern,
+  board_page_parse,
+  board_stage_path,
+} from '../shared/board_session'
 import type { SketchBounds } from '../shared/cleanup_types'
 import {
   document_hash_pattern,
@@ -14,10 +25,11 @@ import {
   path_cleaned_json,
   path_cleaned_restore,
   path_cleaned_status,
-  path_draw,
   path_drawing_json,
   path_drawing_png,
   path_pairing,
+  path_sessions,
+  path_sessions_rename,
   path_sketch_json,
   path_status,
   path_sync,
@@ -26,26 +38,43 @@ import {
   type Role,
 } from '../shared/constants'
 import { bounds_valid, type Board, type ImageResult } from './board'
-import { cleaned_publish_route, cleaned_restore_route, json_error } from './http_cleanup'
-import type { Pairing } from './pairing'
+import type { BoardRegistry } from './board_registry'
+import {
+  cleaned_publish_route,
+  cleaned_restore_route,
+  json_error,
+  lookup_error,
+} from './http_cleanup'
+import {
+  json_no_store,
+  session_create_route,
+  session_rename_route,
+  sessions_list_response,
+} from './http_sessions'
+import { pairing_board, type Pairing } from './pairing'
 
 export type ServerOptions = {
-  readonly board: Board
+  readonly registry: BoardRegistry
   readonly port: number
   readonly hostname: string
   readonly static_files: StaticFiles
+
+  // The default board's pairing. Every other board's QR code is made from it.
   readonly pairing: Pairing
+
   // A failed assertion must stop the process, not turn into a 500 that hides it.
   readonly on_fatal: (error: AssertionError) => void
 }
 
 export type StaticFiles = ReadonlyMap<string, string>
 
-// What the command line reads to find the board and report on it.
+// What the command line reads to find the board and report on it: one board session.
 export type BoardStatus = {
   readonly app: 'tldraw-sync'
   readonly pid: number
   readonly port: number
+  readonly session: string
+  readonly session_name: string | null
   readonly draw_url: string
   readonly stage_url: string
   readonly pen_connected: boolean
@@ -57,8 +86,11 @@ export type BoardStatus = {
   readonly cleaned_stale: boolean
 }
 
-type SocketData = { session_id: string; role: Role }
+// `session_id` is the sync library's id for one page's connection; `board` is the board session
+// the connection draws on or presents.
+type SocketData = { session_id: string; role: Role; board: string }
 type Socket = ServerWebSocket<SocketData>
+type Route = Response | Promise<Response> | undefined
 
 const static_files_count_max = 4096
 const session_id_pattern = /^[A-Za-z0-9_-]{1,64}$/
@@ -66,7 +98,7 @@ const png_signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
 export function server_start(options: ServerOptions): Server<SocketData> {
   assert(options.static_files.has('/index.html'), 'the client has been built')
-  const { board } = options
+  const { registry } = options
   const guard = guard_create(options.on_fatal)
 
   return Bun.serve<SocketData>({
@@ -79,21 +111,33 @@ export function server_start(options: ServerOptions): Server<SocketData> {
     },
     websocket: {
       maxPayloadLength: sync_message_size_bytes_max,
-      open: (socket) => guard(() => {
-        const accepted = board.session_open(
-          socket.data.session_id, socket.data.role, socket_minimal(socket),
-        )
-        if (!accepted) socket.close(1013, 'The board has too many connections.')
-      }, () => undefined),
+      open: (socket) => guard(() => socket_open(registry, socket), () => undefined),
       message: (socket, message) => guard(() => {
         const message_text = typeof message === 'string' ? message : message.toString('utf8')
-        board.session_message(socket.data.session_id, socket_minimal(socket), message_text)
+        const board = registry.board_open(socket.data.board)
+        board?.session_message(socket.data.session_id, socket_minimal(socket), message_text)
       }, () => undefined),
       close: (socket) => guard(() => {
-        board.session_close(socket.data.session_id, socket_minimal(socket))
+        const board = registry.board_open(socket.data.board)
+        board?.session_close(socket.data.session_id, socket_minimal(socket))
       }, () => undefined),
     },
   })
+}
+
+// The board is opened when its first page connects. A connection it has no room for is
+// closed with a reason, and the page reconnects later.
+function socket_open(registry: BoardRegistry, socket: Socket): void {
+  assert(board_id_pattern.test(socket.data.board), 'an upgraded socket names a valid board')
+  const lookup = registry.board(socket.data.board)
+  if (lookup.kind !== 'board') {
+    socket.close(1013, 'The board cannot be opened right now.')
+    return
+  }
+  const accepted = lookup.board.session_open(
+    socket.data.session_id, socket.data.role, socket_minimal(socket),
+  )
+  if (!accepted) socket.close(1013, 'The board has too many connections.')
 }
 
 // Bun's socket already has the three members the sync room uses: readyState, send, close.
@@ -115,71 +159,137 @@ function guard_create(on_fatal: (error: AssertionError) => void) {
   }
 }
 
-function route(
-  request: Request,
-  server: Server<SocketData>,
-  options: ServerOptions,
-): Response | Promise<Response> | undefined {
+function route(request: Request, server: Server<SocketData>, options: ServerOptions): Route {
   const url = new URL(request.url)
-  const method = request.method
   const pathname = url.pathname
   assert(pathname.startsWith('/'), 'a request path is absolute')
 
-  if (pathname === path_sync) return sync_upgrade(request, url, server)
+  if (pathname === path_sessions || pathname === path_sessions_rename) {
+    return sessions_route(request, options.registry)
+  }
+
+  if (pathname.startsWith('/api/') || pathname === path_sync) {
+    const id = board_param(url)
+    if (id === null) {
+      return json_error(400, 'malformed_session', 'A session id is 16 hex digits, or default.')
+    }
+    return board_route(request, url, id, server, options)
+  }
+
+  if (request.method !== 'GET') return text(405, 'Method not allowed.')
+  const page = board_page_parse(pathname) === null ? pathname : '/index.html'
+  return static_response(options.static_files, page)
+}
+
+// The board a request names, the default one when it names none, or null when it is malformed.
+function board_param(url: URL): string | null {
+  const id = url.searchParams.get('session') ?? board_default_id
+  if (!board_id_pattern.test(id)) return null
+  assert(id.length > 0, 'a valid board id is not empty')
+  return id
+}
+
+function sessions_route(request: Request, registry: BoardRegistry): Route {
+  const pathname = new URL(request.url).pathname
+  assert(pathname === path_sessions || pathname === path_sessions_rename, 'a sessions route')
+  if (request.method === 'POST') {
+    if (pathname === path_sessions) return session_create_route(request, registry)
+    return session_rename_route(request, registry)
+  }
+  if (request.method !== 'GET' || pathname !== path_sessions) {
+    return text(405, 'Use GET to list boards, and POST to create or rename one.')
+  }
+  return sessions_list_response(registry)
+}
+
+function board_route(
+  request: Request,
+  url: URL,
+  id: string,
+  server: Server<SocketData>,
+  options: ServerOptions,
+): Route {
+  const { registry } = options
+  const method = request.method
+  const pathname = url.pathname
+  assert(board_id_pattern.test(id), 'a routed board id is well formed')
+
+  if (pathname === path_sync) return sync_upgrade(request, url, id, server, registry)
   if (pathname === path_drawing_png) {
-    if (method === 'GET') return options.board.image_get().then(image_response)
-    if (method === 'PUT') return image_put(request, url, options.board)
+    if (method === 'GET') return board_with(registry, id, (board) => image_get(board))
+    if (method === 'PUT') return image_put(request, url, registry, id)
     return text(405, 'Use GET to fetch the drawing.')
   }
   if (pathname === path_cleaned_json && method === 'POST') {
-    return cleaned_publish_route(request, options.board)
+    return cleaned_publish_route(request, registry, id)
   }
   if (pathname === path_cleaned_restore) {
-    if (method === 'POST') return cleaned_restore_route(request, options.board)
+    if (method === 'POST') return cleaned_restore_route(request, registry, id)
     return text(405, 'Use POST to restore a cleaned revision.')
   }
   if (method !== 'GET') return text(405, 'Method not allowed.')
-
-  if (pathname === path_drawing_json) return Response.json(options.board.shapes())
-  if (pathname === path_sketch_json) return sketch_response(url, options.board)
-  if (pathname === path_cleaned_json) return json_no_store(options.board.cleaned_document())
-  if (pathname === path_cleaned_status) return json_no_store(options.board.cleaned_status())
-  if (pathname === path_pairing) return Response.json(options.pairing)
-  if (pathname === path_status) return Response.json(status_read(options, server.port))
-  if (pathname === '/' || pathname === path_draw) {
-    return static_response(options.static_files, '/index.html')
+  if (pathname === path_sketch_json) return sketch_response(url, registry, id)
+  if (pathname === path_pairing) {
+    if (registry.find(id) === null) return lookup_error({ kind: 'not_found' })
+    return Response.json(pairing_board(options.pairing, board_draw_path(id)))
   }
-  return static_response(options.static_files, pathname)
+  return board_with(registry, id, (board) => {
+    if (pathname === path_drawing_json) return Response.json(board.shapes())
+    if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document())
+    if (pathname === path_cleaned_status) return json_no_store(board.cleaned_status())
+    if (pathname === path_status) return Response.json(status_read(options, board, server.port))
+    return text(404, 'Not found.')
+  })
+}
+
+// Runs a route on the named board, opened if need be, or says why it cannot be served.
+function board_with(
+  registry: BoardRegistry,
+  id: string,
+  run: (board: Board) => Response | Promise<Response>,
+): Response | Promise<Response> {
+  const lookup = registry.board(id)
+  if (lookup.kind !== 'board') return lookup_error(lookup)
+  assert(lookup.board.session === id, 'the route runs on the board it named')
+  return run(lookup.board)
 }
 
 function sync_upgrade(
   request: Request,
   url: URL,
+  board: string,
   server: Server<SocketData>,
+  registry: BoardRegistry,
 ): Response | undefined {
+  assert(board_id_pattern.test(board), 'a sync connection names a valid board')
   const role = roles.find((candidate) => candidate === url.searchParams.get('role'))
   const session_id = url.searchParams.get('sessionId') ?? ''
   if (role === undefined) return text(400, 'Unknown role.')
   if (!session_id_pattern.test(session_id)) return text(400, 'Malformed session id.')
+  if (registry.find(board) === null) return text(404, 'No board has that session id.')
 
   assert(session_id.length > 0, 'a session id that matched is not empty')
   assert(roles.includes(role), 'role is known')
-  const upgraded = server.upgrade(request, { data: { session_id, role } })
+  const upgraded = server.upgrade(request, { data: { session_id, role, board } })
   return upgraded ? undefined : text(400, 'Expected a WebSocket connection.')
 }
 
-function status_read(options: ServerOptions, port: number | undefined): BoardStatus {
+function status_read(options: ServerOptions, board: Board, port: number | undefined): BoardStatus {
   assert(port !== undefined, 'a listening server has a port')
   assert(port > 0, 'the port is known once listening')
-  const { board } = options
+  const id = board.session
   const state = board.document_state()
   const cleaned = board.cleaned_status()
+  const stage_path = board_stage_path(id)
   return {
     app: 'tldraw-sync',
     pid: process.pid,
     port,
-    draw_url: options.pairing.url,
-    stage_url: `http://localhost:${port}`,
+    session: id,
+    session_name: options.registry.find(id)?.name ?? null,
+    draw_url: pairing_board(options.pairing, board_draw_path(id)).url,
+    // The default board's address is the bare origin, as it always was.
+    stage_url: `http://localhost:${port}${stage_path === '/' ? '' : stage_path}`,
     pen_connected: board.sessions_count('draw') > 0,
     stage_connected: board.sessions_count('stage') > 0,
     shapes_count: state.shapes_count,
@@ -191,23 +301,24 @@ function status_read(options: ServerOptions, port: number | undefined): BoardSta
 
 // The sketch's records, for exactly the document an image showed. A newer document is a
 // conflict: the caller fetches the image again, so its image and records always agree.
-function sketch_response(url: URL, board: Board): Response {
+function sketch_response(url: URL, registry: BoardRegistry, id: string): Response {
   const hash = url.searchParams.get('document_hash') ?? ''
   if (!document_hash_pattern.test(hash)) {
     return json_error(400, 'malformed_hash', 'Name the document_hash of the fetched image.')
   }
-  const snapshot = board.sketch_snapshot(hash)
+  const snapshot = registry.sketch_snapshot(id, hash)
   if (snapshot === null) {
     return json_error(409, 'sketch_changed', 'The sketch changed after that image. Fetch again.')
   }
+  if ('kind' in snapshot) return lookup_error(snapshot)
   assert(snapshot.document_hash === hash, 'the snapshot is of the named document')
+  assert(snapshot.session === id, 'the snapshot is of the named board')
   return json_no_store(snapshot)
 }
 
-function json_no_store(value: object): Response {
-  assert(typeof value === 'object', 'a JSON response is an object')
-  assert(value !== null, 'a JSON response is not null')
-  return Response.json(value, { headers: { 'cache-control': 'no-store' } })
+async function image_get(board: Board): Promise<Response> {
+  assert(document_hash_pattern.test(board.document_state().hash), 'a board has a hash')
+  return image_response(await board.image_get())
 }
 
 function image_response(result: ImageResult): Response {
@@ -230,7 +341,12 @@ function image_response(result: ImageResult): Response {
   return text(503, 'The drawing is still being rendered. Fetch again in a moment.')
 }
 
-async function image_put(request: Request, url: URL, board: Board): Promise<Response> {
+async function image_put(
+  request: Request,
+  url: URL,
+  registry: BoardRegistry,
+  id: string,
+): Promise<Response> {
   const hash = url.searchParams.get('document_hash') ?? ''
   if (!document_hash_pattern.test(hash)) return text(400, 'Malformed document hash.')
 
@@ -247,8 +363,12 @@ async function image_put(request: Request, url: URL, board: Board): Promise<Resp
   if (bounds === 'malformed') return text(400, 'Malformed bounds.')
   assert(bytes.byteLength >= png_signature.length, 'a PNG is at least its signature')
   assert(bytes.byteLength <= image_size_bytes_max, 'image is bounded')
-  board.image_put(hash, bytes, bounds)
-  return new Response(null, { status: 204 })
+
+  // Looked up after the body has arrived: the board may have been set aside meanwhile.
+  return board_with(registry, id, (board) => {
+    board.image_put(hash, bytes, bounds)
+    return new Response(null, { status: 204 })
+  })
 }
 
 // Optional: `x,y,w,h` of the page area the stage rendered. Older stages send none.
