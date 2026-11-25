@@ -106,6 +106,13 @@ button {
   pointer-events: auto;
 }
 
+/* Ink never thins to a hairline. Zoomed far out, a stroke narrower than a pixel and a half
+   on the screen is drawn at a pixel and a half: tldraw draws such a stroke as a plain line,
+   and gives its canvas the zoom to divide by. Wider strokes are filled shapes, untouched. */
+.tl-shape[data-shape-type='draw'] path {
+  stroke-width: calc(1.5px / var(--tl-zoom));
+}
+
 /* Views. The sketch pane is always laid out at full size, even when hidden, so its canvas
    keeps its viewport, its zoom and, on the stage, its rendering of the image agents fetch. */
 

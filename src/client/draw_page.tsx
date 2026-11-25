@@ -44,7 +44,10 @@ export function DrawPage({ session }: { session: string }) {
 }
 
 function draw_mount(editor: Editor): void {
-  editor.user.updateUserPreferences({ colorScheme: 'light' })
+  // The nib is a width on the screen, not on the page: a stroke written zoomed far out is
+  // stored that much wider, so it is as heavy to the writer as one written at full size, and
+  // stays that heavy on the stage and in the image agents read.
+  editor.user.updateUserPreferences({ colorScheme: 'light', isDynamicSizeMode: true })
   editor.setCurrentTool('draw')
   // The fine nib suits handwriting: a note stays legible at the size it was written.
   editor.setStyleForNextShapes(DefaultSizeStyle, 's')
