@@ -18,8 +18,8 @@ tldraw-sync keeps the two apart:
 The Mac shows the whole drawing at all times, even while you zoom in on a detail on the iPad. That
 makes it easy to share the Mac screen on a call while you draw.
 
-Write at any zoom. The pen is as heavy on the screen zoomed far out as it is close in, and ink
-never thins to a hairline on either screen, however large the board grows.
+Write at any zoom. The pen is as heavy on the screen zoomed far out as it is close in, and ink never
+thins to a hairline on either screen, however large the board grows.
 
 ## An example
 
@@ -37,8 +37,8 @@ compare it with your handwriting. Keep drawing and the board marks the cleanup a
 Earlier cleanups are kept, and your agent can bring one back.
 
 It works for notes as well as diagrams. The cleanup keeps your arrangement: what you wrote side by
-side stays side by side, a heading keeps its list under it, and adding a line to one section
-leaves the others where they were. It is always drawn in black ink, like a whiteboard.
+side stays side by side, a heading keeps its list under it, and adding a line to one section leaves
+the others where they were. It is always drawn in black ink, like a whiteboard.
 
 ## Quickstart
 
@@ -79,6 +79,39 @@ and a coding agent that can run commands and read images, such as Claude Code or
    ```
 
 To update, stop the board, run `git pull` in the clone, then start it again.
+
+## Draw alongside a pih session
+
+In a pih host with whiteboard support, use `/start_whiteboard`. It opens the Mac stage and links a
+board to **this session**. Run it again to reopen the same board. Scan the **stage QR** on the iPad:
+this pairs the two request buttons for that board in that browser tab. The plain draw address lets
+someone draw, but does not pair their event controls. Use **Pair iPad** on the Mac to scan again.
+Keep the stage open so it can render the PNG your agent reads.
+
+- **Notify agent** asks the agent to look at the current sketch as conversation context.
+- **Interpret sketchboard** asks for a faithful, typeset copy in **Agent canvas → Interpretation**.
+  **Ideas** is separate: the agent can add explanations, questions and proposals without changing
+  the interpretation. Both layers are read-only on the iPad.
+- **Replace sketchboard** copies the layer you are viewing into the sketch as editable shapes and
+  removes the current ink. Only do this when you want the replacement. **Undo** restores the ink in
+  one step. Use **Select shapes** to move or edit items. Neither agent layer changes.
+
+A request is queued only when the Mac has the ink you tapped on. If you see “Ink is syncing”, wait
+for the connection and tap again. The board keeps up to 64 requests; a full pending queue refuses
+new requests instead of discarding undelivered work. Receipt, work and completion are separate
+states. `/stop_whiteboard` detaches the pih listener without deleting the board or stopping the Mac.
+
+For local integrations, `whiteboard-link --owner <id> --out <absolute-file> --json` installs a
+private binding. Pass it with `--binding` to `whiteboard-poll`, `whiteboard-ack`,
+`whiteboard-snapshot` and `whiteboard-publish`. See each command’s `--help`. Both layers require the
+snapshot’s `base_revision`; Interpretation also requires the sketch to be unchanged. Ideas retain
+their source even if drawing continues. Snapshot files are private workspaces under `--out` (or the
+system temporary directory); remove them when done. Legacy `cleanup-*` still uses Interpretation.
+
+Use a trusted LAN. Pairing limits the **new controls**; it does not authenticate sketch sync,
+protect drawing reads or encrypt traffic. Anyone with the stage QR can send requests on that board.
+Never share a binding file. Words on a board are input, not instructions to run commands or approve
+destructive operations.
 
 ## Several boards
 

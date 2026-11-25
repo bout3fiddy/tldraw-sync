@@ -26,6 +26,7 @@ import {
   board_title_length_max,
   boards_open_count_max,
 } from '../shared/constants'
+import { owner_pattern, type Layer } from '../shared/whiteboard'
 import type { Time } from '../shared/time'
 import { Board } from './board'
 import type { PublishResult } from './cleaned'
@@ -67,14 +68,18 @@ export class BoardRegistry {
   private constructor(
     private readonly environment: RegistryEnvironment,
     private sessions: readonly BoardSession[],
+    private owners: ReadonlyMap<string, string>,
   ) {}
 
   // Reads the registry and opens the default board. Damage to either is a StorageError: the
   // caller refuses to start, as it does for a damaged board.
   static open(environment: RegistryEnvironment): BoardRegistry {
     const bytes = environment.disk.read(file_name)
-    const sessions = bytes === null ? [session_default()] : registry_read(bytes)
-    const registry = new BoardRegistry(environment, sessions)
+    const state =
+      bytes === null
+        ? { sessions: [session_default()], owners: new Map<string, string>() }
+        : registry_read(bytes)
+    const registry = new BoardRegistry(environment, state.sessions, state.owners)
     const board = Board.open({ time: environment.time, disk: environment.disk })
     registry.boards.set(board_default_id, board)
 
@@ -96,7 +101,28 @@ export class BoardRegistry {
     return session
   }
 
-  create(name: string | null): CreateResult {
+  owner(id: string): string | null {
+    const owner = this.owners.get(id) ?? null
+    assert(owner === null || this.find(id) !== null, 'only listed boards have owners')
+    assert(owner === null || id !== board_default_id, 'personal default ink is never claimed')
+    return owner
+  }
+
+  link(owner: string): CreateResult {
+    assert(owner_pattern.test(owner), 'a link has a validated owner')
+
+    for (const [id, bound] of this.owners) {
+      if (bound !== owner) continue
+
+      const session = this.find(id)
+      assert(session !== null, 'a bound board is listed')
+      return { kind: 'created', session }
+    }
+
+    return this.create(null, owner)
+  }
+
+  create(name: string | null, owner?: string): CreateResult {
     assert(name === null || board_name_clean(name, board_name_length_max) === name, 'clean name')
 
     if (this.sessions.length === board_sessions_count_max) return { kind: 'full' }
@@ -108,7 +134,8 @@ export class BoardRegistry {
       named_by: name === null ? null : 'person',
       created_at_ms: this.environment.time.now_ms(),
     }
-    this.commit([...this.sessions, session])
+    const owners = owner === undefined ? this.owners : new Map(this.owners).set(id, owner)
+    this.commit([...this.sessions, session], owners)
     assert(this.find(id) === session, 'a created board is listed')
     assert(this.sessions.length <= board_sessions_count_max, 'sessions are bounded')
     return { kind: 'created', session }
@@ -174,12 +201,16 @@ export class BoardRegistry {
   }
 
   // The records of a board's sketch, and whether the agent is asked for a title.
-  sketch_snapshot(id: string, hash: string): SketchSnapshot | null | BoardLookupFailure {
+  sketch_snapshot(
+    id: string,
+    hash: string,
+    layer: Layer = 'interpretation',
+  ): SketchSnapshot | null | BoardLookupFailure {
     const lookup = this.board(id)
 
     if (lookup.kind !== 'board') return lookup
 
-    const snapshot = lookup.board.sketch_snapshot(hash)
+    const snapshot = lookup.board.sketch_snapshot(hash, layer)
 
     if (snapshot === null) return null
 
@@ -192,16 +223,17 @@ export class BoardRegistry {
   // Publishes, then names the board with the proposal's title if, at that moment, the board is
   // still unnamed. Both happen in one synchronous step, so no rename can come between them. A
   // refused publish names nothing.
-  publish(id: string, input: unknown): RegistryPublish {
+  publish(id: string, input: unknown, layer: Layer = 'interpretation'): RegistryPublish {
     const lookup = this.board(id)
 
     if (lookup.kind !== 'board') return lookup
 
-    const result = lookup.board.cleaned_publish(input)
+    const result = lookup.board.cleaned_publish(input, layer)
 
     if (result.kind !== 'published') return { ...result, title_applied: false }
 
-    const title_applied = result.title !== null && this.title_apply(id, result.title)
+    const title_applied =
+      layer === 'interpretation' && result.title !== null && this.title_apply(id, result.title)
     assert(!title_applied || this.find(id)?.named_by === 'agent', 'an applied title is listed')
     return { ...result, title_applied }
   }
@@ -275,10 +307,11 @@ export class BoardRegistry {
   }
 
   // Write first, then swap. A throwing disk leaves the registry, and its file, as they were.
-  private commit(sessions: readonly BoardSession[]): void {
+  private commit(sessions: readonly BoardSession[], owners = this.owners): void {
     assert(sessions.length <= board_sessions_count_max, 'sessions are bounded')
     assert(sessions[0]?.id === board_default_id, 'the default board stays first')
-    const payload = new TextEncoder().encode(JSON.stringify({ format: registry_format, sessions }))
+    const state = { format: registry_format, sessions, owners: Object.fromEntries(owners) }
+    const payload = new TextEncoder().encode(JSON.stringify(state))
     this.environment.disk.write_atomic(
       file_name,
       envelope_encode({
@@ -291,8 +324,11 @@ export class BoardRegistry {
     // Pair assertion: the file now on disk reads back as the registry about to be served.
     const written = this.environment.disk.read(file_name)
     assert(written !== null, 'the registry was written')
-    assert(registry_read(written).length === sessions.length, 'the written registry reads back')
+    const read = registry_read(written)
+    assert(read.sessions.length === sessions.length, 'the written registry reads back')
+    assert(read.owners.size === owners.size, 'every link was saved')
     this.sessions = sessions
+    this.owners = owners
   }
 }
 
@@ -305,7 +341,7 @@ function session_default(): BoardSession {
 
 // The registry file is untrusted like any input. Damage stops the server, because starting
 // without it would hide every board but the default one.
-export function registry_read(bytes: Uint8Array): BoardSession[] {
+function registry_read(bytes: Uint8Array) {
   const decoded = envelope_decode(bytes, 'registry')
 
   if (!decoded.ok) throw new StorageError(`${file_name} is damaged: ${decoded.reason}`)
@@ -318,7 +354,7 @@ export function registry_read(bytes: Uint8Array): BoardSession[] {
     throw new StorageError(`${file_name} is damaged: it is not JSON`)
   }
 
-  const json = parsed as { format?: unknown; sessions?: unknown } | null
+  const json = parsed as { format?: unknown; sessions?: unknown; owners?: unknown } | null
   const list =
     typeof json === 'object' && json !== null && json.format === registry_format
       ? json.sessions
@@ -340,7 +376,33 @@ export function registry_read(bytes: Uint8Array): BoardSession[] {
     sessions.every((session) => board_id_pattern.test(session.id)),
     'read ids are valid',
   )
-  return sessions
+  const input = json?.owners === undefined ? {} : json.owners
+
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new StorageError('Invalid whiteboard links.')
+  }
+
+  const owners = new Map<string, string>()
+  const used = new Set<string>()
+
+  for (const [id, owner] of Object.entries(input)) {
+    if (
+      !ids.has(id) ||
+      id === board_default_id ||
+      typeof owner !== 'string' ||
+      !owner_pattern.test(owner) ||
+      used.has(owner)
+    ) {
+      throw new StorageError('Invalid board owner.')
+    }
+
+    owners.set(id, owner)
+    used.add(owner)
+  }
+
+  assert(owners.size < sessions.length, 'there is at least one unbound board')
+  assert(used.size === owners.size, 'each owner links to one board')
+  return { sessions, owners }
 }
 
 function session_read(value: unknown): BoardSession {

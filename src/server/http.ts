@@ -51,10 +51,14 @@ import {
   session_rename_route,
   sessions_list_response,
 } from './http_sessions'
+import { layers, whiteboard_path } from '../shared/whiteboard'
+import { authorized, scoped_key } from './whiteboard_keys'
+import { whiteboard_route, denied } from './http_whiteboard'
 import { pairing_board, type Pairing } from './pairing'
 
 export type ServerOptions = {
   readonly registry: BoardRegistry
+  readonly machine_key?: string
   readonly port: number
   readonly hostname: string
   readonly static_files: StaticFiles
@@ -82,6 +86,9 @@ export type BoardStatus = {
   readonly shapes_count: number
   readonly document_hash: string
   // The cleaned diagram: its revision (0 when none) and whether the sketch moved on since.
+  readonly linked: boolean
+  readonly interpretation_revision: number
+  readonly ideas_revision: number
   readonly cleaned_revision: number
   readonly cleaned_stale: boolean
 }
@@ -214,6 +221,19 @@ function board_route(
   const pathname = url.pathname
   assert(board_id_pattern.test(id), 'a routed board id is well formed')
 
+  const local = loopback_request(url, server, request)
+  const owner = registry.owner(id)
+  if (pathname.startsWith(whiteboard_path)) {
+    return whiteboard_route(request, registry, id, options.machine_key, local).catch((error) => {
+      if (error instanceof AssertionError) options.on_fatal(error)
+      return json_error(503, 'storage_failure', 'Board operation failed. Check storage and retry.')
+    })
+  }
+  if (owner && method === 'POST' &&
+      (pathname === path_cleaned_json || pathname === path_cleaned_restore)) {
+    if (!local || request.headers.has('origin') || !options.machine_key ||
+      !authorized(request, options.machine_key)) return denied(request)
+  }
   if (pathname === path_sync) return sync_upgrade(request, url, id, server, registry)
   if (pathname === path_drawing_png) {
     if (method === 'GET') return board_with(registry, id, (board) => image_get(board))
@@ -231,15 +251,31 @@ function board_route(
   if (pathname === path_sketch_json) return sketch_response(url, registry, id)
   if (pathname === path_pairing) {
     if (registry.find(id) === null) return lookup_error({ kind: 'not_found' })
-    return Response.json(pairing_board(options.pairing, board_draw_path(id)))
+    const page = board_draw_path(id)
+    if (local && owner && options.machine_key && request.headers.get('x-board-stage') === 'qr') {
+      const token = scoped_key(options.machine_key, 'event', id, owner)
+      const paired = pairing_board(options.pairing, `${page}#pair=${token}`)
+      return json_no_store({ ...paired, url: paired.url.split('#')[0] })
+    }
+    return json_no_store(pairing_board(options.pairing, page))
   }
   return board_with(registry, id, (board) => {
     if (pathname === path_drawing_json) return Response.json(board.shapes())
-    if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document())
-    if (pathname === path_cleaned_status) return json_no_store(board.cleaned_status())
+    const layer = layers.find((v) => v === url.searchParams.get('layer')) ?? 'interpretation'
+    if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document(layer))
+    if (pathname === path_cleaned_status) {
+      return json_no_store({ ...board.cleaned_status(layer), linked: owner !== null,
+        last_event: board.events.latest() ?? null })
+    }
     if (pathname === path_status) return Response.json(status_read(options, board, server.port))
     return text(404, 'Not found.')
   })
+}
+
+function loopback_request(url: URL, server: Server<SocketData>, request: Request): boolean {
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) return false
+  const address = server.requestIP(request)?.address ?? ''
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)
 }
 
 // Runs a route on the named board, opened if need be, or says why it cannot be served.
@@ -294,6 +330,9 @@ function status_read(options: ServerOptions, board: Board, port: number | undefi
     stage_connected: board.sessions_count('stage') > 0,
     shapes_count: state.shapes_count,
     document_hash: state.hash,
+    linked: options.registry.owner(id) !== null,
+    interpretation_revision: cleaned.revision,
+    ideas_revision: board.cleaned_status('ideas').revision,
     cleaned_revision: cleaned.revision,
     cleaned_stale: cleaned.stale,
   }

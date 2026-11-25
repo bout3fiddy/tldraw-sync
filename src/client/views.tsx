@@ -41,7 +41,10 @@ function view_stored(key: string): View {
   }
 }
 
-type ViewTabsProps = { view: View; stale: boolean; onChoose: (view: View) => void }
+type ViewTabsProps = {
+  view: View; linked?: boolean; stale: boolean; onChoose: (view: View) => void
+}
+const linked_labels = { sketch: 'Sketchboard', cleaned: 'Agent canvas', side: 'Side by side' }
 
 // A tab list as the platform expects: one tab stop, arrow keys move between views.
 const tab_keys: Record<string, (index: number) => number> = {
@@ -51,7 +54,7 @@ const tab_keys: Record<string, (index: number) => number> = {
   End: () => views.length - 1,
 }
 
-export function ViewTabs({ view, stale, onChoose }: ViewTabsProps) {
+export function ViewTabs({ view, linked, stale, onChoose }: ViewTabsProps) {
   const key_down = (event: KeyboardEvent<HTMLElement>) => {
     const step = tab_keys[event.key]
     if (step === undefined) return
@@ -80,7 +83,7 @@ export function ViewTabs({ view, stale, onChoose }: ViewTabsProps) {
           tabIndex={view === candidate.id ? 0 : -1}
           onClick={() => onChoose(candidate.id)}
         >
-          {candidate.label}
+          {linked ? linked_labels[candidate.id] : candidate.label}
           {candidate.id === 'cleaned' && stale && (
             <>
               <span className="tabs__stale" title="The sketch changed since this cleanup" />
@@ -93,20 +96,21 @@ export function ViewTabs({ view, stale, onChoose }: ViewTabsProps) {
   )
 }
 
-type ViewPanesProps = { view: View; sketch: ReactNode; cleaned: ReactNode }
+type ViewPanesProps = { view: View; linked?: boolean; sketch: ReactNode; cleaned: ReactNode }
 
-export function ViewPanes({ view, sketch, cleaned }: ViewPanesProps) {
+export function ViewPanes({ view, linked, sketch, cleaned }: ViewPanesProps) {
   return (
     <div className="views" data-view={view}>
       <section
         className="views__pane views__pane--sketch"
-        aria-label="Sketch"
+        aria-label={linked ? linked_labels.sketch : 'Sketch'}
         aria-hidden={view === 'cleaned'}
       >
         {sketch}
       </section>
       {view !== 'sketch' && (
-        <section className="views__pane views__pane--cleaned" aria-label="Cleaned">
+        <section className="views__pane views__pane--cleaned"
+          aria-label={linked ? linked_labels.cleaned : 'Cleaned'}>
           {cleaned}
         </section>
       )}

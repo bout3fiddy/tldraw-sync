@@ -4,6 +4,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Tldraw, useEditor, useValue, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
+import type { Layer } from '../shared/whiteboard'
+import { LayerChoice } from './agent_actions'
 import { path_pairing } from '../shared/constants'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
@@ -18,7 +20,11 @@ type Pairing = { url: string; modules: string[] }
 export function StagePage({ session }: { session: string }) {
   const board = use_board_store('stage', session)
   const [view, view_choose] = use_view('stage')
-  const cleaned = use_cleaned(session)
+  const [layer, choose] = useState<Layer>('interpretation')
+  const cleaned = use_cleaned(session, layer)
+  const linked = cleaned.status?.linked === true
+  const [pair, showPair] = useState(false)
+  const pairing = use_pairing(session)
   const mount = useCallback((editor: Editor) => stage_mount(editor, session), [session])
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
@@ -27,8 +33,9 @@ export function StagePage({ session }: { session: string }) {
   }
 
   return (
-    <main className="board board--stage">
+    <main className="board board--stage" data-linked={linked}>
       <ViewPanes
+        linked={linked}
         view={view}
         sketch={
           <Tldraw
@@ -38,12 +45,19 @@ export function StagePage({ session }: { session: string }) {
             components={components_quiet}
             onMount={mount}
           >
-            <StageGuide session={session} />
+            <StageGuide pairing={pairing} />
           </Tldraw>
         }
-        cleaned={<CleanedPane cleaned={cleaned} />}
+        cleaned={<CleanedPane cleaned={cleaned} ideas={layer === 'ideas'} />}
       />
-      <ViewTabs view={view} stale={cleaned.status?.stale ?? false} onChoose={view_choose} />
+      <ViewTabs view={view} linked={linked} stale={layer !== 'ideas' && !!cleaned.status?.stale}
+        onChoose={view_choose} />
+      {linked && <footer className="agent-rail">
+        {view !== 'sketch' && <LayerChoice layer={layer} choose={choose} />}
+        <button aria-expanded={pair} onClick={() => showPair(!pair)}>Pair iPad</button>
+        {pair && pairing && <aside className="pair-inset"><QrCode modules={pairing.modules} />
+          <p>Scan for sketchboard controls</p></aside>}
+      </footer>}
       {board.connectionStatus === 'offline' && (
         <Notice
           floating
@@ -56,9 +70,8 @@ export function StagePage({ session }: { session: string }) {
 
 // Shown only while it is useful: large on an empty board, tucked in a corner once there is
 // a drawing, and gone the moment a pen connects.
-function StageGuide({ session }: { session: string }) {
+function StageGuide({ pairing }: { pairing: Pairing | null }) {
   const editor = useEditor()
-  const pairing = use_pairing(session)
   const pen_connected = useValue(
     'pen connected',
     () => editor.getCollaborators().some((collaborator) => collaborator.userName === 'draw'),
@@ -86,7 +99,7 @@ function use_pairing(session: string): Pairing | null {
   const [pairing, pairing_set] = useState<Pairing | null>(null)
   useEffect(() => {
     let cancelled = false
-    fetch(`${path_pairing}?${board_query(session)}`)
+    fetch(`${path_pairing}?${board_query(session)}`, { headers: { 'x-board-stage': 'qr' } })
       .then((response) => (response.ok ? (response.json() as Promise<Pairing>) : null))
       .then((loaded) => {
         if (!cancelled) pairing_set(loaded)

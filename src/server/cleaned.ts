@@ -8,6 +8,7 @@
 // revision and goes through the same compare-and-swap, so it cannot clobber a newer publish.
 
 import type { TLRecord } from '@tldraw/tlschema'
+import { idea_nodes_count_max, idea_shapes_count_max, type Layer } from '../shared/whiteboard'
 import { assert } from '../shared/assert'
 import { board_default_id, board_id_pattern } from '../shared/board_session'
 import { cleaned_history_count_max, document_hash_pattern } from '../shared/constants'
@@ -58,15 +59,30 @@ export class Cleaned {
   private constructor(
     private readonly disk: Disk,
     private state: State,
+    private readonly layer: Layer,
   ) {
     this.records_current = state.current === null ? [] : proposal_records(state.current)
   }
 
   // A board saved before cleanup existed has no file: it opens with nothing published.
-  static open(disk: Disk): Cleaned {
-    const bytes = disk.read(file_name)
+  static open(disk: Disk, layer: Layer = 'interpretation'): Cleaned {
+    const bytes = disk.read(layer === 'ideas' ? 'ideas.state' : file_name)
     const state = bytes === null ? { revision: 0, current: null, history: [] } : state_read(bytes)
-    const cleaned = new Cleaned(disk, state)
+
+    if (layer === 'ideas') {
+      for (const version of [state.current, ...state.history]) {
+        if (
+          version &&
+          (!version.diagram ||
+            version.diagram.nodes.length > idea_nodes_count_max ||
+            version.shapes.length > idea_shapes_count_max)
+        ) {
+          throw new StorageError('ideas.state contains an oversized or nonsemantic version.')
+        }
+      }
+    }
+
+    const cleaned = new Cleaned(disk, state, layer)
     assert(cleaned.state.revision >= 0, 'a revision is never negative')
     assert(cleaned.state.history.length <= cleaned_history_count_max, 'history is bounded')
     return cleaned
@@ -90,7 +106,18 @@ export class Cleaned {
       return { kind: 'session_mismatch', session }
     }
 
-    if (proposal.snapshot !== sketch_hash) return { kind: 'sketch_changed', sketch_hash }
+    if (this.layer === 'interpretation' && proposal.snapshot !== sketch_hash) {
+      return { kind: 'sketch_changed', sketch_hash }
+    }
+
+    if (
+      this.layer === 'ideas' &&
+      (!proposal.diagram ||
+        proposal.diagram.nodes.length > idea_nodes_count_max ||
+        proposal.shapes.length > idea_shapes_count_max)
+    ) {
+      return { kind: 'invalid', path: 'ideas', message: 'Use up to 64 nodes and 256 shapes.' }
+    }
 
     if (proposal.base_revision !== this.state.revision) {
       return { kind: 'revision_conflict', revision: this.state.revision }
@@ -185,10 +212,11 @@ export class Cleaned {
     const next: State = { revision: version.revision, current: version, history }
 
     const payload = new TextEncoder().encode(JSON.stringify(state_json(next)))
-    this.disk.write_atomic(file_name, envelope_encode({ kind: 'cleaned', label, payload }))
+    const file = this.layer === 'ideas' ? 'ideas.state' : file_name
+    this.disk.write_atomic(file, envelope_encode({ kind: 'cleaned', label, payload }))
 
     // Pair assertion: the file now on disk reads back as the state about to be served.
-    const written = this.disk.read(file_name)
+    const written = this.disk.read(file)
     assert(written !== null, 'the cleaned state was written')
     assert(state_read(written).revision === next.revision, 'the written state reads back')
 

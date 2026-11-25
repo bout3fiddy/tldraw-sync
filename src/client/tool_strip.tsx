@@ -3,7 +3,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { DefaultColorStyle, useEditor, useValue } from 'tldraw'
-import { icon_clear, icon_eraser, icon_pen, icon_redo, icon_undo } from './icons'
+import { icon_clear, icon_eraser, icon_pen, icon_select, icon_redo, icon_undo } from './icons'
 
 // tldraw's own ink names, with the colours it draws them in, so a well matches its stroke.
 const inks = [
@@ -15,7 +15,7 @@ const inks = [
 
 const clear_confirm_ms = 3000
 
-export function ToolStrip() {
+export function ToolStrip({ editable = false }: { editable?: boolean }) {
   const editor = useEditor()
   const tool = useValue('tool', () => editor.getCurrentToolId(), [editor])
   const ink = useValue('ink', () => editor.getStyleForNextShape(DefaultColorStyle), [editor])
@@ -29,6 +29,8 @@ export function ToolStrip() {
       aria-label="Drawing tools"
       onPointerDown={(event) => event.stopPropagation()}
     >
+      {editable && <StripButton label="Select shapes" active={tool === 'select'}
+        onPress={() => editor.setCurrentTool('select')}>{icon_select}</StripButton>}
       <StripButton label="Pen" active={tool === 'draw'} onPress={() => tool_set('draw')}>
         {icon_pen}
       </StripButton>

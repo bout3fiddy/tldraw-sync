@@ -17,6 +17,8 @@ export const commands = [
   'session-list',
   'session-create',
   'session-rename',
+  'whiteboard-link', 'whiteboard-poll', 'whiteboard-ack',
+  'whiteboard-snapshot', 'whiteboard-publish',
 ] as const
 
 // Every board command takes this; it is described once here and named in each command's help.
@@ -40,6 +42,13 @@ Cleanup (an external agent reads the sketch; the tool typesets it on a separate 
   cleanup-compose   Lay out a semantic diagram locally, without publishing it
   cleanup-publish   Lay out and publish a semantic diagram as the new cleaned diagram
   cleanup-restore   Bring back an earlier cleaned diagram
+
+Linked whiteboards (one board per pih session; credentials stay in the private binding file):
+  whiteboard-link      Start or reopen a bound board and its pairing stage
+  whiteboard-poll      Read outstanding durable requests
+  whiteboard-ack       Mark a request received, working, updated or failed
+  whiteboard-snapshot  Read a coherent sketch and the selected agent layer
+  whiteboard-publish   Compose a semantic proposal into Interpretation or Ideas
 
 Boards (each is a separate board, listed in the side rail and opened by its own address):
   session-list    List the boards, their ids, names and addresses
@@ -98,6 +107,14 @@ Environment:
   BOARD_DATA_DIR  Where the board is saved (default: data/ in the repository)`
 
 export const help_commands: Record<Command, string> = {
+  'whiteboard-link': 'Usage: tldraw-sync whiteboard-link --owner <id> --out <absolute-file> --json',
+  'whiteboard-poll': 'Usage: tldraw-sync whiteboard-poll --binding <file> --json',
+  'whiteboard-ack': `Usage: tldraw-sync whiteboard-ack --binding <file> --event <id>
+    --state <received|working|updated|failed> [--message <text>] --json`,
+  'whiteboard-snapshot': `Usage: tldraw-sync whiteboard-snapshot --binding <file>
+    --layer <interpretation|ideas> [--out <directory>] --json`,
+  'whiteboard-publish': `Usage: tldraw-sync whiteboard-publish --binding <file>
+    --layer <interpretation|ideas> --file <diagram.json> --json`,
   start: `Usage: tldraw-sync start [--port <n>] [--no-open] [--json | --quiet]
 
 Starts the board in the background and returns once it is serving. If a board is already

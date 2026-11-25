@@ -16,10 +16,11 @@ export type Disk = {
 // only in the data directory.
 export const file_names = [
   'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'sessions.registry',
+  'ideas.state', 'events.state', 'whiteboard.key',
 ] as const
 export type FileName = (typeof file_names)[number]
 
-export type EnvelopeKind = 'board' | 'image' | 'frame' | 'cleaned' | 'registry'
+export type EnvelopeKind = 'board' | 'image' | 'frame' | 'cleaned' | 'registry' | 'events'
 
 // A saved file cannot be trusted. This is an operating error: the caller reports it and
 // refuses to start, because starting empty would silently discard someone's work.
@@ -97,6 +98,7 @@ export function disk_open(directory: string): Disk {
       assert(file_names.includes(name), 'file name is known')
       const file = path.join(directory, name)
       assert(path.dirname(file) === directory, 'files live directly in the data directory')
+      if (name === 'whiteboard.key') return key_read(file)
       if (!fs.existsSync(file)) return null
       return new Uint8Array(fs.readFileSync(file))
     },
@@ -107,12 +109,21 @@ export function disk_open(directory: string): Disk {
       const file_temporary = `${file}.tmp`
       assert(path.dirname(file) === directory, 'files live directly in the data directory')
 
-      const descriptor = fs.openSync(file_temporary, 'w')
-      fs.writeSync(descriptor, bytes)
-      fs.fsyncSync(descriptor)
-      fs.closeSync(descriptor)
-
-      fs.renameSync(file_temporary, file)
+      // A daemon owns this directory exclusively. Retire a partial left by a crash without
+      // opening it: an old symlink must never be followed, nor can partials grow without bound.
+      fs.rmSync(file_temporary, { force: true })
+      const descriptor = fs.openSync(file_temporary, 'wx', 0o600)
+      try {
+        try {
+          fs.writeFileSync(descriptor, bytes)
+          fs.fsyncSync(descriptor)
+        } finally {
+          fs.closeSync(descriptor)
+        }
+        fs.renameSync(file_temporary, file)
+      } finally {
+        fs.rmSync(file_temporary, { force: true })
+      }
       directory_sync(directory)
       // Pair assertion: the file now on disk is as long as the bytes it was given.
       assert(fs.statSync(file).size === bytes.byteLength, 'the whole file was written')
@@ -121,10 +132,38 @@ export function disk_open(directory: string): Disk {
   }
 }
 
+// Never issue credentials from a public, linked or oversized key file, even if its contents
+// happen to look like a valid key. Check the open descriptor, not a path checked before open.
+function key_read(file: string): Uint8Array | null {
+  const flags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK
+  let fd: number
+  try {
+    fd = fs.openSync(file, flags)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new StorageError('Cannot open the private whiteboard key.')
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== 64 || stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o777) !== 0o600) throw new StorageError('Unsafe whiteboard key file.')
+    const bytes = new Uint8Array(64)
+    if (fs.readSync(fd, bytes) !== bytes.length) {
+      throw new StorageError('Incomplete whiteboard key.')
+    }
+    return bytes
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 // Without this, the rename itself may not survive a power cut.
 function directory_sync(directory: string): void {
   assert(fs.statSync(directory).isDirectory(), 'the data directory is a directory')
   const descriptor = fs.openSync(directory, 'r')
-  fs.fsyncSync(descriptor)
-  fs.closeSync(descriptor)
+  try {
+    fs.fsyncSync(descriptor)
+  } finally {
+    fs.closeSync(descriptor)
+  }
 }

@@ -393,6 +393,81 @@ button {
   transform: translateY(-50%);
 }
 
+/* On a linked board, keep the view tabs and the action rail off the actual drawing. */
+.board[data-linked='true'] {
+  display: flex;
+  flex-direction: column;
+  padding-top: calc(env(safe-area-inset-top) + var(--module) + 2 * var(--edge));
+}
+
+.board[data-linked='true'] > .views {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.agent-rail {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px max(var(--edge), env(safe-area-inset-right))
+    max(5px, env(safe-area-inset-bottom)) max(var(--edge), env(safe-area-inset-left));
+  background: var(--vellum);
+  border-top: 1px solid var(--ink);
+  pointer-events: auto;
+}
+
+.agent-rail button {
+  min-height: var(--control);
+  min-width: var(--control);
+  padding: 0 12px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  cursor: pointer;
+}
+
+.layer-choice { display: flex; }
+.layer-choice button + button { margin-left: -1px; }
+.layer-choice button[aria-pressed='true'] { background: var(--ink); color: var(--vellum); }
+.agent-rail button:disabled { color: var(--lead); border-color: var(--rule); cursor: default; }
+
+.agent-rail [role='status'] {
+  margin-left: auto;
+  max-width: 40ch;
+  overflow-wrap: anywhere;
+  color: var(--lead);
+  font-size: 0.875rem;
+}
+
+.pair-inset {
+  position: absolute;
+  bottom: 100%;
+  left: var(--edge);
+  padding: 12px;
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+  text-align: center;
+}
+.pair-inset svg { width: 12rem; }
+.pair-inset p { margin: 4px 0; }
+
+@media (max-aspect-ratio: 1/1) {
+  .board[data-linked='true'] .views[data-view='side'] .strip {
+    top: auto;
+    bottom: 4px;
+    left: 50%;
+    max-width: 96%;
+    flex-direction: row;
+    overflow-x: auto;
+    transform: translateX(-50%);
+  }
+  .board[data-linked='true'] .strip > * { flex-shrink: 0; }
+}
+
 /* The stage guide: how to connect an iPad, shown only until one is connected. */
 
 .guide {

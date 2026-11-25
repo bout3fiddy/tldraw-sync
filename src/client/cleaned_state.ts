@@ -11,16 +11,19 @@ import {
   path_cleaned_status,
 } from '../shared/constants'
 
+import type { BoardEvent, Layer } from '../shared/whiteboard'
+
+type LayerStatus = CleanedStatus & { linked: boolean; last_event: BoardEvent | null }
 export type CleanedState = {
-  readonly status: CleanedStatus | null
+  readonly status: LayerStatus | null
   readonly document: CleanedDocument | null
 }
 
 const request_timeout_ms = 5000
 
-export function use_cleaned(session: string): CleanedState {
-  const [status, status_set] = useState<CleanedStatus | null>(null)
-  const [document, document_set] = useState<CleanedDocument | null>(null)
+export function use_cleaned(session: string, layer: Layer = 'interpretation'): CleanedState {
+  const [status, status_set] = useState<LayerStatus | null>(null)
+  const [loaded, document_set] = useState<{ layer: Layer; doc: CleanedDocument } | null>(null)
 
   useEffect(() => {
     let stopped = false
@@ -30,9 +33,9 @@ export function use_cleaned(session: string): CleanedState {
 
     // One poll: the status, then the records if they are newer than what is shown.
     const poll = async (): Promise<void> => {
-      const query = `?${board_query(session)}`
+      const query = `?${board_query(session)}&layer=${layer}`
       const text = window.document.hidden ? null : await text_get(`${path_cleaned_status}${query}`)
-      const parsed = text === null ? null : json_parse<CleanedStatus>(text)
+      const parsed = text === null ? null : json_parse<LayerStatus>(text)
 
       // The sketch hash changes with every stroke. Only what is shown counts as a change, so
       // drawing does not re-render the page at every poll.
@@ -52,7 +55,7 @@ export function use_cleaned(session: string): CleanedState {
 
           if (!stopped && loaded !== null) {
             revision_loaded = loaded.revision
-            document_set(loaded)
+            document_set({ layer, doc: loaded })
             complete = loaded.revision === next.revision
           }
         }
@@ -67,8 +70,10 @@ export function use_cleaned(session: string): CleanedState {
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [session])
+  }, [session, layer])
 
+  const document = loaded?.layer === layer && loaded.doc.revision === status?.revision
+    ? loaded.doc : null
   return { status, document }
 }
 

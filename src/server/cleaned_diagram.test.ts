@@ -64,6 +64,72 @@ test('a composed diagram publishes with its styling, and the next snapshot offer
   board.destroy()
 })
 
+test('Ideas retain their source; Interpretation tracks live ink; both survive restart', () => {
+  const disk = sketch_disk([sketch_square('shape:a', 0)])
+  const board = board_open(disk)
+  const before = ink(board)
+  const older = '0'.repeat(16)
+  const proposal = composed(older, 0)
+  expect(board.cleaned_publish(proposal)).toEqual({
+    kind: 'sketch_changed',
+    sketch_hash: before.hash,
+  })
+  expect(board.cleaned_publish(proposal, 'ideas')).toMatchObject({ revision: 1 })
+  expect(board.cleaned_publish(proposal, 'ideas')).toEqual({
+    kind: 'revision_conflict',
+    revision: 1,
+  })
+  const ideas = board.cleaned_document('ideas')
+  expect(ideas.current?.source_hash).toBe(older)
+  expect(board.cleaned_publish(composed(before.hash, 0))).toMatchObject({ revision: 1 })
+  expect(board.cleaned_publish(composed(before.hash, 1))).toMatchObject({ revision: 2 })
+  expect(board.cleaned_document('ideas')).toEqual(ideas)
+  disk.write_fault_armed = true
+  expect(() => board.cleaned_publish(composed(older, 1), 'ideas')).toThrow(SimulatedCrash)
+  expect(ink(board)).toEqual(before)
+  board.close()
+  const reopened = board_open(disk)
+  expect(reopened.cleaned_document('ideas')).toEqual(ideas)
+  expect(reopened.cleaned_status().revision).toBe(2)
+  reopened.close()
+})
+
+test('Ideas accept 64 nodes and reject 65 without changing state', async () => {
+  const board = board_open(sketch_disk([sketch_square('shape:a', 0)]))
+  const hash = board.document_state().hash
+  const nodes = Array.from({ length: 65 }, (_, i) => ({
+    id: `n${i}`,
+    kind: 'box',
+    label: `Node ${i}`,
+    at: [100 * (i % 8), 80 * (i >> 3), 60, 40],
+  }))
+
+  for (const count of [64, 65]) {
+    const input = {
+      format: fixture.format,
+      nodes: nodes.slice(0, count),
+      edges: [],
+      snapshot: hash,
+      base_revision: count - 64,
+    }
+    const parsed = diagram_proposal_parse(input)
+
+    if (!parsed.ok) throw Error(parsed.message)
+
+    const result = await diagram_compose(parsed.proposal)
+
+    if (!result.ok) throw Error(result.message)
+
+    const proposal = JSON.parse(result.composed.text)
+    const published = board.cleaned_publish(proposal, 'ideas')
+    expect(published.kind).toBe(count === 64 ? 'published' : 'invalid')
+    expect(board.cleaned_status('ideas').revision).toBe(1)
+    expect(board.cleaned_status().revision).toBe(0)
+  }
+
+  board.close()
+})
+
 type Record_ = { id: string; type?: string; props?: Record<string, unknown> }
 
 // What tells the two looks apart in a revision's records: the faces and dashes its shapes use.

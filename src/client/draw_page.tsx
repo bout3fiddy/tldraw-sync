@@ -1,6 +1,9 @@
 // The iPad workspace: a canvas and a tool strip. Everything else tldraw offers is hidden. Tabs
 // switch to the cleaned diagram, or show it beside the sketch while drawing continues.
 
+import { useCallback, useState } from 'react'
+import type { Layer } from '../shared/whiteboard'
+import { AgentActions } from './agent_actions'
 import { DefaultSizeStyle, Tldraw, type Editor } from 'tldraw'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
@@ -12,15 +15,23 @@ import { use_view, ViewPanes, ViewTabs } from './views'
 export function DrawPage({ session }: { session: string }) {
   const board = use_board_store('draw', session)
   const [view, view_choose] = use_view('draw')
-  const cleaned = use_cleaned(session)
+  const [layer, choose] = useState<Layer>('interpretation')
+  const cleaned = use_cleaned(session, layer)
+  const linked = cleaned.status?.linked === true
+  const [editor, setEditor] = useState<Editor | null>(null)
+  const mount = useCallback((value: Editor) => {
+    draw_mount(value)
+    setEditor(value)
+  }, [])
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     return <Notice text="The board is not answering. Start it on your Mac, then reload." />
   }
 
   return (
-    <main className="board">
+    <main className="board" data-linked={linked}>
       <ViewPanes
+        linked={linked}
         view={view}
         sketch={
           <Tldraw
@@ -28,15 +39,19 @@ export function DrawPage({ session }: { session: string }) {
             hideUi
             assetUrls={asset_urls}
             components={components_quiet}
-            onMount={draw_mount}
+            onMount={mount}
           >
-            <ToolStrip />
+            <ToolStrip editable={linked} />
           </Tldraw>
         }
-        cleaned={<CleanedPane cleaned={cleaned} />}
+        cleaned={<CleanedPane cleaned={cleaned} ideas={layer === 'ideas'} />}
       />
-      <ViewTabs view={view} stale={cleaned.status?.stale ?? false} onChoose={view_choose} />
-      {board.connectionStatus === 'offline' && (
+      <ViewTabs view={view} linked={linked} stale={layer !== 'ideas' && !!cleaned.status?.stale}
+        onChoose={view_choose} />
+      {linked && <AgentActions editor={editor} session={session} layer={layer} choose={choose}
+        cleaned={cleaned} view={view} online={board.connectionStatus !== 'offline'}
+        showSketch={() => view_choose('sketch')} />}
+      {!linked && board.connectionStatus === 'offline' && (
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}
     </main>

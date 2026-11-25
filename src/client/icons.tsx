@@ -5,6 +5,7 @@
 import type { Icon } from '@phosphor-icons/react'
 import { ArrowUUpLeft } from '@phosphor-icons/react/dist/csr/ArrowUUpLeft'
 import { ArrowUUpRight } from '@phosphor-icons/react/dist/csr/ArrowUUpRight'
+import { Cursor } from '@phosphor-icons/react/dist/csr/Cursor'
 import { Eraser } from '@phosphor-icons/react/dist/csr/Eraser'
 import { PencilSimpleLine } from '@phosphor-icons/react/dist/csr/PencilSimpleLine'
 import { Pen } from '@phosphor-icons/react/dist/csr/Pen'
@@ -21,6 +22,7 @@ function glyph(Glyph: Icon, size_px = icon_size_px): ReactNode {
   return <Glyph size={size_px} weight="light" aria-hidden="true" focusable="false" />
 }
 
+export const icon_select = glyph(Cursor)
 export const icon_pen = glyph(Pen)
 export const icon_eraser = glyph(Eraser)
 export const icon_undo = glyph(ArrowUUpLeft)

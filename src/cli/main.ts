@@ -8,6 +8,7 @@ import {
   cleanup_compose, cleanup_publish, cleanup_restore, cleanup_snapshot,
 } from './cleanup_commands'
 import { fetch_drawing, serve, start, status, stop, type Options } from './commands'
+import { whiteboard } from './whiteboard_commands'
 import { commands, help_commands, help_top, type Command } from './help'
 import { failure, outcome_print, type Outcome, type OutputMode } from './output'
 import { session_create, session_list, session_rename } from './session_commands'
@@ -24,7 +25,16 @@ const options_common = {
 // The board session a command works on. Without it, the default board.
 const option_session = { session: { type: 'string' } } as const
 
+const string_option = { type: 'string' } as const
+const bound = { ...options_common, binding: string_option }
+const layer = { ...bound, layer: string_option }
 const options_by_command = {
+  'whiteboard-link': { ...options_common, owner: string_option, out: string_option },
+  'whiteboard-poll': bound,
+  'whiteboard-ack': { ...bound, event: string_option, state: string_option,
+    message: string_option },
+  'whiteboard-snapshot': { ...layer, out: string_option },
+  'whiteboard-publish': { ...layer, file: string_option },
   start: { ...options_common, port: { type: 'string' }, 'no-open': { type: 'boolean' } },
   fetch: {
     ...options_common, ...option_session, out: { type: 'string' }, 'no-open': { type: 'boolean' },
@@ -122,6 +132,7 @@ function arguments_parse(command: Command, rest: readonly string[]): Parsed {
     return { outcome: usage_error(message, help_command) }
   }
   const options: Options = {
+    ...Object.fromEntries(Object.entries(values).filter(([, value]) => typeof value === 'string')),
     port,
     no_open: values['no-open'] === true,
     out: typeof values.out === 'string' ? values.out : null,
@@ -143,6 +154,7 @@ function revision_parse(value: string | boolean | undefined): number | null | 'm
 }
 
 function command_run(command: Command, options: Options): Promise<Outcome> {
+  if (command.startsWith('whiteboard-')) return whiteboard(command, options)
   if (command === 'start') return start(options)
   if (command === 'cleanup-snapshot') return cleanup_snapshot(options)
   if (command === 'cleanup-compose') return cleanup_compose(options)

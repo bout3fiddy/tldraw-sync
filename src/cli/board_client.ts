@@ -73,13 +73,15 @@ export async function api_request(
   port: number,
   pathname: string,
   body: string | null,
+  headers: Record<string, string> = {},
 ): Promise<ApiAnswer> {
   assert(pathname.startsWith('/api/'), 'only the board API is asked')
   let response: Response
   try {
     response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
       method: body === null ? 'GET' : 'POST',
-      headers: body === null ? {} : { 'content-type': 'application/json' },
+      headers: body === null ? headers : { ...headers, 'content-type': 'application/json' },
+      redirect: 'error',
       body,
       signal: AbortSignal.timeout(status_timeout_ms * 10),
     })

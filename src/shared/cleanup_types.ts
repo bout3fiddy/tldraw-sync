@@ -234,6 +234,7 @@ export type SketchSnapshot = {
   bounds: SketchBounds | null
   image_padding: number
   cleaned_revision: number
+  ideas_revision: number
 
   // The semantic diagram behind the current cleaned revision, when it was composed from one.
   // An agent reuses its ids, so the same things keep their identity across revisions.

@@ -11,6 +11,7 @@ import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
 import { pairing_create, pairing_host, type Pairing } from './pairing'
 import { server_state_claim, server_state_release, type ServerState } from './server_state'
+import { machine_key } from './whiteboard_keys'
 import { disk_open } from './storage'
 
 export type ServerRunOptions = {
@@ -49,10 +50,13 @@ export function server_run(options: ServerRunOptions): ServerRunResult {
 function board_serve(options: ServerRunOptions): ServerRunResult {
   assert(Number.isInteger(options.port), 'port is an integer')
   let registry: BoardRegistry
+  let key: string
   try {
+    const disk = disk_open(options.data_directory)
+    key = machine_key(disk)
     registry = BoardRegistry.open({
       time: time_real,
-      disk: disk_open(options.data_directory),
+      disk,
       // Each other board in a directory of its own, made when the board first opens.
       disk_board: (id) => disk_open(path.join(options.data_directory, 'sessions', id)),
       id_create: board_id_random,
@@ -66,6 +70,7 @@ function board_serve(options: ServerRunOptions): ServerRunResult {
   try {
     server_start({
       registry,
+      machine_key: key,
       port: options.port,
       // All interfaces: the iPad reaches the board over the local network.
       hostname: '0.0.0.0',

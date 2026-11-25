@@ -27,7 +27,9 @@ import {
 } from './board_process'
 import { exit_codes, failure, success, type Outcome } from './output'
 
-export type Options = {
+import type { BoardFlags } from './whiteboard_commands'
+
+export type Options = BoardFlags & {
   readonly port: number | null
   readonly no_open: boolean
   readonly out: string | null

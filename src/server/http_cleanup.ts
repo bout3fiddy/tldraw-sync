@@ -8,7 +8,7 @@ import {
   proposal_size_bytes_max,
   restore_request_size_bytes_max,
 } from '../shared/constants'
-import type { BoardLookupFailure, BoardRegistry } from './board_registry'
+import type { BoardLookupFailure, BoardRegistry, RegistryPublish } from './board_registry'
 
 type Body = { ok: true; value: unknown } | { ok: false; response: Response }
 
@@ -23,7 +23,10 @@ export async function cleaned_publish_route(
 
   if (!body.ok) return body.response
 
-  const result = registry.publish(id, body.value)
+  return publish_response(registry.publish(id, body.value))
+}
+
+export function publish_response(result: RegistryPublish): Response {
 
   if (result.kind === 'not_found' || result.kind === 'busy' || result.kind === 'damaged') {
     return lookup_error(result)
@@ -213,7 +216,7 @@ function too_large_error(size_bytes_max: number): Response {
 // Answering while the sender is still writing leaves unread bytes on the connection: it is
 // then closed under the sender, who sees a reset or a stall instead of the reason. Nothing
 // is kept, so memory stays one chunk, and the server's request limit bounds the work.
-async function body_discard(request: Request): Promise<void> {
+export async function body_discard(request: Request): Promise<void> {
   if (request.body === null) return
 
   const reader = request.body.getReader()

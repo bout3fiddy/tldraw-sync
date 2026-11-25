@@ -55,7 +55,7 @@ export function file_read_bounded(file: string, bytes_max: number): BoundedRead 
   }
 }
 
-function descriptor_read_bounded(descriptor: number, bytes_max: number): BoundedRead {
+export function descriptor_read_bounded(descriptor: number, bytes_max: number): BoundedRead {
   assert(Number.isInteger(descriptor) && descriptor >= 0, 'a descriptor is open')
   let stat: fs.Stats
 

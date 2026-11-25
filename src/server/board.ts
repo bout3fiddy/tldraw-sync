@@ -38,6 +38,9 @@ import type { Time, TimerHandle } from '../shared/time'
 import { Cleaned, type PublishResult, type RestoreResult } from './cleaned'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
+import type { EventKind, Layer } from '../shared/whiteboard'
+import { BoardEvents } from './board_events'
+
 export { StorageError } from './storage'
 
 // `session` names the board session this board is. A board opened without one is the default
@@ -79,6 +82,8 @@ export class Board {
     snapshot: RoomSnapshot,
     private image: Image | null,
     private readonly cleaned: Cleaned,
+    private readonly ideas: Cleaned,
+    readonly events: BoardEvents,
   ) {
     this.room = new TLSocketRoom<TLRecord>({
       schema,
@@ -94,7 +99,9 @@ export class Board {
     const snapshot = snapshot_read(environment.disk) ?? snapshot_empty()
     const image = image_read(environment.disk)
     const cleaned = Cleaned.open(environment.disk)
-    const board = new Board(environment, snapshot, image, cleaned)
+    const ideas = Cleaned.open(environment.disk, 'ideas')
+    const events = BoardEvents.open(environment.disk)
+    const board = new Board(environment, snapshot, image, cleaned, ideas, events)
 
     // Pair assertion: what was read from disk is what the room now serves.
     const records = snapshot.documents.map((document) => document.state)
@@ -269,7 +276,8 @@ export class Board {
 
   // The records of the sketch as it is, but only while it is the sketch the caller saw in its
   // image. Null means the sketch has moved on, and the caller must fetch the image again.
-  sketch_snapshot(hash: string): Omit<SketchSnapshot, 'title_wanted'> | null {
+  sketch_snapshot(hash: string, layer: Layer = 'interpretation'):
+    Omit<SketchSnapshot, 'title_wanted'> | null {
     assert(!this.closed, 'board is open')
     assert(document_hash_pattern.test(hash), 'hash is well formed')
     const state = this.document_state()
@@ -279,33 +287,49 @@ export class Board {
     return {
       session: this.session,
       document_hash: hash,
-      records: this.shapes(),
+      records: this.document_records().filter((r) => r.typeName === 'shape' ||
+        r.typeName === 'binding'),
       bounds,
       image_padding: image_padding_px,
       cleaned_revision: this.cleaned.status(hash).revision,
-      diagram_previous: this.cleaned.diagram_current(),
+      ideas_revision: this.ideas.status(hash).revision,
+      diagram_previous: this.layer(layer).diagram_current(),
     }
   }
 
-  cleaned_status(): CleanedStatus {
+  private layer(layer: Layer): Cleaned {
+    assert(!this.closed, 'agent layers are accessed only on open boards')
+    assert(this.ideas !== this.cleaned, 'agent layers have independent state machines')
+    return layer === 'ideas' ? this.ideas : this.cleaned
+  }
+
+  queue_event(kind: EventKind, hash: string) {
+    const current = this.document_state()
+    if (current.hash !== hash) return 'syncing'
+    if (this.clock_saved !== current.clock) this.save()
+    assert(this.clock_saved === current.clock, 'the referenced sketch is durable')
+    return this.events.queue(kind, hash, this.environment.time.now_ms(), crypto.randomUUID())
+  }
+
+  cleaned_status(layer: Layer = 'interpretation'): CleanedStatus {
     assert(!this.closed, 'board is open')
-    const status = this.cleaned.status(this.document_state().hash)
+    const status = this.layer(layer).status(this.document_state().hash)
     assert(status.revision >= 0, 'a revision is never negative')
     return status
   }
 
-  cleaned_document(): CleanedDocument {
+  cleaned_document(layer: Layer = 'interpretation'): CleanedDocument {
     assert(!this.closed, 'board is open')
-    const document = this.cleaned.document(this.document_state().hash)
+    const document = this.layer(layer).document(this.document_state().hash)
     assert(document.revision >= 0, 'a revision is never negative')
     return document
   }
 
-  cleaned_publish(input: unknown): PublishResult {
+  cleaned_publish(input: unknown, layer: Layer = 'interpretation'): PublishResult {
     assert(!this.closed, 'board is open')
     const before = this.document_state()
     const now_ms = this.environment.time.now_ms()
-    const result = this.cleaned.publish(input, before.hash, this.session, now_ms)
+    const result = this.layer(layer).publish(input, before.hash, this.session, now_ms)
     // Pair assertion: publishing a cleanup leaves the human ink exactly as it was.
     const after = this.document_state()
     assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')
