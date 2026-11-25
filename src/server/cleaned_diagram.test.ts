@@ -17,6 +17,7 @@ import {
 } from '../simulation/test_sketch'
 import { VirtualTime } from '../simulation/virtual_time'
 import { Board } from './board'
+import { envelope_decode } from './storage'
 
 const parsed = diagram_proposal_parse(fixture)
 
@@ -57,11 +58,99 @@ test('a composed diagram publishes with its styling, and the next snapshot offer
     props?: Record<string, unknown>
   }>
   const group = records.find((record) => record.id === 'shape:cleaned-environments')
-  expect(group?.props).toMatchObject({ fill: 'solid', verticalAlign: 'start' })
+  expect(group?.props).toMatchObject({ fill: 'none', verticalAlign: 'start', dash: 'draw' })
   expect(JSON.stringify(group?.props?.richText)).toContain('bold')
   expect(board.sketch_snapshot(before.hash)?.diagram_previous).toEqual(diagram)
   board.destroy()
 })
+
+type Record_ = { id: string; type?: string; props?: Record<string, unknown> }
+
+// What tells the two looks apart in a revision's records: the faces and dashes its shapes use.
+// Both are black ink, and neither adds a record beyond the diagram's own shapes and bindings.
+function look(records: readonly Record_[]) {
+  const shapes = records.filter((record) => record.id.startsWith('shape:'))
+  return {
+    fonts: [...new Set(shapes.map((record) => record.props?.font))].sort(),
+    dashes: [...new Set(shapes.map((record) => record.props?.dash).filter(Boolean))].sort(),
+    colours: [...new Set(shapes.map((record) => record.props?.color))].sort(),
+    extra: shapes.filter((record) => !record.id.startsWith('shape:cleaned-')).map((r) => r.id),
+  }
+}
+
+// The historical composer's colours: blue solid boxes and ovals inside grey groups.
+const plain_look = {
+  fonts: ['sans'],
+  dashes: ['solid'],
+  colours: ['black', 'blue', 'grey'],
+  extra: [],
+}
+const markerboard_look = { fonts: ['draw'], dashes: ['draw'], colours: ['black'], extra: [] }
+
+// The renderer's style belongs to each revision. A board saved before styles existed holds
+// plain revisions whose saved bytes have no style; they render plain after a restart and after
+// a restore, while a newly composed revision renders as a markerboard. No revision number or
+// global switch decides it.
+test('each revision keeps its own look through a restart and restores', () => {
+  const disk = sketch_disk([sketch_square('shape:a', 0)])
+  const board = board_open(disk)
+  const hash = board.document_state().hash
+
+  // A plain composed revision, as published before styles existed: the same proposal format,
+  // with a diagram, no style, and the colours the composer gave it then.
+  const legacy = { ...composed(hash, 0) }
+  delete legacy.style
+  legacy.shapes = (legacy.shapes as Array<Record<string, unknown>>).map((shape) => {
+    if (shape.kind === 'arrow' || shape.kind === 'text') return shape
+
+    const group = diagram.nodes.some((node) => node.id === shape.id && node.kind === 'group')
+    return group
+      ? { ...shape, color: 'grey', fill: 'solid' }
+      : { ...shape, color: 'blue', fill: 'solid' }
+  })
+  expect(board.cleaned_publish(legacy)).toMatchObject({ kind: 'published', revision: 1 })
+  const saved_legacy = JSON.stringify(JSON.parse(state_text(disk)).current)
+  expect(saved_legacy).not.toContain('"style"')
+  expect(saved_legacy).toContain('"color":"blue"')
+  expect(look(records_of(board))).toEqual(plain_look)
+  const legacy_records = JSON.stringify(records_of(board))
+
+  expect(board.cleaned_publish(composed(hash, 1))).toMatchObject({ kind: 'published' })
+  const markerboard_records = JSON.stringify(records_of(board))
+  expect(look(records_of(board))).toEqual(markerboard_look)
+
+  // The legacy revision in history is saved byte for byte as it was.
+  const state = JSON.parse(state_text(disk))
+  expect(JSON.stringify(state.history[0])).toBe(saved_legacy)
+  expect(state.current.style).toBe('markerboard')
+  board.destroy()
+
+  const restarted = board_open(disk)
+  expect(JSON.stringify(records_of(restarted))).toBe(markerboard_records)
+  expect(restarted.cleaned_restore(2, 1)).toMatchObject({ kind: 'restored', revision: 3 })
+  expect(look(records_of(restarted))).toEqual(plain_look)
+  expect(JSON.stringify(records_of(restarted))).toBe(legacy_records)
+  expect(restarted.cleaned_restore(3, 2)).toMatchObject({ kind: 'restored', revision: 4 })
+  expect(JSON.stringify(records_of(restarted))).toBe(markerboard_records)
+  expect(restarted.sketch_snapshot(hash)?.diagram_previous).toEqual(diagram)
+  restarted.destroy()
+})
+
+function records_of(board: Board): Record_[] {
+  return board.cleaned_document().records as unknown as Record_[]
+}
+
+function state_text(disk: SimulatedDisk): string {
+  const bytes = disk.read('cleaned.state')
+
+  if (bytes === null) throw new Error('nothing saved')
+
+  const decoded = envelope_decode(bytes, 'cleaned')
+
+  if (!decoded.ok) throw new Error(decoded.reason)
+
+  return new TextDecoder().decode(decoded.envelope.payload)
+}
 
 test('styling and the diagram survive a restart and come back with a restore', () => {
   const disk = sketch_disk([sketch_square('shape:a', 0)])

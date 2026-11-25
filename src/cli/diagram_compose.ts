@@ -3,6 +3,11 @@
 // ports are free; ids, labels, kinds, containment, endpoints and directions are copied exactly,
 // and the result is checked against the diagram before it is returned.
 //
+// The house style is the markerboard: a precise layout drawn with handmade marks. The proposal
+// names the style and the renderer draws it (see `proposal_styles`): thin black ink on white,
+// with tldraw's deterministic hand-drawn outlines and open arrows and its upright handwritten
+// face. No colour, tint or decoration. Every label is measured in the face it is drawn in.
+//
 // No network, no files, no model, no board: a pure function of the diagram, deterministic for
 // the same diagram whatever order its items were listed in. The input limits bound the work:
 // at most 80 nodes and 160 edges, laid out once, with no retries.
@@ -21,10 +26,11 @@ import {
   type DiagramNode,
   type DiagramProposal,
   type ProposalShape,
+  type ProposalStyle,
 } from '../shared/cleanup_types'
 import { edge_arrowheads, node_shape_kind, oval_label_box } from '../shared/diagram_check'
 import { depth_measure } from '../shared/diagram_parse'
-import { label_padding_units, text_block } from '../shared/text_measure'
+import { label_padding_units, style_font, text_block } from '../shared/text_measure'
 import { proposal_parse } from '../server/cleanup_proposal'
 import { routes_plan, type Box, type Point, type Ports, type RoutePlan } from './diagram_route'
 
@@ -47,7 +53,9 @@ export type ComposeResult = { ok: true; composed: Composed } | { ok: false; mess
 type Size = { w: number; h: number }
 type Layout = { boxes: Map<string, Box>; routes: Map<string, Point[]> }
 
-// The house style: one size of sans-serif label, an 8-unit grid, generous but compact gaps.
+// The house style: one size of handwritten label, an 8-unit grid, generous but compact gaps.
+const composed_style: ProposalStyle = 'markerboard'
+const font = style_font(composed_style)
 const grid_units = 8
 const leaf_wrap_units = 168
 const heading_wrap_units = 320
@@ -86,6 +94,7 @@ export async function diagram_compose(input: DiagramProposal): Promise<ComposeRe
     agent: input.agent,
     summary: input.summary,
     shapes,
+    style: composed_style,
     diagram: input.diagram,
   }
   const text = JSON.stringify(proposal)
@@ -101,6 +110,7 @@ export async function diagram_compose(input: DiagramProposal): Promise<ComposeRe
 
   const extent = extent_measure(layout.boxes)
   assert(parsed.proposal.diagram !== null, 'a composed proposal carries its diagram')
+  assert(parsed.proposal.style === composed_style, 'a composed proposal names the house style')
   return {
     ok: true,
     composed: {
@@ -154,7 +164,7 @@ async function layout_plan(
 ): Promise<Planned> {
   const graph = elk_graph(diagram, sizes, layer_gaps_measure(diagram, labelled))
   const layout = layout_read(await new ELK().layout(graph), diagram)
-  const plans = routes_plan(diagram, layout.boxes, ports_find(layout))
+  const plans = routes_plan(diagram, layout.boxes, ports_find(layout), font)
   let conflicts_count = 0
 
   for (const plan of plans.values()) conflicts_count += plan.conflicts_count
@@ -190,7 +200,8 @@ function sizes_measure(diagram: Diagram): Map<string, Size> {
   for (const node of diagram.nodes) {
     if (node.kind !== 'box' && node.kind !== 'ellipse') continue
 
-    const natural = grid_ceil(text_block(node.label, leaf_wrap_units, false).width_units + padding)
+    const label = text_block(node.label, leaf_wrap_units, false, font)
+    const natural = grid_ceil(label.width_units + padding)
     widths.set(node.parent, Math.max(widths.get(node.parent) ?? leaf_width_min_units, natural))
   }
 
@@ -200,14 +211,14 @@ function sizes_measure(diagram: Diagram): Map<string, Size> {
     if (node.kind === 'group') continue
 
     if (node.kind === 'text') {
-      const block = text_block(node.label, leaf_wrap_units, false)
+      const block = text_block(node.label, leaf_wrap_units, false, font)
       const w = grid_ceil(block.width_units + label_slack_units)
-      sizes.set(node.id, { w, h: grid_ceil(text_block(node.label, w, false).height_units) })
+      sizes.set(node.id, { w, h: grid_ceil(text_block(node.label, w, false, font).height_units) })
       continue
     }
 
     const width = widths.get(node.parent) as number
-    const block = text_block(node.label, width - label_padding_units * 2, false)
+    const block = text_block(node.label, width - label_padding_units * 2, false, font)
     const h = Math.max(leaf_height_min_units, grid_ceil(block.height_units + padding))
 
     if (node.kind === 'box') {
@@ -218,7 +229,7 @@ function sizes_measure(diagram: Diagram): Map<string, Size> {
     // An oval is wider than its box neighbours, and tall enough that its words, as tldraw
     // wraps them, stay inside the curve.
     const w = grid_ceil(width * ellipse_factor)
-    const words = oval_label_box(node.label, w, false)
+    const words = oval_label_box(node.label, w, false, font)
     assert(words.w < w, 'an oval is wider than the words it wraps')
     const h_fit = words.h / Math.sqrt(1 - (words.w / w) ** 2)
     sizes.set(node.id, { w, h: grid_ceil(Math.max(h * ellipse_factor, h_fit)) })
@@ -248,7 +259,7 @@ function layer_gaps_measure(
     if (labelled !== null && !labelled.has(edge.id)) continue
 
     const holder = holder_common(parents, edge.from, edge.to) ?? elk_root_id
-    const label = text_block(edge.label, edge_label_wrap_units, false).width_units
+    const label = text_block(edge.label, edge_label_wrap_units, false, font).width_units
     const gap = grid_ceil(label + label_slack_units * 2 + leg_room_units * 2)
     gaps.set(holder, Math.max(gaps.get(holder) ?? layer_gap_units, gap))
   }
@@ -288,7 +299,7 @@ function heading_measure(node: DiagramNode): Size {
 
   if (node.label === '') return { w: 0, h: 0 }
 
-  const block = text_block(node.label, heading_wrap_units, true)
+  const block = text_block(node.label, heading_wrap_units, true, font)
   assert(block.width_units <= heading_wrap_units, 'a heading wraps')
   return { w: block.width_units, h: block.height_units }
 }
@@ -492,7 +503,7 @@ function shapes_build(
     .sort((a, b) => depth(a) - depth(b))
   const items = diagram.nodes.filter((node) => node.kind !== 'group')
   const shapes: ProposalShape[] = [
-    ...groups.map((node) => group_shape(node, layout.boxes.get(node.id) as Box, depth(node))),
+    ...groups.map((node) => group_shape(node, layout.boxes.get(node.id) as Box)),
     ...items.map((node) => item_shape(node, layout.boxes.get(node.id) as Box)),
     ...diagram.edges.map((edge) => arrow_shape(edge, plans.get(edge.id))),
   ]
@@ -501,18 +512,19 @@ function shapes_build(
   return shapes
 }
 
-// Groups alternate a pale grey and a white surface, so nesting reads at a glance.
-function group_shape(node: DiagramNode, box: Box, depth: number): ProposalShape {
+// A group is a fine black outline around what it holds, open to the white board, so nesting
+// reads by outline alone. Its heading is bold black handwriting.
+function group_shape(node: DiagramNode, box: Box): ProposalShape {
   assert(node.kind === 'group', 'a group shape draws a group')
-  assert(depth >= 0, 'a depth is never negative')
+  assert(box.w > 0 && box.h > 0, 'a group has an area')
   return {
     kind: 'rectangle',
     id: node.id,
     ...box,
     text: node.label,
-    color: 'grey',
+    color: 'black',
     size: 's',
-    fill: depth % 2 === 0 ? 'solid' : 'semi',
+    fill: 'none',
     label_color: 'black',
     label_align: 'start',
     label_valign: 'start',
@@ -520,7 +532,8 @@ function group_shape(node: DiagramNode, box: Box, depth: number): ProposalShape 
   }
 }
 
-// Every box and oval shares one accent; colour never stands for anything in the sketch.
+// Boxes and ovals are fine black outlines around a white interior. The two kinds differ only
+// as the sketch's shapes do, by outline: there is no colour to stand for anything.
 function item_shape(node: DiagramNode, box: Box): ProposalShape {
   assert(node.kind !== 'group', 'groups are drawn apart')
   const kind = node_shape_kind(node.kind)
@@ -545,9 +558,9 @@ function item_shape(node: DiagramNode, box: Box): ProposalShape {
     id: node.id,
     ...box,
     text: node.label,
-    color: 'blue',
+    color: 'black',
     size: 's',
-    fill: 'solid',
+    fill: 'semi',
     label_color: 'black',
     label_align: 'middle',
     label_valign: 'middle',

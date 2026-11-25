@@ -18,6 +18,7 @@ import {
   type CleanedStatus,
   type Diagram,
   type ProposalShape,
+  type ProposalStyle,
 } from '../shared/cleanup_types'
 import { proposal_parse, proposal_records } from './cleanup_proposal'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
@@ -34,9 +35,11 @@ export type RestoreResult =
   | { kind: 'not_found' }
 
 // A version keeps the semantic diagram it was composed from, if any, so the next snapshot can
-// offer it to the agent and a restore brings it back with the shapes.
+// offer it to the agent and a restore brings it back with the shapes. It keeps the style it was
+// published in, so it renders the same way after a restart or a restore.
 type Version = Omit<CleanedProvenance, 'shapes_count'> & {
   shapes: ProposalShape[]
+  style: ProposalStyle
   diagram: Diagram | null
 }
 type State = { revision: number; current: Version | null; history: Version[] }
@@ -52,7 +55,7 @@ export class Cleaned {
     private readonly disk: Disk,
     private state: State,
   ) {
-    this.records_current = state.current === null ? [] : proposal_records(state.current.shapes)
+    this.records_current = state.current === null ? [] : proposal_records(state.current)
   }
 
   // A board saved before cleanup existed has no file: it opens with nothing published.
@@ -88,6 +91,7 @@ export class Cleaned {
       published_at_ms: now_ms,
       restored_from: null,
       shapes: proposal.shapes,
+      style: proposal.style,
       diagram: proposal.diagram,
     }
     this.commit(version)
@@ -154,7 +158,7 @@ export class Cleaned {
   // Write first, then swap. A throwing disk leaves the state, and the file, as they were.
   private commit(version: Version): void {
     assert(version.revision === this.state.revision + 1, 'revisions grow one at a time')
-    const records = proposal_records(version.shapes)
+    const records = proposal_records(version)
     const previous = this.state.current
     const history =
       previous === null
@@ -176,7 +180,7 @@ export class Cleaned {
 }
 
 function provenance(version: Version): CleanedProvenance {
-  const { shapes, diagram: _, ...rest } = version
+  const { shapes, diagram: _, style: _style, ...rest } = version
   assert(shapes.length > 0, 'a published version has shapes')
   assert(rest.revision > 0, 'a published version has a revision')
   return { ...rest, shapes_count: shapes.length }
@@ -190,14 +194,17 @@ function state_json(state: State): object {
 }
 
 // Saved shapes carry every styling default, so each version is saved in the styled format,
-// whichever format it was published in. A version saved before that has no format: v1.
+// whichever format it was published in. A version saved before that has no format: v1. The
+// style is saved only when it is not the default, so a plain version is saved byte for byte
+// as before styles existed, and reads back as plain.
 function version_json(version: Version): object {
-  const { diagram, ...rest } = version
+  const { diagram, style, ...rest } = version
   assert(rest.shapes.length > 0, 'a saved version has shapes')
   assert(rest.revision > 0, 'a saved version has a revision')
+  const styled = style === 'plain' ? {} : { style }
   return diagram === null
-    ? { ...rest, format: proposal_format_styled }
-    : { ...rest, format: proposal_format_styled, diagram }
+    ? { ...rest, format: proposal_format_styled, ...styled }
+    : { ...rest, format: proposal_format_styled, ...styled, diagram }
 }
 
 // The saved file is untrusted like any input: each version is checked again with the same rules
@@ -282,6 +289,7 @@ function version_read(value: unknown): Version {
     agent: version.agent,
     summary: version.summary,
     shapes: version.shapes,
+    ...(version.style === undefined ? {} : { style: version.style }),
     ...(version.diagram === undefined ? {} : { diagram: version.diagram }),
   })
   const { revision, published_at_ms, restored_from } = version
@@ -308,6 +316,7 @@ function version_read(value: unknown): Version {
     published_at_ms,
     restored_from,
     shapes: parsed.proposal.shapes,
+    style: parsed.proposal.style,
     diagram: parsed.proposal.diagram,
   }
 }

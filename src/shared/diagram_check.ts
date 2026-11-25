@@ -17,7 +17,7 @@ import {
   type ProposalShape,
 } from './cleanup_types'
 import { type Problem } from './json_reader'
-import { label_padding_units, text_block } from './text_measure'
+import { label_padding_units, text_block, type LabelFont } from './text_measure'
 
 // Between a group's outline and what it holds, and between neighbours in the same group.
 export const composed_padding_min_units = 8
@@ -38,10 +38,10 @@ export type Size = { w: number; h: number }
 // corners of the words can reach past the curve. This is the box the words may take: a single
 // line is no wider than estimated, but several lines may each run to the wrap width, since a
 // browser may fit more words per line than the conservative estimate. A margin surrounds it.
-export function oval_label_box(label: string, w: number, bold: boolean): Size {
+export function oval_label_box(label: string, w: number, bold: boolean, font: LabelFont): Size {
   assert(w > label_padding_units * 2, 'an oval is wider than its padding')
   const wrap_units = w - label_padding_units * 2
-  const block = text_block(label, wrap_units, bold)
+  const block = text_block(label, wrap_units, bold, font)
   const width = block.lines_count > 1 ? wrap_units : block.width_units
   assert(width <= wrap_units, 'the words stay within the wrap width')
   return { w: width + oval_margin_units * 2, h: block.height_units + oval_margin_units * 2 }
@@ -84,9 +84,11 @@ export function edge_arrowheads(direction: DiagramEdgeDirection): ProposalArrowh
   return arrowheads
 }
 
+// `font` is the face the proposal's style draws every label in, so the one it is measured in.
 export function composition_check(
   diagram: Diagram,
   shapes: readonly ProposalShape[],
+  font: LabelFont,
 ): Problem | null {
   assert(diagram.nodes.length > 0, 'a diagram has nodes')
   assert(shapes.length > 0, 'a composition has shapes')
@@ -100,20 +102,20 @@ export function composition_check(
 
   if (meaning !== null) return meaning
 
-  const sizes = sizes_check(diagram, by_id)
+  const sizes = sizes_check(diagram, by_id, font)
 
   if (sizes !== null) return sizes
 
   const boxes = new Map<string, Box>()
 
   for (const node of diagram.nodes)
-    boxes.set(node.id, node_box(by_id.get(node.id) as ProposalShape))
+    boxes.set(node.id, node_box(by_id.get(node.id) as ProposalShape, font))
 
-  const labels = labels_check(diagram, by_id)
+  const labels = labels_check(diagram, by_id, font)
 
   if (labels !== null) return labels
 
-  const placement = placement_check(diagram, by_id, boxes)
+  const placement = placement_check(diagram, by_id, boxes, font)
   assert(boxes.size === diagram.nodes.length, 'every node has a box')
   return placement
 }
@@ -162,7 +164,7 @@ function meaning_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShap
 // problem: every node uses the one label size that was measured, text has a width to wrap at,
 // and every group, empty or not, is wide enough for its padding and tall enough for its
 // heading, its padding and some room below.
-function sizes_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape>) {
+function sizes_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape>, font: LabelFont) {
   assert(by_id.size >= diagram.nodes.length, 'every node has a shape')
 
   for (const [index, node] of diagram.nodes.entries()) {
@@ -186,7 +188,7 @@ function sizes_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape>
       return problem(path, `A group is wider than ${label_padding_units * 2} units.`)
     }
 
-    if (group_content_top(group) + composed_padding_min_units * 2 > group.y + group.h) {
+    if (group_content_top(group, font) + composed_padding_min_units * 2 > group.y + group.h) {
       return problem(path, 'Its group is too small for its heading and padding.')
     }
   }
@@ -195,7 +197,7 @@ function sizes_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape>
 }
 
 // A shape's page box. A text shape's height is what its words take at its width.
-export function node_box(shape: ProposalShape): Box {
+export function node_box(shape: ProposalShape, font: LabelFont): Box {
   assert(shape.kind !== 'arrow', 'an arrow has no box of its own')
 
   if (shape.kind === 'text') {
@@ -204,7 +206,7 @@ export function node_box(shape: ProposalShape): Box {
       x: shape.x,
       y: shape.y,
       w: shape.w,
-      h: text_block(shape.text, shape.w, false).height_units,
+      h: text_block(shape.text, shape.w, false, font).height_units,
     }
   }
 
@@ -213,7 +215,11 @@ export function node_box(shape: ProposalShape): Box {
 }
 
 // The words of a box or oval fit inside its padding; a group's heading is measured separately.
-function labels_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape>) {
+function labels_check(
+  diagram: Diagram,
+  by_id: ReadonlyMap<string, ProposalShape>,
+  font: LabelFont,
+) {
   assert(by_id.size >= diagram.nodes.length, 'every node has a shape')
 
   for (const [index, node] of diagram.nodes.entries()) {
@@ -225,13 +231,16 @@ function labels_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape
     const inner_w = geo.w - label_padding_units * 2
     const inner_h = geo.h - label_padding_units * 2
 
-    if (inner_w <= 0 || text_block(node.label, inner_w, geo.label_bold).height_units > inner_h) {
+    if (
+      inner_w <= 0 ||
+      text_block(node.label, inner_w, geo.label_bold, font).height_units > inner_h
+    ) {
       return problem(`diagram.nodes[${index}].label`, 'Its label does not fit its shape.')
     }
 
     if (
       geo.kind === 'ellipse' &&
-      !oval_holds(oval_label_box(node.label, geo.w, geo.label_bold), geo.w, geo.h)
+      !oval_holds(oval_label_box(node.label, geo.w, geo.label_bold, font), geo.w, geo.h)
     ) {
       return problem(`diagram.nodes[${index}].label`, 'Its label reaches past its oval.')
     }
@@ -246,6 +255,7 @@ function placement_check(
   diagram: Diagram,
   by_id: ReadonlyMap<string, ProposalShape>,
   boxes: ReadonlyMap<string, Box>,
+  font: LabelFont,
 ): Problem | null {
   assert(boxes.size === diagram.nodes.length, 'every node has a box')
   const siblings = new Map<string | null, DiagramNode[]>()
@@ -259,7 +269,7 @@ function placement_check(
     const parent = by_id.get(node.parent) as GeoShape
     const outer = boxes.get(node.parent) as Box
 
-    if (!box_inside(box, outer, group_content_top(parent))) {
+    if (!box_inside(box, outer, group_content_top(parent, font))) {
       return problem(`diagram.nodes[${index}]`, 'It is not inside its group, below the heading.')
     }
   }
@@ -278,13 +288,13 @@ function placement_check(
 }
 
 // Where a group's contents may start: below its heading, if it has one.
-export function group_content_top(group: GeoShape): number {
+export function group_content_top(group: GeoShape, font: LabelFont): number {
   assert(group.kind === 'rectangle', 'a group is a rectangle')
   assert(group.w > label_padding_units * 2, 'a group is wider than its padding')
 
   if (group.text === '') return group.y + composed_padding_min_units
 
-  const heading = text_block(group.text, group.w - label_padding_units * 2, group.label_bold)
+  const heading = text_block(group.text, group.w - label_padding_units * 2, group.label_bold, font)
   return group.y + label_padding_units + heading.height_units
 }
 

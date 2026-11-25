@@ -12,6 +12,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { child_stop, contexts_close } from './board_child'
 
 const repo_root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
@@ -70,15 +71,15 @@ async function server_start(): Promise<void> {
   throw new Error('the board did not start')
 }
 
+// Bounded: SIGTERM, then SIGKILL, and timed so a slow teardown shows where it was slow.
 async function server_stop(): Promise<void> {
   const child = server
   server = null
 
-  if (child === null || child.exitCode !== null) return
+  if (child === null) return
 
-  const exited = new Promise((resolve) => child.once('exit', resolve))
-  child.kill('SIGTERM')
-  await exited
+  const stop = await child_stop(child)
+  console.log(`board stop: ${stop.outcome} after ${stop.elapsed_ms}ms`)
 }
 
 async function status(): Promise<Record<string, unknown>> {
@@ -131,25 +132,33 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  await server_stop()
-  fs.rmSync(data_directory, { recursive: true, force: true })
+  try {
+    await server_stop()
+  } finally {
+    fs.rmSync(data_directory, { recursive: true, force: true })
+  }
 })
 
 test('draw, snapshot, publish, view, go stale, restart and restore', async ({ browser }) => {
   const origin = `http://127.0.0.1:${port}`
-  const stage = await (
-    await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  ).newPage()
-  const ipad = await (
-    await browser.newContext({ viewport: { width: 1180, height: 820 } })
-  ).newPage()
-  await stage.goto(origin)
-  await ipad.goto(`${origin}/draw`)
-  await expect(ipad.getByRole('tab', { name: 'Sketch' })).toHaveAttribute('aria-selected', 'true')
+  const contexts = [
+    await browser.newContext({ viewport: { width: 1280, height: 800 } }),
+    await browser.newContext({ viewport: { width: 1180, height: 820 } }),
+  ]
 
-  const hash_one = await first_cleanup_publish_and_view(ipad, stage)
-  await sketch_continue_and_refuse(ipad, hash_one)
-  await board_restart_and_restore(ipad, stage)
+  try {
+    const stage = await contexts[0]!.newPage()
+    const ipad = await contexts[1]!.newPage()
+    await stage.goto(origin)
+    await ipad.goto(`${origin}/draw`)
+    await expect(ipad.getByRole('tab', { name: 'Sketch' })).toHaveAttribute('aria-selected', 'true')
+
+    const hash_one = await first_cleanup_publish_and_view(ipad, stage)
+    await sketch_continue_and_refuse(ipad, hash_one)
+    await board_restart_and_restore(ipad, stage)
+  } finally {
+    console.log(`contexts closed after ${await contexts_close(contexts)}ms`)
+  }
 })
 
 const cleaned_pane = (page: Page) => page.locator('section[aria-label="Cleaned"]')

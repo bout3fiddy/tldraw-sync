@@ -9,6 +9,7 @@ import { proposal_shapes_count_max, proposal_text_length_max } from '../shared/c
 import { diagram_proposal_parse } from '../shared/diagram_parse'
 import { Prng } from '../simulation/prng'
 import { proposal_example } from '../simulation/test_sketch'
+import { text_block } from '../shared/text_measure'
 import { index_key, proposal_parse, proposal_records } from './cleanup_proposal'
 
 const snapshot = '0123456789abcdef'
@@ -31,7 +32,7 @@ test('a valid proposal becomes native tldraw records that pass the tldraw schema
     'ellipse',
     'arrow',
   ])
-  const records = proposal_records(proposal.shapes)
+  const records = proposal_records(proposal)
   const by_id = new Map(
     records.map((record) => [
       record.id as string,
@@ -301,7 +302,7 @@ test('the shape limit is exact on both sides', () => {
       h: 1,
     }))
   const at_limit = parse_ok({ ...base(), shapes: shapes(proposal_shapes_count_max) })
-  expect(proposal_records(at_limit.shapes)).toHaveLength(proposal_shapes_count_max)
+  expect(proposal_records(at_limit)).toHaveLength(proposal_shapes_count_max)
   const over = proposal_parse({ ...base(), shapes: shapes(proposal_shapes_count_max + 1) })
   expect(over.ok).toBe(false)
 })
@@ -366,7 +367,7 @@ test('randomly damaged proposals are refused or valid, never thrown', () => {
 
     if (parsed.ok) {
       accepted += 1
-      expect(proposal_records(parsed.proposal.shapes).length).toBeGreaterThan(0)
+      expect(proposal_records(parsed.proposal).length).toBeGreaterThan(0)
     } else {
       expect(parsed.path.length, `seed ${seed} round ${round}`).toBeGreaterThan(0)
     }
@@ -380,7 +381,7 @@ test('randomly damaged proposals are refused or valid, never thrown', () => {
 
 // v1 proposals published before styling existed must render exactly as they always did.
 test('a v1 proposal keeps its v1 records: no fill, one head, centre bindings', () => {
-  const records = proposal_records(parse_ok(proposal_example(snapshot, 0)).shapes)
+  const records = proposal_records(parse_ok(proposal_example(snapshot, 0)))
   const props = (id: string) =>
     (records.find((record) => record.id === id) as unknown as { props: Record<string, unknown> })
       .props
@@ -400,6 +401,115 @@ test('a v1 proposal keeps its v1 records: no fill, one head, centre bindings', (
   expect(props('binding:cleaned-writes-start')).toMatchObject({
     normalizedAnchor: { x: 0.5, y: 0.5 },
     isPrecise: false,
+  })
+})
+
+// The style is a bounded v2 control. Unnamed, it is plain: the records a proposal always got.
+test('a v2 proposal names its style: plain by default, markerboard drawn by hand', () => {
+  const shapes = [
+    { kind: 'rectangle', id: 'a', x: 0, y: 0, w: 100, h: 60, text: 'A' },
+    { kind: 'text', id: 't', x: 0, y: 100, w: 80, text: 'Note' },
+    { kind: 'arrow', id: 'at', from: 'a', to: 't' },
+  ]
+  const v2 = { ...base(), format: 'tldraw-sync.cleanup.v2', shapes }
+  const looks = (style: unknown) => {
+    const proposal = parse_ok(style === undefined ? v2 : { ...v2, style })
+    const records = proposal_records(proposal) as unknown as Array<{
+      id: string
+      typeName: string
+      type: string
+      props: Record<string, unknown>
+    }>
+    return {
+      style: proposal.style,
+      fonts: records.filter((r) => r.typeName === 'shape').map((r) => r.props.font),
+      dashes: records
+        .filter((r) => r.type !== 'text' && r.typeName === 'shape')
+        .map((r) => r.props.dash),
+
+      // Neither style adds a record: a shape each and two bindings for the arrow.
+      records: records.length,
+    }
+  }
+  expect(looks(undefined)).toEqual({
+    style: 'plain',
+    fonts: ['sans', 'sans', 'sans'],
+    dashes: ['solid', 'solid'],
+    records: 5,
+  })
+  expect(looks('plain')).toEqual(looks(undefined))
+  expect(looks('markerboard')).toEqual({
+    style: 'markerboard',
+    fonts: ['draw', 'draw', 'draw'],
+    dashes: ['draw', 'draw'],
+    records: 5,
+  })
+  expect(parse_ok(base()).style).toBe('plain')
+  expect(proposal_parse({ ...v2, style: 'neon' })).toMatchObject({
+    ok: false,
+    path: 'proposal.style',
+  })
+  expect(proposal_parse({ ...base(), style: 'markerboard' }).ok).toBe(false)
+})
+
+// A markerboard is black ink on white. Plain revisions keep every colour they were published
+// with, while a markerboard asking for a colour, a coloured label or a tinted fill is refused.
+test('a markerboard proposal is refused any colour or tint; a plain one keeps its colours', () => {
+  const shapes = () => [
+    { kind: 'rectangle', id: 'a', x: 0, y: 0, w: 100, h: 60, text: 'A', fill: 'semi' },
+    { kind: 'ellipse', id: 'b', x: 200, y: 0, w: 100, h: 60, text: 'B', fill: 'none' },
+    { kind: 'text', id: 't', x: 0, y: 100, w: 80, text: 'Note' },
+    { kind: 'arrow', id: 'ab', from: 'a', to: 'b', text: 'HTTP' },
+  ]
+  const proposal = (style: string, index: number, change: Record<string, unknown>) => {
+    const changed: Array<Record<string, unknown>> = shapes()
+    changed[index] = { ...changed[index], ...change }
+    return { ...base(), format: 'tldraw-sync.cleanup.v2', style, shapes: changed }
+  }
+  const black = { ...base(), format: 'tldraw-sync.cleanup.v2', style: 'markerboard' }
+  expect(parse_ok({ ...black, shapes: shapes() }).style).toBe('markerboard')
+  const refusals: Array<[number, Record<string, unknown>, string]> = [
+    [1, { color: 'light-blue' }, 'shapes[1].color'],
+    [0, { color: 'yellow' }, 'shapes[0].color'],
+    [0, { color: 'grey' }, 'shapes[0].color'],
+    [3, { color: 'blue' }, 'shapes[3].color'],
+    [2, { color: 'red' }, 'shapes[2].color'],
+    [0, { label_color: 'blue' }, 'shapes[0].label_color'],
+    [1, { fill: 'solid' }, 'shapes[1].fill'],
+  ]
+
+  for (const [index, change, path] of refusals) {
+    expect(proposal_parse(proposal('markerboard', index, change))).toMatchObject({
+      ok: false,
+      path,
+    })
+    expect(proposal_parse(proposal('plain', index, change)).ok).toBe(true)
+  }
+})
+
+// Labels are checked in the face they are drawn in. Digits are wider in the handwritten face
+// than the sans estimate, so a box sized to hold one sans line is refused as a markerboard.
+test('a label sized for the sans face is refused when drawn in the handwritten face', () => {
+  const label = '2024 2025 2026'
+  const w = Math.ceil(text_block(label, 10_000, false, 'sans').width_units) + 33
+  const h = Math.ceil(text_block(label, 10_000, false, 'sans').height_units) + 33
+  expect(text_block(label, w - 32, false, 'sans').lines_count).toBe(1)
+  expect(text_block(label, w - 32, false, 'draw').lines_count).toBe(2)
+  const proposal = (style: string) => ({
+    ...base(),
+    format: 'tldraw-sync.cleanup.v2',
+    style,
+    shapes: [{ kind: 'rectangle', id: 'year', x: 0, y: 0, w, h, text: label, size: 's' }],
+    diagram: {
+      flow: 'right',
+      nodes: [{ id: 'year', kind: 'box', label }],
+      edges: [],
+    },
+  })
+  expect(proposal_parse(proposal('plain')).ok).toBe(true)
+  expect(proposal_parse(proposal('markerboard'))).toMatchObject({
+    ok: false,
+    path: 'diagram.nodes[0].label',
   })
 })
 
@@ -437,7 +547,7 @@ test('a v2 proposal without a diagram takes its bounded styling and routing cont
   expect(proposal.format).toBe('tldraw-sync.cleanup.v2')
   expect(proposal.diagram).toBeNull()
   expect(proposal.shapes[2]).toMatchObject({ bend: -40, to_anchor: null, arrowheads: 'both' })
-  expect(proposal_records(proposal.shapes).length).toBe(5)
+  expect(proposal_records(proposal).length).toBe(5)
 
   const refusals: Array<[Record<string, unknown>, string]> = [
     [{ kind: 'arrow', id: 'ab', from: 'a', to: 'b', route: 'elbow', bend: 5 }, 'shapes[2].bend'],

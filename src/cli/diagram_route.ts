@@ -15,7 +15,7 @@
 
 import { assert } from '../shared/assert'
 import type { Diagram, DiagramEdge, ProposalAnchor } from '../shared/cleanup_types'
-import { text_block } from '../shared/text_measure'
+import { text_block, type LabelFont } from '../shared/text_measure'
 
 export type Point = { x: number; y: number }
 export type Box = { x: number; y: number; w: number; h: number }
@@ -52,10 +52,12 @@ const label_wrap_units = 160
 const label_padding_units = 8
 const obstacle_inset_units = 1
 
+// `font` is the face connector labels are drawn in, so the one their boxes are measured in.
 export function routes_plan(
   diagram: Diagram,
   boxes_page: ReadonlyMap<string, Box>,
   ports_page: ReadonlyMap<string, Ports>,
+  font: LabelFont,
 ): Map<string, RoutePlan> {
   assert(boxes_page.size === diagram.nodes.length, 'every node has a box')
   assert(ports_page.size === diagram.edges.length, 'every edge has ports')
@@ -70,7 +72,7 @@ export function routes_plan(
       end: point_flow(ports.end, mirrored),
     }
     const obstacles = obstacles_find(diagram, boxes, edge)
-    const best = candidates_rank(edge, boxes, flow_ports, obstacles)
+    const best = candidates_rank(edge, boxes, flow_ports, obstacles, font)
     plans.set(edge.id, plan_from(best.candidate, best.conflicts_count, mirrored))
   }
 
@@ -121,10 +123,11 @@ function candidates_rank(
   boxes: ReadonlyMap<string, Box>,
   ports: Ports,
   obstacles: readonly Box[],
+  font: LabelFont,
 ): { candidate: Candidate; conflicts_count: number } {
   const from = boxes.get(edge.from) as Box
   const to = boxes.get(edge.to) as Box
-  const label = edge.label === '' ? null : text_block(edge.label, label_wrap_units, false)
+  const label = edge.label === '' ? null : text_block(edge.label, label_wrap_units, false, font)
   const extent = extent_find(boxes)
   let best: { candidate: Candidate; conflicts_count: number } | null = null
 

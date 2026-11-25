@@ -20,6 +20,9 @@ import { Board } from './board'
 type Shape = Record<string, unknown> & { id: string; kind: string }
 type Box = { x: number; y: number; w: number; h: number }
 
+// A composed proposal is drawn in the markerboard style, so its labels in the draw face.
+const font = 'draw'
+
 const source = {
   format: diagram_format,
   snapshot: '0000000000000000',
@@ -88,7 +91,7 @@ function box_of(shape: Shape): Box {
   const w = shape.w as number
   const h =
     shape.kind === 'text'
-      ? text_block(shape.text as string, w, false).height_units
+      ? text_block(shape.text as string, w, false, font).height_units
       : (shape.h as number)
   return { x: shape.x as number, y: shape.y as number, w, h }
 }
@@ -112,7 +115,7 @@ function oracle_problem(shapes: readonly Shape[]): string | null {
 
     // A group needs its heading, then 8 units above and below whatever it holds.
     const inner_w = shape.w - label_padding_units * 2
-    const label = text_block(node.label, inner_w, node.kind === 'group')
+    const label = text_block(node.label, inner_w, node.kind === 'group', font)
     const room =
       node.kind === 'group'
         ? label_padding_units + label.height_units + 16
@@ -241,7 +244,8 @@ test('an empty group is accepted at its minimum height and refused one unit belo
   const index = nodes.findIndex((node) => node.id === 'empty')
   const smallest = (proposal: { shapes: Shape[] }) => {
     const group = proposal.shapes.find((shape) => shape.id === 'empty') as Shape
-    const heading = text_block('Future work', (group.w as number) - label_padding_units * 2, true)
+    const inner_w = (group.w as number) - label_padding_units * 2
+    const heading = text_block('Future work', inner_w, true, font)
     return { group, h: Math.ceil(label_padding_units + heading.height_units + 16) }
   }
 

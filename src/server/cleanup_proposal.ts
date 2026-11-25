@@ -30,14 +30,18 @@ import {
   proposal_label_aligns,
   proposal_routes,
   proposal_sizes,
+  proposal_styles,
   proposal_text_aligns,
   type ProposalAnchor,
+  type ProposalFill,
   type Proposal,
   type ProposalShape,
+  type ProposalStyle,
 } from '../shared/cleanup_types'
 import { composition_check } from '../shared/diagram_check'
 import { diagram_read } from '../shared/diagram_parse'
 import { header_read, JsonReader, type Json } from '../shared/json_reader'
+import { style_font } from '../shared/text_measure'
 
 export type ProposalParsed =
   { ok: true; proposal: Proposal } | { ok: false; path: string; message: string }
@@ -45,7 +49,7 @@ export type ProposalParsed =
 const schema = createTLSchema()
 const shape_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
 const keys_root_v1 = ['format', 'snapshot', 'base_revision', 'agent', 'summary', 'shapes'] as const
-const keys_root_v2 = [...keys_root_v1, 'diagram'] as const
+const keys_root_v2 = [...keys_root_v1, 'style', 'diagram'] as const
 const keys_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
   text: ['kind', 'id', 'x', 'y', 'text', 'w', 'color', 'size'],
   rectangle: ['kind', 'id', 'x', 'y', 'w', 'h', 'text', 'color', 'size'],
@@ -77,11 +81,18 @@ export function proposal_parse(input: unknown): ProposalParsed {
 
   const header = header_read(reader, root, 'proposal')
   const shapes = shapes_read(reader, root.shapes, styled)
+
+  // A v1 proposal, and a v2 one that names no style, is plain: as published before styles.
+  const style: ProposalStyle = styled
+    ? reader.choice(root, 'style', 'proposal', proposal_styles, false)
+    : 'plain'
   const diagram =
     styled && root.diagram !== undefined ? diagram_read(reader, root.diagram, 'diagram') : null
 
+  if (style === 'markerboard') markerboard_ink_check(reader, shapes)
+
   if (reader.problem === null && diagram !== null) {
-    const problem = composition_check(diagram, shapes)
+    const problem = composition_check(diagram, shapes, style_font(style))
 
     if (problem !== null) reader.fail(problem.path, problem.message)
   }
@@ -90,7 +101,7 @@ export function proposal_parse(input: unknown): ProposalParsed {
 
   assert(format !== undefined, 'a valid proposal names its format')
   assert(shapes.length <= proposal_shapes_count_max, 'a valid proposal is bounded')
-  return { ok: true, proposal: { format, ...header, shapes, diagram } }
+  return { ok: true, proposal: { format, ...header, shapes, style, diagram } }
 }
 
 // A semantic diagram sent straight to the board is a common mistake: say how to publish one.
@@ -240,11 +251,71 @@ function anchor_read(reader: JsonReader, source: Json, key: string, path: string
   return result
 }
 
-// Native tldraw records for a valid proposal: one shape per proposal shape, and two bindings per
-// arrow. Every record is checked against tldraw's own schema; a failure is a bug here.
-export function proposal_records(shapes: readonly ProposalShape[]): TLRecord[] {
+// The markerboard is thin black ink on white: every outline, connector and word is black, and a
+// box or oval is left open or given tldraw's white surface. A markerboard proposal that asks for
+// anything else is refused, so the style can never paint a colour, tint or grey surface.
+const markerboard_fills: readonly ProposalFill[] = ['none', 'semi']
+
+function markerboard_ink_check(reader: JsonReader, shapes: readonly ProposalShape[]): void {
+  assert(shapes.length <= proposal_shapes_count_max, 'shapes are bounded')
+  assert(
+    markerboard_fills.every((fill) => proposal_fills.includes(fill)),
+    'fills are known',
+  )
+
+  for (const [index, shape] of shapes.entries()) {
+    const path = `shapes[${index}]`
+
+    if (shape.color !== 'black') {
+      reader.fail(`${path}.color`, 'A markerboard is drawn in black ink only.')
+    }
+
+    if (shape.kind !== 'rectangle' && shape.kind !== 'ellipse') continue
+
+    if (shape.label_color !== null && shape.label_color !== 'black') {
+      reader.fail(`${path}.label_color`, 'A markerboard is drawn in black ink only.')
+    }
+
+    if (!markerboard_fills.includes(shape.fill)) {
+      reader.fail(`${path}.fill`, 'A markerboard shape is open or white: fill none or semi.')
+    }
+  }
+}
+
+// What the renderer draws: the validated shapes and the style to draw them in.
+export type Drawing = Pick<Proposal, 'shapes' | 'style'>
+
+// Native tldraw records for a valid proposal: one shape per proposal shape and two bindings per
+// arrow, nothing else. Every record is checked against tldraw's own schema; a failure is a bug
+// here. A plain drawing gets exactly the records it always did, so earlier revisions render
+// unchanged; a markerboard differs only in its dash and lettering face.
+export function proposal_records(drawing: Drawing): TLRecord[] {
+  const { shapes, style } = drawing
   assert(shapes.length > 0, 'a proposal has shapes')
   assert(shapes.length <= proposal_shapes_count_max, 'a proposal is bounded')
+  const centers = shape_centers(shapes)
+  const records: TLRecord[] = []
+
+  shapes.forEach((shape, index) => {
+    if (shape.kind !== 'arrow') return records.push(shape_record(shape, index_key(index), style))
+
+    const from = centers.get(shape.from)
+    const to = centers.get(shape.to)
+    assert(from !== undefined && to !== undefined, 'a valid arrow joins known shapes')
+    records.push(arrow_record(shape, index_key(index), from, to, style))
+    records.push(binding_record(shape.id, 'start', shape.from, shape.from_anchor))
+    records.push(binding_record(shape.id, 'end', shape.to, shape.to_anchor))
+  })
+
+  for (const record of records) assert(record_valid(record), `record ${record.id} is valid`)
+
+  const arrows_count = shapes.filter((shape) => shape.kind === 'arrow').length
+  assert(records.length === shapes.length + arrows_count * 2, 'a shape each, two bindings an arrow')
+  return records
+}
+
+function shape_centers(shapes: readonly ProposalShape[]): Map<string, { x: number; y: number }> {
+  assert(shapes.length > 0, 'a proposal has shapes')
   const centers = new Map<string, { x: number; y: number }>()
 
   for (const shape of shapes) {
@@ -255,22 +326,8 @@ export function proposal_records(shapes: readonly ProposalShape[]): TLRecord[] {
     }
   }
 
-  const records: TLRecord[] = []
-  shapes.forEach((shape, index) => {
-    if (shape.kind !== 'arrow') return records.push(shape_record(shape, index_key(index)))
-
-    const from = centers.get(shape.from)
-    const to = centers.get(shape.to)
-    assert(from !== undefined && to !== undefined, 'a valid arrow joins known shapes')
-    records.push(arrow_record(shape, index_key(index), from, to))
-    records.push(binding_record(shape.id, 'start', shape.from, shape.from_anchor))
-    records.push(binding_record(shape.id, 'end', shape.to, shape.to_anchor))
-  })
-
-  for (const record of records) assert(record_valid(record), `record ${record.id} is valid`)
-
-  assert(records.length >= shapes.length, 'every shape has a record')
-  return records
+  assert(centers.size <= shapes.length, 'one center per shape at most')
+  return centers
 }
 
 export function cleaned_shape_id(id: string): string {
@@ -280,11 +337,22 @@ export function cleaned_shape_id(id: string): string {
   return shape_id
 }
 
-function shape_record(shape: ProposalShape, index: string): TLRecord {
+// How each style draws: plain is solid and sans, markerboard is tldraw's fine hand-drawn line,
+// with gently rounded corners and slightly imperfect ovals, and its upright handwritten face.
+// Both are tldraw's own deterministic renderings, seeded by the shape's id.
+function style_dash(style: ProposalStyle): 'solid' | 'draw' {
+  const dash = style === 'markerboard' ? 'draw' : 'solid'
+  assert(proposal_styles.includes(style), 'a style is known')
+  assert((style === 'plain') === (dash === 'solid'), 'only the plain style keeps solid lines')
+  return dash
+}
+
+function shape_record(shape: ProposalShape, index: string, style: ProposalStyle): TLRecord {
   assert(shape.kind !== 'arrow', 'arrows have their own records')
   assert(index.length >= 2, 'an index key has a head and a digit')
   const base = record_base(shape.id, index, shape.x, shape.y)
   const rich_text = toRichText(shape.text)
+  const font = style_font(style)
 
   if (shape.kind === 'text') {
     return {
@@ -293,7 +361,7 @@ function shape_record(shape: ProposalShape, index: string): TLRecord {
       props: {
         color: shape.color,
         size: shape.size,
-        font: 'sans',
+        font,
         textAlign: shape.align,
         w: shape.w ?? 8,
         richText: rich_text,
@@ -308,7 +376,7 @@ function shape_record(shape: ProposalShape, index: string): TLRecord {
     type: 'geo',
     props: {
       geo: shape.kind,
-      dash: 'solid',
+      dash: style_dash(style),
       url: '',
       w: shape.w,
       h: shape.h,
@@ -318,7 +386,7 @@ function shape_record(shape: ProposalShape, index: string): TLRecord {
       color: shape.color,
       fill: shape.fill,
       size: shape.size,
-      font: 'sans',
+      font,
       align: shape.label_align,
       verticalAlign: shape.label_valign,
       richText: shape.label_bold ? rich_text_bold(shape.text) : rich_text,
@@ -348,6 +416,7 @@ function arrow_record(
   index: string,
   from: { x: number; y: number },
   to: { x: number; y: number },
+  style: ProposalStyle,
 ): TLRecord {
   assert(Number.isFinite(from.x) && Number.isFinite(from.y), 'the start is a point')
   assert(Number.isFinite(to.x) && Number.isFinite(to.y), 'the end is a point')
@@ -359,11 +428,11 @@ function arrow_record(
       labelColor: shape.color,
       color: shape.color,
       fill: 'none',
-      dash: 'solid',
+      dash: style_dash(style),
       size: shape.size,
       arrowheadStart: shape.arrowheads === 'both' ? 'arrow' : 'none',
       arrowheadEnd: shape.arrowheads === 'none' ? 'none' : 'arrow',
-      font: 'sans',
+      font: style_font(style),
       start: { x: 0, y: 0 },
       end: { x: to.x - from.x, y: to.y - from.y },
       bend: shape.bend,

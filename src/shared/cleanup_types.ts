@@ -49,6 +49,15 @@ export type ProposalTextAlign = (typeof proposal_text_aligns)[number]
 export const proposal_arrowheads = ['end', 'both', 'none'] as const
 export type ProposalArrowheads = (typeof proposal_arrowheads)[number]
 
+// The renderer's look for a styled proposal. A proposal only names a style; the renderer owns
+// what each style draws. 'plain' is the original crisp look: solid outlines, sans lettering.
+// It is the default, so every revision published before styles existed renders as it did.
+// 'markerboard' is what the composer gives each newly composed diagram: thin black ink on white,
+// in tldraw's native, deterministic hand-drawn line and its upright handwritten draw face. It
+// adds no records and no decoration, and a markerboard proposal may use no colour or tint.
+export const proposal_styles = ['plain', 'markerboard'] as const
+export type ProposalStyle = (typeof proposal_styles)[number]
+
 // An arc is straight unless it bends; an elbow runs in right angles.
 export const proposal_routes = ['arc', 'elbow'] as const
 export type ProposalRoute = (typeof proposal_routes)[number]
@@ -113,6 +122,7 @@ export type Proposal = {
   agent: string
   summary: string
   shapes: ProposalShape[]
+  style: ProposalStyle
 
   // The semantic diagram the shapes were composed from, kept for the next interpretation.
   diagram: Diagram | null

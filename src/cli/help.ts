@@ -6,8 +6,15 @@ import { proposal_size_bytes_max } from '../shared/constants'
 import { diagram_schema_text, proposal_schema_text, proposal_subset_text } from './cleanup_prompt'
 
 export const commands = [
-  'start', 'fetch', 'status', 'stop', 'serve', 'cleanup-snapshot', 'cleanup-compose',
-  'cleanup-publish', 'cleanup-restore',
+  'start',
+  'fetch',
+  'status',
+  'stop',
+  'serve',
+  'cleanup-snapshot',
+  'cleanup-compose',
+  'cleanup-publish',
+  'cleanup-restore',
 ] as const
 export type Command = (typeof commands)[number]
 
@@ -225,7 +232,9 @@ Example:
                                     [--json]
 
 Lays out a semantic diagram in the house style and saves the result as a styled shape proposal
-(tldraw-sync.cleanup.v2), without publishing it and without a running board. The layout is
+(tldraw-sync.cleanup.v2, "style": "markerboard": a precise layout in thin black ink on white,
+with hand-drawn outlines, open arrows and handwritten labels, and no colour), without
+publishing it and without a running board. Earlier revisions keep their own look. The layout is
 deterministic: the same diagram, in any item order, gives the same result. Labels, kinds,
 groups, endpoints and arrowheads are copied exactly; positions, sizes and connector routes are
 the tool's. cleanup-publish runs the same composition before it publishes.

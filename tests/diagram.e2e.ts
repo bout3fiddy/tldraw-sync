@@ -5,8 +5,11 @@
 // Meaning is checked first: every label, group and connector of the fixture is on the canvas.
 // Then geometry, from real browser bounds: labels inside their shapes, items inside their groups
 // below the heading, no overlapping items, connectors that do not run through items they do not
-// join, everything inside the pane, and text large enough to read. Then a refused publish, and
-// a restart. None of this measures whether an agent read a sketch correctly.
+// join, everything inside the pane, and text large enough to read. Then the look, from the
+// screen's own pixels: thin black ink on white, with no coloured pixel, white interiors, one fine
+// outline per box and oval, open V heads and a white break for each connector label. Then a
+// refused publish, a restart and restores, with a historical coloured revision as the negative
+// control for the colour check. None of this measures whether an agent read a sketch correctly.
 //
 // Run: bun run build && npx playwright test   (Bun and a Playwright Chromium on the host)
 
@@ -17,6 +20,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { child_stop, contexts_close } from './board_child'
 
 const repo_root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
@@ -28,7 +32,7 @@ const ready_wait_ms = 20_000
 
 type Fixture = {
   nodes: Array<{ id: string; kind: string; label: string; parent?: string }>
-  edges: Array<{ id: string; from: string; to: string; label?: string }>
+  edges: Array<{ id: string; from: string; to: string; label?: string; direction?: string }>
 }
 const fixture = JSON.parse(fs.readFileSync(fixture_path, 'utf8')) as Fixture
 
@@ -87,15 +91,15 @@ async function server_start(): Promise<void> {
   throw new Error('the board did not start')
 }
 
+// Bounded: SIGTERM, then SIGKILL, and timed so a slow teardown shows where it was slow.
 async function server_stop(): Promise<void> {
   const child = server
   server = null
 
-  if (child === null || child.exitCode !== null) return
+  if (child === null) return
 
-  const exited = new Promise((resolve) => child.once('exit', resolve))
-  child.kill('SIGTERM')
-  await exited
+  const stop = await child_stop(child)
+  console.log(`board stop: ${stop.outcome} after ${stop.elapsed_ms}ms`)
 }
 
 async function status(): Promise<Record<string, unknown>> {
@@ -135,9 +139,16 @@ test.beforeAll(async () => {
   await server_start()
 })
 
+// Timed, so a slow teardown is placed: the board's stop is logged by `server_stop`, the data
+// directory's removal here.
 test.afterAll(async () => {
-  await server_stop()
-  fs.rmSync(data_directory, { recursive: true, force: true })
+  try {
+    await server_stop()
+  } finally {
+    const started_ms = Date.now()
+    fs.rmSync(data_directory, { recursive: true, force: true })
+    console.log(`data directory removed after ${Date.now() - started_ms}ms`)
+  }
 })
 
 type Rect = { x: number; y: number; w: number; h: number }
@@ -153,34 +164,144 @@ type Measured = {
       line_rects: Rect[]
       line_height_px_min: number | null
       points: Array<{ x: number; y: number }>
+
+      // What the browser actually drew: the label's face and ink, the colours of the shape's
+      // paths, their geometry, and the shape's stacking depth.
+      font_family: string | null
+      text_color: string | null
+      fills: string[]
+      strokes: string[]
+      paths_d: string
+      z: number
+
+      // The shape's scale on screen: CSS pixels per page unit, from its own drawing.
+      unit_px: number
     }
   >
+
+  // Any other drawn shape, such as decoration or a leak from somewhere else.
+  others: string[]
+
+  // The pane's details bar, which sits over the canvas and is not part of the drawing.
+  bar: Rect | null
+
+  // Whether tldraw's handwritten face really loaded, rather than a fallback standing in.
+  draw_font_loaded: boolean
 }
+
+type Shape = Measured['shapes'][string]
+
+// The drawn lines of words in an element, one rect per line, from the glyph boxes of its words
+// alone. Whitespace is left out: under tldraw's `white-space: pre-wrap` the space at each soft
+// wrap hangs past the end of its line, and Chromium reports it as a rect of its own that may
+// reach beyond the wrap width, though nothing is painted there. Self-contained, as it runs in
+// the page from its source text.
+function word_lines(content: Element): Rect[] {
+  const words: DOMRect[] = []
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT)
+
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const value = node.nodeValue ?? ''
+    const pattern = /\S+/g
+
+    for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
+      const range = document.createRange()
+      range.setStart(node, match.index)
+      range.setEnd(node, match.index + match[0].length)
+      const rects = Array.from(range.getClientRects())
+      words.push(...rects.filter((rect) => rect.width > 0 && rect.height > 0))
+    }
+  }
+
+  words.sort((a, b) => a.top - b.top || a.left - b.left)
+  const lines: Rect[] = []
+
+  // A word whose middle lies within the previous line's height is on that line.
+  for (const word of words) {
+    const line = lines[lines.length - 1]
+    const middle = word.top + word.height / 2
+
+    if (line === undefined || middle <= line.y || middle >= line.y + line.h) {
+      lines.push({ x: word.left, y: word.top, w: word.width, h: word.height })
+      continue
+    }
+
+    const right = Math.max(line.x + line.w, word.right)
+    const bottom = Math.max(line.y + line.h, word.bottom)
+    line.x = Math.min(line.x, word.left)
+    line.y = Math.min(line.y, word.top)
+    line.w = right - line.x
+    line.h = bottom - line.y
+  }
+
+  return lines
+}
+
+// Rebuilds `word_lines` inside the page from its source, which Playwright has already compiled.
+const word_lines_source = word_lines.toString()
 
 // Real browser bounds of every cleaned shape, its label's text, and sampled connector paths.
 async function cleaned_measure(page: Page): Promise<Measured> {
-  return await page.evaluate(async () => {
+  return await page.evaluate(async (lines_source) => {
     await document.fonts.ready
+    const lines_of = new Function(`return (${lines_source})`)() as typeof word_lines
     const to_rect = (r: DOMRect) => ({ x: r.x, y: r.y, w: r.width, h: r.height })
     const pane = document.querySelector('section[aria-label="Cleaned"]') as HTMLElement
     const shapes: Measured['shapes'] = {}
+    const others: string[] = []
     const selector = '.tl-shape[data-shape-id]:not(.tl-shape-background)'
+    const paths_of = (element: Element) =>
+      Array.from(element.querySelectorAll('path')).filter(
+        (path) => path.closest('defs, clipPath, mask') === null,
+      )
+
+    // Computed, so colours set on an enclosing group, as tldraw does for arrows, count. sRGB
+    // colours read back as rgb() and are compared as hex; anything else is kept as written.
+    const hex = (colour: string) => {
+      const parts = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(colour)
+
+      if (parts === null) return colour
+
+      return `#${parts
+        .slice(1)
+        .map((part) => Number(part).toString(16).padStart(2, '0'))
+        .join('')}`
+    }
+    const colours = (element: Element, name: 'fill' | 'stroke') =>
+      paths_of(element)
+        .map((path) => hex(getComputedStyle(path)[name]))
+        .filter((colour) => colour !== '' && colour !== 'none' && !colour.startsWith('url('))
 
     for (const element of Array.from(pane.querySelectorAll<HTMLElement>(selector))) {
-      const id = (element.dataset.shapeId ?? '').replace('shape:cleaned-', '')
+      const shape_id = element.dataset.shapeId ?? ''
+      const z = Number(getComputedStyle(element).zIndex)
+      const paths_d = paths_of(element)
+        .map((path) => path.getAttribute('d') ?? '')
+        .join('|')
+
+      if (!shape_id.startsWith('shape:cleaned-')) {
+        others.push(shape_id)
+        continue
+      }
+
+      const id = shape_id.replace('shape:cleaned-', '')
       const content = element.querySelector('.tl-text-content')
       const text = content?.textContent ?? ''
       let text_rect: Rect | null = null
       let line_rects: Rect[] = []
       let line_height_px_min: number | null = null
 
+      // The drawn words only, one rect per line. Selecting the whole content would also count
+      // its paragraph and wrapper element boxes, which are layout, not words.
       if (content !== null && text.length > 0) {
-        const range = document.createRange()
-        range.selectNodeContents(content)
-        text_rect = to_rect(range.getBoundingClientRect())
-        const lines = Array.from(range.getClientRects()).filter((rect) => rect.height > 0)
-        line_rects = lines.map(to_rect)
-        line_height_px_min = Math.min(...lines.map((rect) => rect.height))
+        line_rects = lines_of(content)
+        const left = Math.min(...line_rects.map((rect) => rect.x))
+        const top = Math.min(...line_rects.map((rect) => rect.y))
+        const right = Math.max(...line_rects.map((rect) => rect.x + rect.w))
+        const bottom = Math.max(...line_rects.map((rect) => rect.y + rect.h))
+        const found = line_rects.length > 0
+        text_rect = found ? { x: left, y: top, w: right - left, h: bottom - top } : null
+        line_height_px_min = found ? Math.min(...line_rects.map((rect) => rect.h)) : null
       }
 
       const points: Array<{ x: number; y: number }> = []
@@ -204,6 +325,12 @@ async function cleaned_measure(page: Page): Promise<Measured> {
         }
       }
 
+      // An SVG shape's scale is its first path's; an HTML shape, such as text, has no path,
+      // and its scale is its drawn width over its laid-out width in page units.
+      const svg_unit_px = (paths_of(element)[0] as SVGPathElement | undefined)?.getScreenCTM()?.a
+      const html_unit_px =
+        element.offsetWidth > 0 ? element.getBoundingClientRect().width / element.offsetWidth : 1
+      const style = content === null ? null : getComputedStyle(content)
       shapes[id] = {
         type: element.dataset.shapeType ?? '',
         rect: to_rect(element.getBoundingClientRect()),
@@ -212,11 +339,28 @@ async function cleaned_measure(page: Page): Promise<Measured> {
         line_rects,
         line_height_px_min,
         points,
+        font_family: style === null ? null : style.fontFamily,
+        text_color: style === null ? null : style.color,
+        fills: colours(element, 'fill'),
+        strokes: colours(element, 'stroke'),
+        paths_d,
+        z,
+        unit_px: svg_unit_px ?? html_unit_px,
       }
     }
 
-    return { pane: to_rect(pane.getBoundingClientRect()), shapes }
-  })
+    const bar = pane.querySelector('.cleaned__bar')
+    const draw_font_loaded = Array.from(document.fonts).some(
+      (face) => face.family.replace(/["']/g, '') === 'tldraw_draw' && face.status === 'loaded',
+    )
+    return {
+      pane: to_rect(pane.getBoundingClientRect()),
+      shapes,
+      others,
+      bar: bar === null ? null : to_rect(bar.getBoundingClientRect()),
+      draw_font_loaded,
+    }
+  }, word_lines_source)
 }
 
 // The canvas refits with a short animation when its pane changes size: wait until two
@@ -245,6 +389,34 @@ function inside(inner: Rect, outer: Rect, margin_px = 0): boolean {
     inner.y >= outer.y + margin_px - tolerance_px &&
     inner.x + inner.w <= outer.x + outer.w - margin_px + tolerance_px &&
     inner.y + inner.h <= outer.y + outer.h - margin_px + tolerance_px
+  )
+}
+
+// A rect as a short, readable failure detail, in CSS pixels.
+function rect_text(rect: Rect): string {
+  const [x, y, w, h] = [rect.x, rect.y, rect.w, rect.h].map((value) => value.toFixed(1))
+  return `${w}x${h}@${x},${y}`
+}
+
+// Everything needed to tell a layout bug from a measuring artifact when a label overflows: by
+// how much on which side, every drawn line, the face, the scale and the width in page units.
+function overflow_text(shape: Shape): string {
+  const words = shape.text_rect as Rect
+  const { rect } = shape
+  const sides = {
+    left: rect.x - words.x,
+    top: rect.y - words.y,
+    right: words.x + words.w - (rect.x + rect.w),
+    bottom: words.y + words.h - (rect.y + rect.h),
+  }
+  const over = Object.entries(sides)
+    .filter(([, px]) => px > tolerance_px)
+    .map(([side, px]) => `${side} ${px.toFixed(1)}px`)
+  return (
+    `${over.join(' ')}; words ${rect_text(words)} in ${rect_text(rect)} ` +
+    `(${(rect.w / shape.unit_px).toFixed(1)} units at ${shape.unit_px.toFixed(3)}px) ` +
+    `over ${shape.line_rects.length} lines [${shape.line_rects.map(rect_text).join(' ')}] ` +
+    `in ${shape.font_family}`
   )
 }
 
@@ -306,11 +478,11 @@ function diagram_check(
     if (shape.text !== node.label) problems.push(`${node.id}: shows "${shape.text}"`)
 
     if (shape.text_rect !== null && !inside(shape.text_rect, shape.rect)) {
-      problems.push(`${node.id}: label overflows its shape`)
+      problems.push(`${node.id}: label overflows its shape, ${overflow_text(shape)}`)
     }
 
     if (node.kind === 'ellipse' && oval_overflow(shape)) {
-      problems.push(`${node.id}: label reaches past its oval`)
+      problems.push(`${node.id}: label reaches past its oval ${rect_text(shape.rect)}`)
     }
 
     if (node.kind === 'text' && (shape.type !== 'text' || shape.line_rects.length === 0)) {
@@ -391,6 +563,755 @@ function connectors_check(measured: Measured, source: Fixture): string[] {
   return problems
 }
 
+// tldraw 4.2.3's light theme, as the browser builds it: black ink (#1d1d1d) for every outline,
+// connector and word, and its white surface (#fcfffe) inside boxes and ovals, on the pane's
+// white board. Nothing else may be painted.
+const ink_rgb = 'rgb(29, 29, 29)'
+const ink = '#1d1d1d'
+const white_fill = '#fcfffe'
+const heads_by_direction: Record<string, number> = { forward: 1, both: 2, none: 0 }
+
+// An open V arrowhead as tldraw draws it: one stroke from wing to tip to wing, never closed.
+const open_head = /^M[^MLCQAZz]+L[^MLCQAZz]+L[^MLCQAZz]+$/
+
+// The markerboard as the browser built it: the handwritten face really loaded and used for every
+// label, black words, black outlines and connectors, white or open interiors, open V heads in
+// the diagram's directions, and no shape that is not a diagram item.
+function markerboard_check(measured: Measured, arrows: Arrows, source: Fixture): string[] {
+  const problems: string[] = []
+
+  if (!measured.draw_font_loaded) problems.push('the handwritten face did not load')
+
+  if (measured.others.length > 0) problems.push(`unexpected shapes: ${measured.others}`)
+
+  for (const item of [...source.nodes, ...source.edges]) {
+    const shape = measured.shapes[item.id]
+    const label = item.label ?? ''
+    const kind = 'kind' in item ? item.kind : 'edge'
+
+    if (shape === undefined) continue
+
+    if (label !== '' && !(shape.font_family ?? '').includes('tldraw_draw')) {
+      problems.push(`${item.id}: drawn in ${shape.font_family}`)
+    }
+
+    if (label !== '' && shape.text_color !== ink_rgb) {
+      problems.push(`${item.id}: words in ${shape.text_color}`)
+    }
+
+    const stray = [...shape.fills, ...shape.strokes].filter((c) => c !== ink && c !== white_fill)
+
+    if (stray.length > 0) problems.push(`${item.id}: painted ${stray}`)
+
+    if (kind !== 'text' && !shape.strokes.includes(ink)) problems.push(`${item.id}: no ink line`)
+
+    const white = kind === 'box' || kind === 'ellipse'
+
+    if (white && !shape.fills.includes(white_fill)) problems.push(`${item.id}: not white inside`)
+
+    if (!white && shape.fills.length > 0) problems.push(`${item.id}: filled ${shape.fills}`)
+  }
+
+  return [...problems, ...heads_check(arrows, source)]
+}
+
+// Every connector has the heads its direction asks for, each an open V.
+function heads_check(arrows: Arrows, source: Fixture): string[] {
+  const problems: string[] = []
+
+  for (const edge of source.edges) {
+    const heads = arrows[edge.id]?.heads ?? []
+    const expected = heads_by_direction[edge.direction ?? 'forward']
+
+    if (heads.length !== expected) problems.push(`${edge.id}: ${heads.length} heads`)
+
+    for (const head of heads) {
+      if (!open_head.test(head.replace(/\s+/g, ''))) problems.push(`${edge.id}: head ${head}`)
+    }
+  }
+
+  return problems
+}
+
+// What each connector drew beyond its shape record: its heads, which are the paths outside its
+// clipped body, and for a labelled connector its body sampled densely along its length and the
+// label box tldraw cut out of the body, on screen.
+type Arrow = {
+  heads: string[]
+  body_points: Array<{ x: number; y: number }>
+  label_box: Rect | null
+}
+type Arrows = Record<string, Arrow>
+
+async function arrows_measure(page: Page): Promise<Arrows> {
+  return await page.evaluate(() => {
+    const pane = document.querySelector('section[aria-label="Cleaned"]') as HTMLElement
+    const selector = '.tl-shape[data-shape-type="arrow"]:not(.tl-shape-background)'
+    const clipped = (path: Element) => path.closest('g[style*="clip-path"]') !== null
+    const arrows: Record<string, Arrow> = {}
+
+    for (const element of Array.from(pane.querySelectorAll<HTMLElement>(selector))) {
+      const paths = Array.from(element.querySelectorAll('path')).filter(
+        (path) => path.closest('defs, clipPath, mask') === null,
+      )
+      const labelled = (element.querySelector('.tl-text-content')?.textContent ?? '') !== ''
+      const body_points: Array<{ x: number; y: number }> = []
+      let label_box: Rect | null = null
+
+      // tldraw's clip path is the arrow's bounds, then the label's rounded box as the second
+      // subpath, in the body's own coordinates. Its arcs are written as cubics whose control
+      // points stay within the box, so the box is the bounds of that subpath's points.
+      const clip_d = element.querySelector('clipPath path')?.getAttribute('d') ?? ''
+      const label_start = clip_d.indexOf('M', 1)
+      const label_end = clip_d.indexOf('M', label_start + 1)
+      const body_matrix = paths.find(clipped)?.getScreenCTM() ?? null
+
+      if (labelled && label_start > 0 && body_matrix !== null) {
+        const subpath = clip_d.slice(label_start, label_end > 0 ? label_end : undefined)
+        const numbers = (subpath.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/g) ?? []).map(Number)
+        const xs = numbers.filter((_, index) => index % 2 === 0)
+        const ys = numbers.filter((_, index) => index % 2 === 1)
+        const corners = [
+          [Math.min(...xs), Math.min(...ys)],
+          [Math.max(...xs), Math.max(...ys)],
+        ].map(([x, y]) => ({
+          x: body_matrix.a * (x as number) + body_matrix.c * (y as number) + body_matrix.e,
+          y: body_matrix.b * (x as number) + body_matrix.d * (y as number) + body_matrix.f,
+        }))
+        const [a, b] = corners as [{ x: number; y: number }, { x: number; y: number }]
+        const left = Math.min(a.x, b.x)
+        const top = Math.min(a.y, b.y)
+        const found = numbers.length >= 8 && numbers.length % 2 === 0
+        label_box = found
+          ? { x: left, y: top, w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }
+          : null
+      }
+
+      for (const path of labelled ? paths.filter(clipped) : []) {
+        const matrix = path.getScreenCTM()
+        const length = path.getTotalLength()
+
+        if (matrix === null || !(length > 0)) continue
+
+        // Four samples per screen pixel, so a band narrower than a pixel is still reached.
+        const count = Math.min(16_000, Math.ceil(length * matrix.a * 4))
+
+        for (let index = 0; index <= count; index += 1) {
+          const point = path.getPointAtLength((length * index) / count)
+          body_points.push({
+            x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+            y: matrix.b * point.x + matrix.d * point.y + matrix.f,
+          })
+        }
+      }
+
+      const heads = paths.filter((path) => !clipped(path)).map((p) => p.getAttribute('d') ?? '')
+      const id = (element.dataset.shapeId ?? '').replace('shape:cleaned-', '')
+      arrows[id] = { heads, body_points, label_box }
+    }
+
+    return arrows
+  })
+}
+
+// The pane as the screen shows it, pixel for pixel: a screenshot decoded to RGBA by the
+// browser's own image decoder, so no image library is needed. The details bar is left out.
+type Pixels = { width: number; height: number; data: Buffer; bar: Rect | null }
+type Pixel = { r: number; g: number; b: number; light: number; chroma: number }
+
+async function pixels_read(page: Page, measured: Measured): Promise<Pixels> {
+  await page.mouse.move(0, 0)
+  const png = await page.screenshot({ scale: 'css', animations: 'disabled' })
+  const decoded = await page.evaluate(async (base64) => {
+    const image = new Image()
+    image.src = `data:image/png;base64,${base64}`
+    await image.decode()
+    const canvas = document.createElement('canvas')
+    canvas.width = image.naturalWidth
+    canvas.height = image.naturalHeight
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    context?.drawImage(image, 0, 0)
+    const data = context?.getImageData(0, 0, canvas.width, canvas.height).data ?? []
+    let binary = ''
+
+    for (let start = 0; start < data.length; start += 0x4000) {
+      binary += String.fromCharCode(...data.slice(start, start + 0x4000))
+    }
+
+    return { width: canvas.width, height: canvas.height, rgba: btoa(binary) }
+  }, png.toString('base64'))
+  const data = Buffer.from(decoded.rgba, 'base64')
+  expect(data.length).toBe(decoded.width * decoded.height * 4)
+  return { width: decoded.width, height: decoded.height, data, bar: measured.bar }
+}
+
+// Light is a pixel's luminance from 0 to 255; chroma is how far its channels spread.
+function pixel_at(pixels: Pixels, x: number, y: number): Pixel | null {
+  const px = Math.floor(x)
+  const py = Math.floor(y)
+
+  if (px < 0 || py < 0 || px >= pixels.width || py >= pixels.height) return null
+
+  if (pixels.bar !== null && inside({ x: px, y: py, w: 1, h: 1 }, pixels.bar, -4)) return null
+
+  const index = (py * pixels.width + px) * 4
+  const [r, g, b] = [0, 1, 2].map((channel) => pixels.data[index + channel] as number) as [
+    number,
+    number,
+    number,
+  ]
+  const chroma = Math.max(r, g, b) - Math.min(r, g, b)
+  return { r, g, b, light: 0.299 * r + 0.587 * g + 0.114 * b, chroma }
+}
+
+// A pixel is coloured when its channels spread by 16 or more. tldraw's grey (#9fa8b2) spreads
+// 19 and the old pastel oval fill (#ddedfa) 29; its white surface (#fcfffe) spreads 3 and its
+// black ink 0, and black anti-aliased onto white stays neutral, so the ink never counts.
+const chroma_coloured_min = 16
+const coloured_share_max = 0.0001
+const dark_light_max = 200
+
+type Colours = {
+  pixels_count: number
+  coloured: number
+  blue: number
+  yellow: number
+  first: string | null
+}
+
+// Every pixel of the drawing, with a margin, inside the pane.
+function colours_count(pixels: Pixels, measured: Measured): Colours {
+  const rects = Object.values(measured.shapes).map((shape) => shape.rect)
+  const { pane } = measured
+  const left = Math.max(pane.x, Math.min(...rects.map((rect) => rect.x)) - 8)
+  const top = Math.max(pane.y, Math.min(...rects.map((rect) => rect.y)) - 8)
+  const right = Math.min(pane.x + pane.w, Math.max(...rects.map((rect) => rect.x + rect.w)) + 8)
+  const bottom = Math.min(pane.y + pane.h, Math.max(...rects.map((rect) => rect.y + rect.h)) + 8)
+  const counts: Colours = { pixels_count: 0, coloured: 0, blue: 0, yellow: 0, first: null }
+
+  for (let y = Math.ceil(top); y < bottom; y += 1) {
+    for (let x = Math.ceil(left); x < right; x += 1) {
+      const pixel = pixel_at(pixels, x, y)
+
+      if (pixel === null) continue
+
+      counts.pixels_count += 1
+
+      if (pixel.chroma < chroma_coloured_min) continue
+
+      counts.coloured += 1
+      counts.first ??= `rgb(${pixel.r}, ${pixel.g}, ${pixel.b}) at ${x},${y}`
+
+      if (pixel.b - Math.max(pixel.r, pixel.g) >= chroma_coloured_min) counts.blue += 1
+
+      if (Math.min(pixel.r, pixel.g) - pixel.b >= chroma_coloured_min) counts.yellow += 1
+    }
+  }
+
+  return counts
+}
+
+// Inside a box or oval, clear of its outline and its words, the board shows white: no tint,
+// hatching or second line. Sampled every other pixel.
+function interior_inked(pixels: Pixels, shape: Shape, oval: boolean) {
+  const { rect } = shape
+  const inset = shape.unit_px * 4 + 2
+  const [a, b] = [rect.w / 2 - inset, rect.h / 2 - inset]
+  const [cx, cy] = [rect.x + rect.w / 2, rect.y + rect.h / 2]
+  let [samples, inked] = [0, 0]
+
+  for (let y = rect.y + inset; y < rect.y + rect.h - inset; y += 2) {
+    for (let x = rect.x + inset; x < rect.x + rect.w - inset; x += 2) {
+      if (oval && ((x - cx) / a) ** 2 + ((y - cy) / b) ** 2 > 1) continue
+
+      if (shape.line_rects.some((line) => inside({ x, y, w: 0, h: 0 }, line, -4))) continue
+
+      const pixel = pixel_at(pixels, x, y)
+
+      if (pixel === null) continue
+
+      samples += 1
+
+      if (pixel.light < dark_light_max || pixel.chroma >= chroma_coloured_min) inked += 1
+    }
+  }
+
+  return { samples, inked }
+}
+
+// The outline crossed at several places by short scans across the edge. A single fine line
+// crosses as one dark run a pixel or few wide; a doubled sketch as two runs; a thick marker as
+// one wide run. A connector meeting the edge spoils its crossing, so the thinnest single run
+// is the outline's width. Returns the widths of the crossings that are single runs.
+function outline_widths_px(pixels: Pixels, shape: Shape, oval: boolean): number[] {
+  const { rect } = shape
+  const reach = Math.ceil(shape.unit_px * 2.5 + 1.5)
+  const scans: Array<{ x: number; y: number; dx: number; dy: number }> = []
+
+  for (const f of oval ? [0.5] : [0.3, 0.5, 0.7]) {
+    scans.push({ x: rect.x, y: rect.y + rect.h * f, dx: 1, dy: 0 })
+    scans.push({ x: rect.x + rect.w, y: rect.y + rect.h * f, dx: 1, dy: 0 })
+    scans.push({ x: rect.x + rect.w * f, y: rect.y, dx: 0, dy: 1 })
+    scans.push({ x: rect.x + rect.w * f, y: rect.y + rect.h, dx: 0, dy: 1 })
+  }
+
+  const widths: number[] = []
+
+  for (const scan of scans) {
+    const runs: number[] = []
+    let run = 0
+
+    for (let step = -reach; step <= reach + 1; step += 1) {
+      const pixel = pixel_at(pixels, scan.x + scan.dx * step, scan.y + scan.dy * step)
+
+      if (pixel !== null && pixel.light < dark_light_max && step <= reach) {
+        run += 1
+      } else if (run > 0) {
+        runs.push(run)
+        run = 0
+      }
+    }
+
+    if (runs.length === 1) widths.push(runs[0] as number)
+  }
+
+  return widths
+}
+
+// Dark pixels within a shape's lines of words: the words are really painted.
+function words_inked(pixels: Pixels, shape: Shape): number {
+  let inked = 0
+
+  for (const line of shape.line_rects) {
+    for (let y = line.y; y < line.y + line.h; y += 1) {
+      for (let x = line.x; x < line.x + line.w; x += 1) {
+        if ((pixel_at(pixels, x, y)?.light ?? 255) < dark_light_max) inked += 1
+      }
+    }
+  }
+
+  return inked
+}
+
+// tldraw leaves a white break in a connector's line for its label: it clips the body to outside
+// the label's box. Along the body, between the words and the edge of that box, the board shows
+// white; well away from the label the line itself shows ink, so a blank screenshot cannot pass.
+// Each screen pixel the body crosses is judged once, by its centre. A band pixel lies wholly
+// inside the box and wholly beyond the words, so neither the clipped line's anti-aliased end
+// nor the words' own edges can reach it. The band is anchored to the box tldraw actually cut,
+// not to the words plus the nominal padding: on the iPad's split pane the padding is about two
+// pixels, and a band placed from the padding alone reached the clip edge's anti-aliasing.
+type Gap = { band: number; band_inked: number; body: number; body_inked: number }
+type BandPixel = { x: number; y: number; light: number }
+
+function label_gap(
+  pixels: Pixels,
+  words: Rect,
+  box: Rect,
+  unit_px: number,
+  points: Array<{ x: number; y: number }>,
+) {
+  expect(unit_px).toBeGreaterThan(0)
+  expect(box.w).toBeGreaterThan(0)
+  const gap: Gap = { band: 0, band_inked: 0, body: 0, body_inked: 0 }
+  const band_dark: BandPixel[] = []
+  const seen = new Set<number>()
+
+  for (const point of points) {
+    const [px, py] = [Math.floor(point.x), Math.floor(point.y)]
+    const key = py * pixels.width + px
+
+    if (seen.has(key)) continue
+
+    seen.add(key)
+    const [cx, cy] = [px + 0.5, py + 0.5]
+    const dx = Math.max(words.x - cx, cx - (words.x + words.w), 0)
+    const dy = Math.max(words.y - cy, cy - (words.y + words.h), 0)
+    const pixel = pixel_at(pixels, px, py)
+
+    // The label's rounded corners are left alone.
+    if (pixel === null || (dx > 0 && dy > 0)) continue
+
+    const words_px = Math.max(dx, dy)
+    const inside_box_px = Math.min(cx - box.x, box.x + box.w - cx, cy - box.y, box.y + box.h - cy)
+    const dark = pixel.light < dark_light_max
+
+    if (words_px >= 0.5 && inside_box_px >= 0.5) {
+      gap.band += 1
+      gap.band_inked += dark ? 1 : 0
+
+      if (dark) band_dark.push({ x: px, y: py, light: Math.round(pixel.light) })
+    } else if (words_px >= unit_px * 8 && inside_box_px <= -0.5) {
+      gap.body += 1
+      gap.body_inked += dark ? 1 : 0
+    }
+  }
+
+  expect(band_dark.length).toBe(gap.band_inked)
+  return { gap, band_dark }
+}
+
+// Whose ink a dark band pixel is, from the same view painted again with parts of the connector
+// taken away: its clipped line, then also its words, then the whole connector. A pixel that
+// turns white once the line is hidden is the line painted through the break. One that turns
+// white only once the words go is the words' own glyph ink reaching past their measured box,
+// which is the label, not a missing break. One left dark until the whole connector goes is its
+// own arrowhead inside the label, and one dark even then is another shape's ink crossing it:
+// both visibly occlude the label. Each pixel keeps its light in every layer, for the record.
+type Layers = { no_body: Pixels; no_words: Pixels; no_arrow: Pixels }
+type Attributed = { x: number; y: number; lights: number[] }
+type Attribution = {
+  body: Attributed[]
+  words: Attributed[]
+  head: Attributed[]
+  other: Attributed[]
+}
+
+function band_attribute(band_dark: BandPixel[], layers: Layers | null): Attribution {
+  const attribution: Attribution = { body: [], words: [], head: [], other: [] }
+
+  if (band_dark.length === 0) return attribution
+
+  expect(layers).not.toBeNull()
+  const order = [layers!.no_body, layers!.no_words, layers!.no_arrow]
+
+  for (const pixel of band_dark) {
+    const lights = order.map((layer) => Math.round(pixel_at(layer, pixel.x, pixel.y)?.light ?? 255))
+    const entry = { x: pixel.x, y: pixel.y, lights: [pixel.light, ...lights] }
+    const gone = lights.findIndex((light) => light >= dark_light_max)
+    const owner = (['body', 'words', 'head'] as const)[gone] ?? 'other'
+    attribution[owner].push(entry)
+  }
+
+  const count = Object.values(attribution).reduce((sum, list) => sum + list.length, 0)
+  expect(count).toBe(band_dark.length)
+  return attribution
+}
+
+// The words sit inside the box tldraw cut from the line, within half a pixel.
+function label_box_problems(id: string, words: Rect, box: Rect | null): string[] {
+  if (box === null) return [`${id}: no label box cut from its line`]
+
+  // `inside` allows the shared tolerance less the margin.
+  if (!inside(words, box, tolerance_px - 0.5)) {
+    return [`${id}: words ${rect_text(words)} outside the white break ${rect_text(box)}`]
+  }
+
+  return []
+}
+
+// Whether a label's break shows. The body beyond the box is inked. The band between words and
+// box is where the line runs: with the mask removed, as the negative control, the same band
+// gains ink. As painted, line ink in the band stays within the long-standing tenth, and no
+// arrowhead or other shape's ink lies in it. Problems carry the measurements behind them.
+function label_gap_judge(
+  id: string,
+  painted: Gap,
+  unclipped: Gap,
+  attribution: Attribution,
+  detail: object,
+): string[] {
+  expect(unclipped.band).toBe(painted.band)
+  const record = JSON.stringify({
+    ...painted,
+    unclipped_band_inked: unclipped.band_inked,
+    attribution,
+    ...detail,
+  })
+
+  if (painted.band === 0) return [`${id}: label gap not sampled ${record}`]
+
+  const problems: string[] = []
+
+  if (painted.body_inked < painted.body * 0.6) {
+    problems.push(`${id}: label gap with the line not inked beyond it ${record}`)
+  }
+
+  if (unclipped.band_inked <= painted.band_inked) {
+    problems.push(`${id}: label gap band gains no ink without the mask ${record}`)
+  }
+
+  if (attribution.body.length > painted.band * 0.1) {
+    problems.push(`${id}: label gap with the line painted through it ${record}`)
+  }
+
+  if (attribution.head.length + attribution.other.length > 0) {
+    problems.push(`${id}: label gap crossed by other ink ${record}`)
+  }
+
+  return problems
+}
+
+// The pane painted with labelled connectors altered in place, then put back exactly: each
+// element's own style attribute is saved and restored. `unclipped` removes the label's mask
+// from the line; the others hide the line, then also the words, then the whole connector.
+type Layer = 'unclipped' | 'no_body' | 'no_words' | 'no_arrow'
+
+async function layer_pixels(
+  page: Page,
+  measured: Measured,
+  ids: string[],
+  layer: Layer,
+): Promise<Pixels> {
+  expect(ids.length).toBeGreaterThan(0)
+  const changed = await page.evaluate(
+    async ({ ids, layer }) => {
+      const pane = document.querySelector('section[aria-label="Cleaned"]') as HTMLElement
+      const saved: Array<[Element, string | null]> = []
+      const save = (element: HTMLElement | SVGElement, name: string, value: string) => {
+        saved.push([element, element.getAttribute('style')])
+        element.style.setProperty(name, value)
+      }
+
+      for (const id of ids) {
+        const selector = `.tl-shape[data-shape-id="shape:cleaned-${id}"]:not(.tl-shape-background)`
+        const element = pane.querySelector<HTMLElement>(selector)
+        const body = element?.querySelector<SVGGElement>('g[style*="clip-path"]')
+        const words = element?.querySelector<HTMLElement>('.tl-text-content')
+
+        if (!element || !body || !words) continue
+
+        if (layer === 'unclipped') save(body, 'clip-path', 'none')
+        else save(body, 'visibility', 'hidden')
+
+        if (layer === 'no_words') save(words, 'visibility', 'hidden')
+
+        if (layer === 'no_arrow') save(element, 'visibility', 'hidden')
+      }
+
+      const holder = window as unknown as { layer_saved?: Array<[Element, string | null]> }
+      holder.layer_saved = saved
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      return new Set(saved.map(([element]) => element.closest('.tl-shape'))).size
+    },
+    { ids, layer },
+  )
+  let pixels: Pixels | null = null
+  let restored = -1
+
+  try {
+    expect(changed).toBe(ids.length)
+    pixels = await pixels_read(page, measured)
+  } finally {
+    restored = await page.evaluate(async () => {
+      const holder = window as unknown as { layer_saved?: Array<[Element, string | null]> }
+      const saved = holder.layer_saved ?? []
+      delete holder.layer_saved
+
+      // In reverse, so an element altered twice gets its first saved style back.
+      for (const [element, style] of [...saved].reverse()) {
+        if (style === null) element.removeAttribute('style')
+        else element.setAttribute('style', style)
+      }
+
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      return saved.length
+    })
+  }
+
+  expect(restored).toBeGreaterThan(0)
+  return pixels as Pixels
+}
+
+// Every labelled connector's break, judged as above. The unmasked control is one extra paint for
+// all of them; the three attribution layers are painted only for a connector whose band shows
+// ink, and a close view of that label is attached for review.
+async function label_gaps_check(
+  page: Page,
+  info: TestInfo,
+  name: string,
+  measured: Measured,
+  arrows: Arrows,
+  pixels: Pixels,
+  source: Fixture,
+): Promise<string[]> {
+  const problems: string[] = []
+  const ids = source.edges
+    .map((edge) => edge.id)
+    .filter((id) => measured.shapes[id]?.text_rect != null)
+
+  if (ids.length === 0) return problems
+
+  const unclipped_pixels = await layer_pixels(page, measured, ids, 'unclipped')
+
+  for (const id of ids) {
+    const shape = measured.shapes[id] as Shape
+    const words = shape.text_rect as Rect
+    const box = arrows[id]?.label_box ?? null
+    const box_problems = label_box_problems(id, words, box)
+    problems.push(...box_problems)
+
+    if (box_problems.length > 0 || box === null) continue
+
+    const points = arrows[id]?.body_points ?? []
+    const painted = label_gap(pixels, words, box, shape.unit_px, points)
+    const unclipped = label_gap(unclipped_pixels, words, box, shape.unit_px, points)
+    let layers: Layers | null = null
+
+    if (painted.band_dark.length > 0) {
+      layers = {
+        no_body: await layer_pixels(page, measured, [id], 'no_body'),
+        no_words: await layer_pixels(page, measured, [id], 'no_words'),
+        no_arrow: await layer_pixels(page, measured, [id], 'no_arrow'),
+      }
+      await heading_evidence(page, info, `${name}-${id}-label`, box)
+    }
+
+    const attribution = band_attribute(painted.band_dark, layers)
+    const detail = { words, box, unit_px: shape.unit_px, line_rects: shape.line_rects }
+    problems.push(...label_gap_judge(id, painted.gap, unclipped.gap, attribution, detail))
+  }
+
+  return problems
+}
+
+// The markerboard as it was painted, from the screen's own pixels: no coloured pixel anywhere
+// in the drawing, white interiors, one fine outline round each box and oval, and painted words.
+// Connector labels' white breaks are judged by `label_gaps_check`.
+function painted_check(measured: Measured, pixels: Pixels, source: Fixture) {
+  const problems: string[] = []
+  const colours = colours_count(pixels, measured)
+
+  if (colours.coloured > Math.floor(colours.pixels_count * coloured_share_max)) {
+    problems.push(`${colours.coloured} coloured pixels, first ${colours.first}`)
+  }
+
+  for (const item of [...source.nodes, ...source.edges]) {
+    const shape = measured.shapes[item.id]
+    const kind = 'kind' in item ? item.kind : 'edge'
+
+    if (shape === undefined) continue
+
+    if (shape.line_rects.length > 0 && words_inked(pixels, shape) === 0) {
+      problems.push(`${item.id}: words not painted`)
+    }
+
+    if (kind === 'box' || kind === 'ellipse') {
+      const interior = interior_inked(pixels, shape, kind === 'ellipse')
+
+      if (interior.samples === 0 || interior.inked > 0) {
+        problems.push(`${item.id}: interior ${interior.inked} of ${interior.samples} inked`)
+      }
+
+      const widths = outline_widths_px(pixels, shape, kind === 'ellipse')
+
+      if (!(Math.min(...widths) <= shape.unit_px * 3 + 1.5)) {
+        problems.push(`${item.id}: no single fine outline (${widths})`)
+      }
+    }
+  }
+
+  return problems
+}
+
+// A revision published before styles existed, as the browser drew it: the sans face, and no
+// decoration or other stray shape.
+function plain_check(measured: Measured): string[] {
+  const problems: string[] = []
+
+  for (const [id, shape] of Object.entries(measured.shapes)) {
+    if (shape.text !== '' && !(shape.font_family ?? '').includes('tldraw_sans')) {
+      problems.push(`${id}: drawn in ${shape.font_family}`)
+    }
+  }
+
+  if (measured.others.length > 0) problems.push(`unexpected shapes: ${measured.others}`)
+
+  return problems
+}
+
+// The same revision drawn twice is drawn identically: tldraw seeds every hand-drawn line from
+// its shape's id, so nothing moves or wobbles differently between renders.
+function drawn_identically(a: Measured, b: Measured): string[] {
+  const problems: string[] = []
+
+  for (const [id, shape] of Object.entries(a.shapes)) {
+    if (b.shapes[id]?.paths_d !== shape.paths_d) problems.push(`${id}: drawn differently`)
+  }
+
+  if (Object.keys(b.shapes).length !== Object.keys(a.shapes).length) problems.push('shapes')
+
+  return problems
+}
+
+// Everything the monochrome markerboard promises, from the browser's shapes and its pixels. Any
+// problem is recorded with the measurements behind it before the caller asserts.
+async function monochrome_check(
+  page: Page,
+  info: TestInfo,
+  name: string,
+  source: Fixture,
+  line_height_px_min: number,
+) {
+  const measured = await cleaned_measure_stable(page)
+  const arrows = await arrows_measure(page)
+  const pixels = await pixels_read(page, measured)
+  const problems = [
+    ...diagram_check(measured, line_height_px_min, source),
+    ...markerboard_check(measured, arrows, source),
+    ...painted_check(measured, pixels, source),
+    ...(await label_gaps_check(page, info, name, measured, arrows, pixels, source)),
+  ]
+  await problems_record(info, name, measured, problems)
+  return { measured, problems }
+}
+
+// The shapes' measurements, without sampled paths, attached when a check finds a problem.
+async function problems_record(
+  info: TestInfo,
+  name: string,
+  measured: Measured,
+  problems: string[],
+): Promise<void> {
+  if (problems.length === 0) return
+
+  const shapes = Object.fromEntries(
+    Object.entries(measured.shapes).map(([id, { points, paths_d, ...shape }]) => [
+      id,
+      { ...shape, points_count: points.length, paths_d_length: paths_d.length },
+    ]),
+  )
+  const body = JSON.stringify({ problems, pane: measured.pane, shapes }, null, 1)
+  await info.attach(`${name}-problems`, { body, contentType: 'application/json' })
+}
+
+// The same revision as updated live and as freshly loaded lays out every label identically:
+// the same lines, at the same places, within the pixel and a half every bound check allows.
+function layout_differences(live: Measured, fresh: Measured): string[] {
+  const problems: string[] = []
+
+  for (const [id, shape] of Object.entries(live.shapes)) {
+    const other = fresh.shapes[id]
+
+    if (other === undefined) {
+      problems.push(`${id}: missing after a reload`)
+      continue
+    }
+
+    const [a, b] = [shape.line_rects, other.line_rects]
+    const moved = a.some((line, index) => {
+      const peer = b[index]
+      return peer === undefined || !inside(line, peer) || !inside(peer, line)
+    })
+
+    if (a.length !== b.length || moved) {
+      problems.push(
+        `${id}: live lines [${a.map(rect_text).join(' ')}] fresh [${b.map(rect_text).join(' ')}]`,
+      )
+    }
+  }
+
+  return problems
+}
+
+// A close view of one group, at the canvas's own scale, for visual acceptance.
+async function heading_evidence(page: Page, info: TestInfo, name: string, rect: Rect) {
+  const file = info.outputPath(`${name}.png`)
+  const clip = { x: rect.x - 8, y: rect.y - 8, width: rect.w + 16, height: rect.h + 16 }
+  await page.screenshot({ path: file, clip })
+  await info.attach(name, { path: file, contentType: 'image/png' })
+}
+
 async function evidence(page: Page, info: TestInfo, name: string, measured: Measured) {
   const file = info.outputPath(`${name}.png`)
   await page.screenshot({ path: file })
@@ -406,16 +1327,155 @@ async function evidence(page: Page, info: TestInfo, name: string, measured: Meas
   })
 }
 
+// The measuring artifact behind a false overflow, on a bare page: centred words in tldraw's
+// `pre-wrap`, each line one word just narrower than its box. The space at each soft wrap hangs
+// past its line, so a whole text node's rects reach beyond the box though nothing is painted
+// there; that is the negative control. The word lines stay inside and count the real lines,
+// yet still see a word that truly overflows a narrower box.
+test('words are measured without the spaces that hang at soft wraps', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 400, height: 300 } })
+
+  try {
+    const page = await context.newPage()
+    const font = 'font: 36px/1.35 sans-serif; white-space: pre-wrap'
+    await page.setContent(
+      `<div id="box" style="${font}; text-align: center"><span id="word">mmmmmm</span></div>` +
+        `<div id="narrow" style="${font}; overflow-wrap: normal; width: 20px">mmmmmm</div>`,
+    )
+    const result = await page.evaluate((lines_source) => {
+      const lines_of = new Function(`return (${lines_source})`)() as typeof word_lines
+      const box = document.getElementById('box') as HTMLElement
+      const narrow = document.getElementById('narrow') as HTMLElement
+      const word_px = (document.getElementById('word') as HTMLElement).offsetWidth
+      box.style.width = `${word_px + 2}px`
+      box.textContent = 'mmmmmm mmmmmm mmmmmm'
+      const range = document.createRange()
+      range.selectNodeContents(box.firstChild as Text)
+      const whole = Array.from(range.getClientRects()).filter((rect) => rect.height > 0)
+      const to_rect = (r: DOMRect) => ({ x: r.x, y: r.y, w: r.width, h: r.height })
+      return {
+        box: to_rect(box.getBoundingClientRect()),
+        narrow: to_rect(narrow.getBoundingClientRect()),
+        whole_right_px: Math.max(...whole.map((rect) => rect.right)),
+        lines: lines_of(box),
+        narrow_lines: lines_of(narrow),
+        line_px: parseFloat(getComputedStyle(box).lineHeight),
+      }
+    }, word_lines_source)
+
+    expect(Math.round(result.box.h / result.line_px)).toBe(3)
+    expect(result.whole_right_px).toBeGreaterThan(result.box.x + result.box.w + tolerance_px)
+    expect(result.lines).toHaveLength(3)
+    expect(result.lines.filter((line) => !inside(line, result.box))).toEqual([])
+    expect(result.narrow_lines).toHaveLength(1)
+    expect(inside(result.narrow_lines[0]!, result.narrow)).toBe(false)
+  } finally {
+    await contexts_close([context])
+  }
+})
+
+// A connector's label as the iPad's split pane paints it, built pixel by pixel: half a pixel to
+// the unit, the body a horizontal line clipped to outside the label box, its ends anti-aliased
+// by how much of each pixel the line covers. The box sits 1.7 pixels beyond the words, a little
+// short of the nominal padding, as the failing split-pane run showed. A band placed from the
+// padding alone, up to 1.56 pixels beyond the words, judged the clip edge's anti-aliased pixel
+// dark there. The band from the cut box sees white; a line painted through the break is the
+// negative control, and words reaching past the box are refused. `blank` paints no line, as a
+// layer with the line hidden; `dark` adds one dark pixel, such as a glyph's overhang or another
+// shape's ink.
+function label_pixels_paint(
+  box: Rect,
+  line: 'clipped' | 'through' | 'blank',
+  dark: { x: number; y: number } | null,
+): Pixels {
+  const [width, height] = [200, 100]
+  const data = Buffer.alloc(width * height * 4, 255)
+
+  for (let x = 60; x < 180 && line !== 'blank'; x += 1) {
+    const covered_px = Math.max(0, Math.min(x + 1, box.x) - x)
+    const beyond_px = Math.max(0, x + 1 - Math.max(x, box.x + box.w))
+    const coverage = line === 'through' ? 1 : Math.min(1, covered_px + beyond_px)
+    const light = Math.round(255 * (1 - coverage))
+    data.fill(light, (50 * width + x) * 4, (50 * width + x) * 4 + 3)
+  }
+
+  if (dark !== null) data.fill(40, (dark.y * width + dark.x) * 4, (dark.y * width + dark.x) * 4 + 3)
+
+  return { width, height, data, bar: null }
+}
+
+test('a label gap is judged within the box tldraw cut, not the nominal padding', () => {
+  const words: Rect = { x: 100, y: 46, w: 40, h: 8 }
+  const box: Rect = { x: 98.3, y: 43.875, w: 43.4, h: 12.25 }
+  const points = Array.from({ length: 480 }, (_, index) => ({ x: 60 + index / 4, y: 50.5 }))
+  const unit_px = 0.5
+  const judge = (painted: Pixels, unclipped: Pixels, layers: Layers | null) => {
+    const { gap, band_dark } = label_gap(painted, words, box, unit_px, points)
+    const control = label_gap(unclipped, words, box, unit_px, points).gap
+    return label_gap_judge('reports', gap, control, band_attribute(band_dark, layers), {})
+  }
+
+  const clean = label_pixels_paint(box, 'clipped', null)
+  const through = label_pixels_paint(box, 'through', null)
+  const blank = label_pixels_paint(box, 'blank', null)
+  expect(label_gap(clean, words, box, unit_px, points).gap).toEqual({
+    band: 2,
+    band_inked: 0,
+    body: 72,
+    body_inked: 72,
+  })
+  expect(judge(clean, through, null)).toEqual([])
+
+  // The negative controls: the line painted through the break is the line's own ink, and a
+  // mask that was not really removed leaves the band without the line's ink.
+  const layers_blank = { no_body: blank, no_words: blank, no_arrow: blank }
+  const [first, second] = judge(through, through, layers_blank)
+  expect(first).toContain('reports: label gap band gains no ink without the mask {"band":2,')
+  expect(second).toContain('reports: label gap with the line painted through it')
+  expect(second).toContain('"body":[{"x":99,"y":50,"lights":[0,255,255,255]}')
+  expect(judge(clean, clean, null)[0]).toContain('band gains no ink without the mask')
+
+  // A glyph's ink just past the measured words is the label, not a missing break; ink that
+  // stays when the whole connector is hidden is another shape crossing the label.
+  const glyph = { x: 140, y: 50 }
+  const overhang = label_pixels_paint(box, 'clipped', glyph)
+  const words_only = label_pixels_paint(box, 'blank', glyph)
+  const words_layers = { no_body: words_only, no_words: blank, no_arrow: blank }
+  expect(judge(overhang, through, words_layers)).toEqual([])
+  const crossing_layers = { no_body: words_only, no_words: words_only, no_arrow: words_only }
+  const [crossed] = judge(overhang, through, crossing_layers)
+  expect(crossed).toContain('reports: label gap crossed by other ink')
+  expect(crossed).toContain('"other":[{"x":140,"y":50,"lights":[40,40,40,40]}]')
+  const head_layers = { no_body: words_only, no_words: words_only, no_arrow: blank }
+  expect(judge(overhang, through, head_layers)[0]).toContain('"head":[{"x":140,')
+
+  const narrow: Rect = { x: 101, y: 43.875, w: 38, h: 12.25 }
+  expect(label_box_problems('reports', words, narrow)).toEqual([
+    'reports: words 40.0x8.0@100.0,46.0 outside the white break 38.0x12.3@101.0,43.9',
+  ])
+  expect(label_box_problems('reports', words, null)).toEqual([
+    'reports: no label box cut from its line',
+  ])
+  expect(label_box_problems('reports', words, box)).toEqual([])
+})
+
 test('a semantic diagram is composed, rendered legibly, refused when invalid, and kept', async ({
   browser,
 }, info) => {
+  const contexts = [
+    await browser.newContext({ viewport: { width: 1280, height: 800 } }),
+    await browser.newContext({ viewport: { width: 1180, height: 820 } }),
+  ]
+
+  try {
+    await diagram_journey(await contexts[0]!.newPage(), await contexts[1]!.newPage(), info)
+  } finally {
+    console.log(`contexts closed after ${await contexts_close(contexts)}ms`)
+  }
+})
+
+async function diagram_journey(stage: Page, ipad: Page, info: TestInfo): Promise<void> {
   const origin = `http://127.0.0.1:${port}`
-  const stage = await (
-    await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  ).newPage()
-  const ipad = await (
-    await browser.newContext({ viewport: { width: 1180, height: 820 } })
-  ).newPage()
   await stage.goto(origin)
   await ipad.goto(`${origin}/draw`)
 
@@ -440,16 +1500,29 @@ test('a semantic diagram is composed, rendered legibly, refused when invalid, an
   await expect(
     stage.locator('section[aria-label="Cleaned"] .tl-shape').getByText('Release review board'),
   ).toBeVisible()
-  const cleaned = await cleaned_measure_stable(stage)
-  expect(diagram_check(cleaned, 16)).toEqual([])
+  const { measured: cleaned, problems } = await monochrome_check(
+    stage,
+    info,
+    'cleaned-1280x800',
+    fixture,
+    16,
+  )
   await evidence(stage, info, 'cleaned-1280x800', cleaned)
+  expect(problems).toEqual([])
+  await heading_evidence(stage, info, 'heading-review-1280x800', cleaned.shapes.review!.rect)
 
   // Side by side on the iPad: the same diagram fits its half and stays clear, at a smaller size.
   await ipad.getByRole('tab', { name: 'Side by side' }).click()
   await expect(ipad.locator('section[aria-label="Sketch"]')).toBeVisible()
-  const split = await cleaned_measure_stable(ipad)
-  expect(diagram_check(split, 8)).toEqual([])
-  await evidence(ipad, info, 'split-1180x820', split)
+  const split = await monochrome_check(ipad, info, 'split-1180x820', fixture, 8)
+  await evidence(ipad, info, 'split-1180x820', split.measured)
+  expect(split.problems).toEqual([])
+
+  // No decoration anywhere: no highlighter and no stray record on either pane of either page.
+  for (const page of [stage, ipad]) {
+    await expect(page.locator('.tl-shape[data-shape-type="highlight"]')).toHaveCount(0)
+    await expect(page.locator('.tl-shape[data-shape-id^="shape:accent-"]')).toHaveCount(0)
+  }
 
   // An invalid diagram is refused with its path, and the published one stays.
   const broken = cli(
@@ -470,8 +1543,15 @@ test('a semantic diagram is composed, rendered legibly, refused when invalid, an
   await expect(
     stage.locator('section[aria-label="Cleaned"] .tl-shape').getByText('Release review board'),
   ).toBeVisible()
-  const restarted = await cleaned_measure_stable(stage)
-  expect(diagram_check(restarted, 16)).toEqual([])
+  const { measured: restarted, problems: restarted_problems } = await monochrome_check(
+    stage,
+    info,
+    'restarted-1280x800',
+    fixture,
+    16,
+  )
+  expect(restarted_problems).toEqual([])
+  expect(drawn_identically(cleaned, restarted)).toEqual([])
   expect(Object.keys(restarted.shapes).sort()).toEqual(Object.keys(cleaned.shapes).sort())
   const again = cli('cleanup-snapshot', '--no-open', '--out', out_directory)
   const previous = JSON.parse(fs.readFileSync(String(again.json.previous_diagram_path), 'utf8'))
@@ -482,21 +1562,34 @@ test('a semantic diagram is composed, rendered legibly, refused when invalid, an
 
   // Standalone text, long oval labels and an empty group, measured against the drawn text and
   // the drawn ellipses, at both sizes.
-  const ovals = cli(
+  const ovals_published = cli(
     'cleanup-publish',
     '--file',
     diagram_write(String(again.json.snapshot), 1, {}, fixture_ovals),
   )
-  expect(ovals.json).toMatchObject({ code: 'published', revision: 2, shapes_count: 13 })
+  expect(ovals_published.json).toMatchObject({ code: 'published', revision: 2, shapes_count: 13 })
   await expect(
     stage.locator('section[aria-label="Cleaned"] .tl-shape').getByText('Plain lines join peers'),
   ).toBeVisible()
-  const ovals_cleaned = await cleaned_measure_stable(stage)
-  expect(diagram_check(ovals_cleaned, 16, fixture_ovals)).toEqual([])
+  const ovals = await monochrome_check(stage, info, 'ovals-cleaned-1280x800', fixture_ovals, 16)
+  const ovals_cleaned = ovals.measured
+  await evidence(stage, info, 'ovals-cleaned-1280x800', ovals_cleaned)
+
+  // The same revision freshly loaded: its labels are laid out as they were when it arrived
+  // live, so neither late font loading nor the live update shapes the result. Measured before
+  // either assertion, so a failure carries both.
+  await stage.reload()
+  await expect(
+    stage.locator('section[aria-label="Cleaned"] .tl-shape').getByText('Plain lines join peers'),
+  ).toBeVisible()
+  const ovals_fresh = await monochrome_check(stage, info, 'ovals-fresh-1280x800', fixture_ovals, 16)
+  const live_fresh = layout_differences(ovals_cleaned, ovals_fresh.measured)
+  expect(ovals.problems).toEqual([])
+  expect(ovals_fresh.problems).toEqual([])
+  expect(live_fresh).toEqual([])
   expect(Object.keys(ovals_cleaned.shapes).sort()).toEqual(
     [...fixture_ovals.nodes, ...fixture_ovals.edges].map((item) => item.id).sort(),
   )
-  await evidence(stage, info, 'ovals-cleaned-1280x800', ovals_cleaned)
 
   // The iPad page outlived the restart; reload it so it shows the board as it is now.
   await ipad.reload()
@@ -504,8 +1597,74 @@ test('a semantic diagram is composed, rendered legibly, refused when invalid, an
   await expect(
     ipad.locator('section[aria-label="Cleaned"] .tl-shape').getByText('Plain lines join peers'),
   ).toBeVisible()
-  const ovals_split = await cleaned_measure_stable(ipad)
-  expect(diagram_check(ovals_split, 8, fixture_ovals)).toEqual([])
-  await evidence(ipad, info, 'ovals-split-1180x820', ovals_split)
+  const ovals_split = await monochrome_check(ipad, info, 'ovals-split-1180x820', fixture_ovals, 8)
+  await evidence(ipad, info, 'ovals-split-1180x820', ovals_split.measured)
+  expect(ovals_split.problems).toEqual([])
   expect(await status()).toMatchObject({ shapes_count: 1, cleaned_revision: 2 })
-})
+
+  await legacy_and_restores(stage, info, String(again.json.snapshot), ovals_cleaned)
+}
+
+// A revision in the format agents wrote before styles existed renders plain, beside the new
+// look: restoring back and forth brings each revision back in its own look. The historical
+// revision keeps its blue and yellow, which the markerboard's colour check must see, and the
+// markerboard comes back from a restore as black ink on white.
+async function legacy_and_restores(
+  stage: Page,
+  info: TestInfo,
+  snapshot: string,
+  ovals_cleaned: Measured,
+): Promise<void> {
+  const cleaned_pane = stage.locator('section[aria-label="Cleaned"]')
+  const legacy_file = path.join(out_directory, 'legacy.json')
+  fs.writeFileSync(
+    legacy_file,
+    JSON.stringify({
+      format: 'tldraw-sync.cleanup.v1',
+      snapshot,
+      base_revision: 2,
+      agent: 'legacy-agent',
+      summary: 'Published before styles existed.',
+      shapes: [
+        { kind: 'text', id: 'title', x: 0, y: -80, text: 'Legacy checkout', size: 'l' },
+        { kind: 'rectangle', id: 'api', x: 0, y: 0, w: 160, h: 80, text: 'API', color: 'yellow' },
+        { kind: 'ellipse', id: 'db', x: 300, y: 0, w: 120, h: 80, text: 'DB', color: 'blue' },
+        { kind: 'arrow', id: 'writes', from: 'api', to: 'db', text: 'writes' },
+      ],
+    }),
+  )
+  const legacy = cli('cleanup-publish', '--file', legacy_file)
+  expect(legacy.json).toMatchObject({ code: 'published', revision: 3, shapes_count: 4 })
+  await expect(cleaned_pane.locator('.tl-shape').getByText('Legacy checkout')).toBeVisible()
+  const plain = await cleaned_measure_stable(stage)
+  expect(plain_check(plain)).toEqual([])
+  await evidence(stage, info, 'legacy-plain-1280x800', plain)
+
+  // Negative control: the historical revision keeps its blue and yellow, and the same pixel
+  // count that passes the markerboard sees them, so a coloured markerboard could not pass.
+  expect(plain.shapes.db?.strokes).toContain('#4465e9')
+  expect(plain.shapes.api?.strokes).toContain('#f1ac4b')
+  const colours = colours_count(await pixels_read(stage, plain), plain)
+  expect(colours.blue).toBeGreaterThan(100)
+  expect(colours.yellow).toBeGreaterThan(100)
+  expect(colours.coloured).toBeGreaterThan(colours.pixels_count * coloured_share_max)
+
+  await cleaned_pane.getByRole('button', { name: 'Restore revision 2' }).click()
+  await cleaned_pane.getByRole('button', { name: 'Tap again to restore revision 2' }).click()
+  await expect(cleaned_pane.getByText(/Revision 4, restored from 2/)).toBeVisible()
+  await expect(cleaned_pane.locator('.tl-shape').getByText('Plain lines join peers')).toBeVisible()
+  const restored = await monochrome_check(stage, info, 'restored-1280x800', fixture_ovals, 16)
+  expect(restored.problems).toEqual([])
+  expect(drawn_identically(ovals_cleaned, restored.measured)).toEqual([])
+
+  await cleaned_pane.getByRole('button', { name: 'Restore revision 3' }).click()
+  await cleaned_pane.getByRole('button', { name: 'Tap again to restore revision 3' }).click()
+  await expect(cleaned_pane.getByText(/Revision 5, restored from 3/)).toBeVisible()
+  await expect(cleaned_pane.locator('.tl-shape').getByText('Legacy checkout')).toBeVisible()
+  const plain_again = await cleaned_measure_stable(stage)
+  expect(plain_check(plain_again)).toEqual([])
+  expect(drawn_identically(plain, plain_again)).toEqual([])
+  const colours_again = colours_count(await pixels_read(stage, plain_again), plain_again)
+  expect([colours_again.blue > 100, colours_again.yellow > 100]).toEqual([true, true])
+  expect(await status()).toMatchObject({ shapes_count: 1, cleaned_revision: 5 })
+}
