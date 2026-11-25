@@ -36,8 +36,8 @@ export const diagram_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
 const stroke_id_pattern = /^shape:[A-Za-z0-9_-]{1,64}$/
 const keys_root = [...header_keys, 'flow', 'nodes', 'edges'] as const
 const keys_body = ['flow', 'nodes', 'edges'] as const
-const keys_node = ['id', 'kind', 'label', 'parent', 'strokes', 'at'] as const
-const keys_edge = ['id', 'from', 'to', 'label', 'direction', 'strokes'] as const
+const keys_node = ['id', 'kind', 'label', 'parent', 'strokes', 'at', 'origin'] as const
+const keys_edge = ['id', 'from', 'to', 'label', 'direction', 'strokes', 'origin'] as const
 
 export function diagram_proposal_parse(input: unknown): DiagramParsed {
   const reader = new JsonReader()
@@ -107,7 +107,7 @@ function node_read(reader: JsonReader, value: unknown, path: string): DiagramNod
   assert(diagram_node_kinds.includes(kind), 'a node kind is known')
 
   // Left out when absent, so a diagram without places is stored as it always was.
-  const node = { id, kind, label, parent, strokes }
+  const node = { id, kind, label, parent, strokes, ...origin_read(reader, source, path) }
   return at === null ? node : { ...node, at }
 }
 
@@ -134,7 +134,10 @@ function at_read(reader: JsonReader, source: Json, path: string): DiagramAt | nu
 
   if (numbers.length !== 4) return null
 
-  assert(numbers.every((value) => Math.abs(value) <= diagram_at_units_max), 'a place is bounded')
+  assert(
+    numbers.every((value) => Math.abs(value) <= diagram_at_units_max),
+    'a place is bounded',
+  )
   return [numbers[0] as number, numbers[1] as number, numbers[2] as number, numbers[3] as number]
 }
 
@@ -148,7 +151,13 @@ function edge_read(reader: JsonReader, value: unknown, path: string): DiagramEdg
   const strokes = strokes_read(reader, source, path)
   assert(label.length <= diagram_label_length_max, 'an edge label is bounded')
   assert(diagram_edge_directions.includes(direction), 'an edge direction is known')
-  return { id, from, to, label, direction, strokes }
+  return { id, from, to, label, direction, strokes, ...origin_read(reader, source, path) }
+}
+
+function origin_read(reader: JsonReader, source: Json, path: string) {
+  if (source.origin === undefined) return {}
+
+  return { origin: reader.choice(source, 'origin', path, ['sketch', 'agent'] as const, true) }
 }
 
 function id_read(reader: JsonReader, source: Json, key: string, path: string): string {

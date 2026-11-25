@@ -2,7 +2,6 @@
 // switch to the cleaned diagram, or show it beside the sketch while drawing continues.
 
 import { useCallback, useState } from 'react'
-import type { Layer } from '../shared/whiteboard'
 import { AgentActions } from './agent_actions'
 import { DefaultSizeStyle, Tldraw, type Editor } from 'tldraw'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
@@ -15,8 +14,7 @@ import { use_view, ViewPanes, ViewTabs } from './views'
 export function DrawPage({ session }: { session: string }) {
   const board = use_board_store('draw', session)
   const [view, view_choose] = use_view('draw')
-  const [layer, choose] = useState<Layer>('interpretation')
-  const cleaned = use_cleaned(session, layer)
+  const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const [editor, setEditor] = useState<Editor | null>(null)
   const mount = useCallback((value: Editor) => {
@@ -29,7 +27,7 @@ export function DrawPage({ session }: { session: string }) {
   }
 
   return (
-    <main className="board" data-linked={linked}>
+    <main className="board board--draw" data-linked={linked}>
       <ViewPanes
         linked={linked}
         view={view}
@@ -44,13 +42,13 @@ export function DrawPage({ session }: { session: string }) {
             <ToolStrip editable={linked} />
           </Tldraw>
         }
-        cleaned={<CleanedPane cleaned={cleaned} ideas={layer === 'ideas'} />}
+        cleaned={<CleanedPane cleaned={cleaned} />}
       />
-      <ViewTabs view={view} linked={linked} stale={layer !== 'ideas' && !!cleaned.status?.stale}
+      <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
         onChoose={view_choose} />
-      {linked && <AgentActions editor={editor} session={session} layer={layer} choose={choose}
+      <AgentActions editor={editor} session={session}
         cleaned={cleaned} view={view} online={board.connectionStatus !== 'offline'}
-        showSketch={() => view_choose('sketch')} />}
+        showSketch={() => view_choose('sketch')} />
       {!linked && board.connectionStatus === 'offline' && (
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}

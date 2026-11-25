@@ -11,9 +11,11 @@ import {
   path_cleaned_status,
 } from '../shared/constants'
 
-import type { BoardEvent, Layer } from '../shared/whiteboard'
+import type { BoardEvent } from '../shared/whiteboard'
 
-type LayerStatus = CleanedStatus & { linked: boolean; last_event: BoardEvent | null }
+type LayerStatus = CleanedStatus & {
+  protocol?: number; linked: boolean; last_event: BoardEvent | null
+}
 export type CleanedState = {
   readonly status: LayerStatus | null
   readonly document: CleanedDocument | null
@@ -21,9 +23,9 @@ export type CleanedState = {
 
 const request_timeout_ms = 5000
 
-export function use_cleaned(session: string, layer: Layer = 'interpretation'): CleanedState {
+export function use_cleaned(session: string): CleanedState {
   const [status, status_set] = useState<LayerStatus | null>(null)
-  const [loaded, document_set] = useState<{ layer: Layer; doc: CleanedDocument } | null>(null)
+  const [loaded, document_set] = useState<CleanedDocument | null>(null)
 
   useEffect(() => {
     let stopped = false
@@ -33,7 +35,7 @@ export function use_cleaned(session: string, layer: Layer = 'interpretation'): C
 
     // One poll: the status, then the records if they are newer than what is shown.
     const poll = async (): Promise<void> => {
-      const query = `?${board_query(session)}&layer=${layer}`
+      const query = `?${board_query(session)}&layer=canvas`
       const text = window.document.hidden ? null : await text_get(`${path_cleaned_status}${query}`)
       const parsed = text === null ? null : json_parse<LayerStatus>(text)
 
@@ -55,7 +57,7 @@ export function use_cleaned(session: string, layer: Layer = 'interpretation'): C
 
           if (!stopped && loaded !== null) {
             revision_loaded = loaded.revision
-            document_set({ layer, doc: loaded })
+            document_set(loaded)
             complete = loaded.revision === next.revision
           }
         }
@@ -70,10 +72,9 @@ export function use_cleaned(session: string, layer: Layer = 'interpretation'): C
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [session, layer])
+  }, [session])
 
-  const document = loaded?.layer === layer && loaded.doc.revision === status?.revision
-    ? loaded.doc : null
+  const document = loaded?.revision === status?.revision ? loaded : null
   return { status, document }
 }
 

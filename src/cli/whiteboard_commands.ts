@@ -1,8 +1,14 @@
 import fs from 'node:fs'
 import { AssertionError } from '../shared/assert'
+import { document_hash_pattern } from '../shared/constants'
 import { board_query } from '../shared/board_session'
 import {
   event_states,
+  event_kinds,
+  events_count_max,
+  request_id_pattern,
+  request_text_valid,
+  type BoardEvent,
   layers,
   message_length_max,
   owner_pattern,
@@ -18,13 +24,28 @@ import { binding_directory, binding_install, binding_read } from './whiteboard_f
 import { binding_headers, machine_headers } from './whiteboard_scope'
 
 export type BoardFlags = Partial<
-  Record<'owner' | 'event' | 'message' | 'state' | 'binding' | 'layer', string>
+  Record<'protocol' | 'owner' | 'event' | 'message' | 'state' | 'binding' | 'layer', string>
 >
 const usage = (command: string, message: string) =>
   failure('usage_error', message, { action: 'fix_usage', command: `tldraw-sync ${command} --help` })
 
+const invalid_reply = () =>
+  failure('invalid_response', 'Unexpected response from the board.', {
+    action: 'ask_human',
+    message: 'Check the bound session and upgrade the Mac board.',
+  })
+const upgrade = () =>
+  failure('upgrade_required', 'Whiteboard protocol 2 is required.', {
+    action: 'ask_human',
+    message: 'Upgrade the CLI and daemon, restart safely and use --protocol 2.',
+  })
+
 export async function whiteboard(command: string, options: Options): Promise<Outcome> {
   try {
+    if (['whiteboard-link', 'whiteboard-poll'].includes(command) && options.protocol !== '2') {
+      return upgrade()
+    }
+
     if (command === 'whiteboard-link') return await link(options)
 
     if (!options.binding) return usage(command, 'Supply --binding with the private file path.')
@@ -32,9 +53,11 @@ export async function whiteboard(command: string, options: Options): Promise<Out
     const binding = binding_read(options.binding)
 
     if (command === 'whiteboard-publish' || command === 'whiteboard-snapshot') {
-      const layer = layers.find((item) => item === options.layer)
+      const layer = layers.find((item) => item === (options.layer ?? 'canvas'))
 
-      if (!layer) return usage(command, 'Choose interpretation or ideas with --layer.')
+      if (!layer || layer === 'ideas') {
+        return usage(command, 'Take a fresh --layer canvas snapshot and edit the complete graph.')
+      }
 
       if (command === 'whiteboard-publish' && (!options.file || options.file === '-')) {
         return usage(command, 'Name the semantic diagram with --file.')
@@ -83,6 +106,12 @@ async function link(options: Options): Promise<Outcome> {
   if (running.kind === 'failure') return running
 
   const port = Number(running.data.port)
+  const status = await api_request(port, '/api/status', null)
+
+  if (status.kind !== 'answer' || status.status !== 200) return refusal(status)
+
+  if (status.body.protocol !== 2) return upgrade()
+
   const bound = await link_binding(port, existing, out, owner)
 
   if ('kind' in bound) return bound
@@ -109,6 +138,7 @@ async function link(options: Options): Promise<Outcome> {
     draw_url,
     stage_url,
     binding_file: out,
+    protocol: 2,
   })
 }
 
@@ -119,10 +149,14 @@ async function link_binding(
   owner: string,
 ): Promise<Binding | Outcome> {
   if (existing) {
-    const route = `${whiteboard_path}poll?${board_query(existing.session)}`
+    const route = `${whiteboard_path}poll?protocol=2&${board_query(existing.session)}`
     const poll = await api_request(port, route, null, binding_headers(existing))
 
     if (poll.kind !== 'answer' || poll.status !== 200) return refusal(poll)
+
+    if (poll.body.protocol !== 2) return upgrade()
+
+    if (!poll_checked(poll.body, existing)) return invalid_reply()
 
     return existing
   }
@@ -130,11 +164,13 @@ async function link_binding(
   const response = await api_request(
     port,
     `${whiteboard_path}link`,
-    JSON.stringify({ owner }),
+    JSON.stringify({ protocol: 2, owner }),
     machine_headers(),
   )
 
   if (response.kind !== 'answer' || response.status !== 200) return refusal(response)
+
+  if (response.body.protocol !== 2) return upgrade()
 
   const { session, token } = response.body
 
@@ -164,7 +200,8 @@ async function delivery(command: string, binding: Binding, options: Options): Pr
     return usage(command, 'Supply an event, acknowledgement state and optional short message.')
   }
 
-  const route = `${whiteboard_path}${ack ? 'ack' : 'poll'}?${board_query(binding.session)}`
+  const query = `?protocol=2&${board_query(binding.session)}`
+  const route = `${whiteboard_path}${ack ? 'ack' : 'poll'}${query}`
   const body = ack
     ? JSON.stringify({ event: options.event, state: options.state, message: options.message })
     : null
@@ -172,12 +209,69 @@ async function delivery(command: string, binding: Binding, options: Options): Pr
 
   if (answer.kind !== 'answer' || answer.status !== 200) return refusal(answer)
 
-  return success(
-    ack ? 'acknowledged' : 'polled',
-    JSON.stringify(answer.body),
-    binding.session,
-    answer.body,
+  if (ack) {
+    const { session, event, state } = answer.body
+
+    if (session !== binding.session || event !== options.event || state !== options.state) {
+      return invalid_reply()
+    }
+
+    const data = { session, event, state }
+    return success('acknowledged', JSON.stringify(data), binding.session, data)
+  }
+
+  if (answer.body.protocol !== 2) return upgrade()
+
+  const data = poll_checked(answer.body, binding)
+
+  if (!data) return invalid_reply()
+
+  return success('polled', JSON.stringify(data), binding.session, data)
+}
+
+// Select only public protocol fields. Text is an opaque value, not a bag of fields to redact.
+function poll_checked(body: Record<string, unknown>, binding: Binding) {
+  const { session, owner, sketch_hash, agent_revision, events } = body
+
+  if (
+    session !== binding.session ||
+    owner !== binding.owner ||
+    typeof sketch_hash !== 'string' ||
+    !document_hash_pattern.test(sketch_hash) ||
+    typeof agent_revision !== 'number' ||
+    !Number.isSafeInteger(agent_revision) ||
+    agent_revision < 0 ||
+    !Array.isArray(events) ||
+    events.length > events_count_max
   )
+    return null
+
+  const pending = []
+
+  for (const value of events) {
+    if (!value || typeof value !== 'object') return null
+
+    const { id, kind, request_id, sketch_hash, created_at_ms, state, text } = value as BoardEvent
+
+    if (
+      !event_kinds.includes(kind) ||
+      typeof id !== 'string' ||
+      !/^[0-9a-f-]{36}$/.test(id) ||
+      typeof request_id !== 'string' ||
+      !request_id_pattern.test(request_id) ||
+      typeof sketch_hash !== 'string' ||
+      !document_hash_pattern.test(sketch_hash) ||
+      !Number.isSafeInteger(created_at_ms) ||
+      created_at_ms < 0 ||
+      !['queued', 'received', 'working'].includes(state) ||
+      (text !== undefined && (!request_text_valid(text) || !text.length))
+    )
+      return null
+
+    pending.push({ id, kind, request_id, sketch_hash, created_at_ms, state, text })
+  }
+
+  return { protocol: 2, session, owner, sketch_hash, agent_revision, events: pending }
 }
 
 function refusal(answer: ApiAnswer): Outcome {

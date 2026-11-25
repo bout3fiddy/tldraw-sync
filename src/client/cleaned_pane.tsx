@@ -24,19 +24,18 @@ import { fit_inset_cleaned_px, fit_start } from './stage_mount'
 
 const schema = createTLSchema()
 
-export function CleanedPane({ cleaned, ideas }: { cleaned: CleanedState; ideas?: boolean }) {
+export function CleanedPane({ cleaned }: { cleaned: CleanedState }) {
   const { status, document } = cleaned
 
-  if (status === null) return <Notice text="Opening the cleaned diagram" />
+  if (status === null) return <Notice text="Opening the agent canvas" />
 
-  if (status.linked && !document) return <Notice text="Loading this layer" />
+  if (status.linked && !document) return <Notice text="Loading the agent canvas" />
 
   if (status.current === null || document === null || document.current === null) {
     return (
       <div className="cleaned">
         <p className="cleaned__empty">
-          {status.linked ? ideas ? 'No ideas yet. Notify your agent to discuss the sketch.' :
-            'No interpretation yet. Choose Interpret sketchboard to request a faithful copy.' :
+          {status.linked ? 'No agent diagram yet. Turn on Interpret to request a faithful copy.' :
             'No cleaned diagram yet. Ask your agent to clean up the sketch.'}
         </p>
       </div>
@@ -46,7 +45,7 @@ export function CleanedPane({ cleaned, ideas }: { cleaned: CleanedState; ideas?:
   return (
     <div className="cleaned">
       <CleanedCanvas key={document.revision} document={document} />
-      <CleanedCaption summary={document.current.summary} stale={status.stale && !ideas} />
+      <CleanedCaption summary={document.current.summary} stale={status.stale} />
     </div>
   )
 }

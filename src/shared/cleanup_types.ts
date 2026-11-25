@@ -154,7 +154,9 @@ export type DiagramFlow = (typeof diagram_flows)[number]
 // Only how the boxes lie relative to each other matters, so page units and image pixels both do.
 export type DiagramAt = readonly [number, number, number, number]
 
+export type Origin = 'sketch' | 'agent'
 export type DiagramNode = {
+  origin?: Origin
   id: string
   kind: DiagramNodeKind
   label: string
@@ -167,6 +169,7 @@ export type DiagramNode = {
 }
 
 export type DiagramEdge = {
+  origin?: Origin
   id: string
   from: string
   to: string
@@ -192,7 +195,7 @@ export type DiagramProposal = {
 // Where one published diagram came from. Revisions only grow, across restarts too.
 export type CleanedProvenance = {
   revision: number
-  source_hash: string
+  source_hash: string | null
   agent: string
   summary: string
   published_at_ms: number
@@ -234,7 +237,10 @@ export type SketchSnapshot = {
   bounds: SketchBounds | null
   image_padding: number
   cleaned_revision: number
-  ideas_revision: number
+  agent_revision: number
+  agent_history: CleanedProvenance[]
+  agent_source_hash: string | null
+  legacy_diagrams?: Record<string, { revision: number; diagram: Diagram | null }[]>
 
   // The semantic diagram behind the current cleaned revision, when it was composed from one.
   // An agent reuses its ids, so the same things keep their identity across revisions.

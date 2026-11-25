@@ -309,7 +309,10 @@ test('a forged cleaned file that is coherent opens, so each refusal is for its c
 
   // Nothing published is coherent too, and is where a first publish starts from.
   cleaned_forge(disk, state_forged(0, null, []))
-  const empty = board_open(disk)
+  expect(() => board_open(disk)).toThrow('Conflicting interpretation archive')
+  const fresh_disk = new SimulatedDisk()
+  cleaned_forge(fresh_disk, state_forged(0, null, []))
+  const empty = board_open(fresh_disk)
   expect(empty.cleaned_status()).toMatchObject({ revision: 0, current: null, history: [] })
   empty.destroy()
 })

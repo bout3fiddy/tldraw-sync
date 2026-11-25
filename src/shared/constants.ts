@@ -112,8 +112,8 @@ export const fetch_attempts_count_max = 4
 // Cleanup proposals come from an external agent and are untrusted. The bounds keep one
 // proposal, its derived tldraw records, and the retained history small enough to validate and
 // write synchronously.
-export const proposal_size_bytes_max = 512 * 1024
-export const proposal_shapes_count_max = 400
+export const proposal_size_bytes_max = 1024 * 1024
+export const proposal_shapes_count_max = 800
 export const proposal_text_length_max = 2000
 export const proposal_summary_length_max = 280
 export const proposal_coordinate_units_max = 1_000_000
@@ -122,8 +122,8 @@ export const proposal_extent_units_max = 100_000
 // Semantic diagrams: what an agent says the sketch means, before the command line lays it out.
 // The bounds keep one layout well under a second, and keep the diagram together with its composed
 // shapes inside one proposal. Groups nest at most `diagram_depth_max` deep.
-export const diagram_nodes_count_max = 80
-export const diagram_edges_count_max = 160
+export const diagram_nodes_count_max = 160
+export const diagram_edges_count_max = 320
 export const diagram_depth_max = 8
 export const diagram_label_length_max = 200
 
@@ -131,7 +131,7 @@ export const diagram_label_length_max = 200
 export const diagram_at_units_max = 10_000_000
 
 // Source stroke ids an agent may attach to its nodes and edges, across the whole diagram.
-export const diagram_stroke_ids_count_max = 1000
+export const diagram_stroke_ids_count_max = 2000
 
 // Stroke summaries in a cleanup snapshot: ids and bounds, not every pen sample.
 export const stroke_summaries_count_max = 2000

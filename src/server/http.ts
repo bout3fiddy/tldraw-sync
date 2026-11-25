@@ -40,6 +40,7 @@ import {
 import { bounds_valid, type Board, type ImageResult } from './board'
 import type { BoardRegistry } from './board_registry'
 import {
+  body_discard,
   cleaned_publish_route,
   cleaned_restore_route,
   json_error,
@@ -51,7 +52,7 @@ import {
   session_rename_route,
   sessions_list_response,
 } from './http_sessions'
-import { layers, whiteboard_path } from '../shared/whiteboard'
+import { whiteboard_path } from '../shared/whiteboard'
 import { authorized, scoped_key } from './whiteboard_keys'
 import { whiteboard_route, denied } from './http_whiteboard'
 import { pairing_board, type Pairing } from './pairing'
@@ -87,8 +88,9 @@ export type BoardStatus = {
   readonly document_hash: string
   // The cleaned diagram: its revision (0 when none) and whether the sketch moved on since.
   readonly linked: boolean
+  readonly protocol: 2
+  readonly agent_revision: number
   readonly interpretation_revision: number
-  readonly ideas_revision: number
   readonly cleaned_revision: number
   readonly cleaned_stale: boolean
 }
@@ -241,6 +243,10 @@ function board_route(
     return text(405, 'Use GET to fetch the drawing.')
   }
   if (pathname === path_cleaned_json && method === 'POST') {
+    if (url.searchParams.has('layer') && url.searchParams.get('layer') !== 'interpretation') {
+      return body_discard(request).then(() => json_error(400, 'invalid_layer',
+        'Use whiteboard-snapshot and whiteboard-publish with --layer canvas.'))
+    }
     return cleaned_publish_route(request, registry, id)
   }
   if (pathname === path_cleaned_restore) {
@@ -261,15 +267,29 @@ function board_route(
   }
   return board_with(registry, id, (board) => {
     if (pathname === path_drawing_json) return Response.json(board.shapes())
-    const layer = layers.find((v) => v === url.searchParams.get('layer')) ?? 'interpretation'
-    if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document(layer))
-    if (pathname === path_cleaned_status) {
-      return json_no_store({ ...board.cleaned_status(layer), linked: owner !== null,
-        last_event: board.events.latest() ?? null })
+    if (pathname === path_cleaned_json || pathname === path_cleaned_status) {
+      const layer = url.searchParams.get('layer') ?? 'canvas'
+      if (layer !== 'canvas' && layer !== 'interpretation') {
+        return json_error(400, 'invalid_layer', 'Reload and use the unified Agent canvas.')
+      }
+      if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document())
+      return public_canvas_status(board, owner !== null)
     }
     if (pathname === path_status) return Response.json(status_read(options, board, server.port))
     return text(404, 'Not found.')
   })
+}
+
+function public_canvas_status(board: Board, linked: boolean) {
+  const event = board.events.latest()
+  const last_event = event && { id: event.id, kind: event.kind, state: event.state,
+    created_at_ms: event.created_at_ms, message: event.message }
+  if (last_event) {
+    assert(!('text' in last_event), 'the paired note is never a public status message')
+    assert(!('request_id' in last_event), 'the replay key stays private')
+  }
+  return json_no_store({ ...board.cleaned_status(), linked, protocol: 2,
+    last_event: last_event ?? null })
 }
 
 function loopback_request(url: URL, server: Server<SocketData>, request: Request): boolean {
@@ -331,8 +351,9 @@ function status_read(options: ServerOptions, board: Board, port: number | undefi
     shapes_count: state.shapes_count,
     document_hash: state.hash,
     linked: options.registry.owner(id) !== null,
+    protocol: 2,
+    agent_revision: cleaned.revision,
     interpretation_revision: cleaned.revision,
-    ideas_revision: board.cleaned_status('ideas').revision,
     cleaned_revision: cleaned.revision,
     cleaned_stale: cleaned.stale,
   }

@@ -21,7 +21,9 @@ function request(action: string, token: string, owner: string, data?: object, or
     headers: {
       authorization: `Bearer ${token}`,
       'x-board-owner': owner,
-      ...(body ? { 'content-type': 'application/json', 'content-length': `${body.length}` } : {}),
+      ...(body
+        ? { 'content-type': 'application/json', 'content-length': `${Buffer.byteLength(body)}` }
+        : {}),
       ...(origin ? { origin } : {}),
     },
   })
@@ -32,7 +34,13 @@ test('only the local machine links; event authority cannot poll, ack or publish'
   const registry = BoardRegistry.open(env)
   const owner = 'session-one'
   const link = (token: string, local: boolean) =>
-    whiteboard_route(request('link', token, owner, { owner }), registry, 'default', key, local)
+    whiteboard_route(
+      request('link', token, owner, { owner, protocol: 2 }),
+      registry,
+      'default',
+      key,
+      local,
+    )
   expect((await link(hash, true)).status).toBe(403)
   expect((await link(key, false)).status).toBe(403)
   env.disk.write_fault_armed = true
@@ -49,10 +57,18 @@ test('only the local machine links; event authority cannot poll, ack or publish'
     expect((await run(request(action, event_key, owner))).status).toBe(403)
   }
 
-  const poll = request('poll', binding.token, owner)
+  expect(await (await run(request('poll', binding.token, owner))).json()).toMatchObject({
+    code: 'upgrade_required',
+  })
+  const poll = request('poll?protocol=2', binding.token, owner)
   expect((await run(poll, false)).status).toBe(403)
   const { sketch_hash } = await (await run(poll)).json()
-  const data = { kind: 'interpret_request', sketch_hash }
+  const data = {
+    kind: 'interpret_request',
+    sketch_hash,
+    text: '筆\n 📝\t ',
+    request_id: '00000000-0000-7aaa-8000-000000000001',
+  }
   expect((await run(request('event', event_key, owner, data, 'http://other'))).status).toBe(403)
   const refused = request('event', binding.token, owner, data)
   expect((await run(refused)).status).toBe(403)
@@ -68,8 +84,59 @@ test('only the local machine links; event authority cannot poll, ack or publish'
   const reopened = BoardRegistry.open(env)
   expect(reopened.owner(session)).toBe(owner)
   const recovered = await (await whiteboard_route(poll, reopened, session, key, true)).json()
-  expect(recovered.events).toMatchObject([{ state: 'queued', kind: data.kind, sketch_hash }])
+  expect(recovered.events).toMatchObject([{ state: 'queued', ...data }])
+  const retry = await whiteboard_route(
+    request('event', event_key, owner, data),
+    reopened,
+    session,
+    key,
+    false,
+  )
+  expect(await retry.json()).toEqual(recovered.events[0])
+  const conflict = request('event', event_key, owner, { ...data, text: 'different' })
+  expect((await whiteboard_route(conflict, reopened, session, key, false)).status).toBe(409)
+  const again = await whiteboard_route(poll, reopened, session, key, true)
+  expect((await again.json()).events).toEqual(recovered.events)
   reopened.close()
+})
+
+test('v2 validates exact UTF-8 size, control marks and code points before queueing', async () => {
+  const registry = BoardRegistry.open(registry_environment_simulated(new VirtualTime()))
+  const owner = 'boundary'
+  const link = request('link', key, owner, { owner, protocol: 2 })
+  const binding = await (await whiteboard_route(link, registry, 'default', key, true)).json()
+  const session = binding.session as string
+  const token = scoped_key(key, 'event', session, owner)
+  const run = (req: Request) => whiteboard_route(req, registry, session, key, true)
+  const poll = () => run(request('poll?protocol=2', binding.token, owner))
+  const { sketch_hash } = await (await poll()).json()
+  const request_id = '00000000-0000-7aaa-8000-000000000001'
+  const req = { kind: 'sketch_notify', sketch_hash, request_id }
+  const send = (body: string) =>
+    run(
+      new Request('http://127.0.0.1/api/whiteboard/event/v2', {
+        method: 'POST',
+        body,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': `${Buffer.byteLength(body)}`,
+          authorization: `Bearer ${token}`,
+        },
+      }),
+    )
+
+  for (const text of ['a'.repeat(4001), '\x00', '\ud800', '\x0b', null]) {
+    expect((await send(JSON.stringify({ ...req, text }))).status).toBe(400)
+  }
+
+  const text = '🌱'.repeat(4000)
+  const json = JSON.stringify({ ...req, text })
+  const exact = json + ' '.repeat(16 * 1024 - Buffer.byteLength(json))
+  expect((await send(exact + ' ')).status).toBe(413)
+  expect((await (await poll()).json()).events).toEqual([])
+  expect(await (await send(exact)).json()).toMatchObject({ ...req, text })
+  expect((await (await poll()).json()).events).toHaveLength(1)
+  registry.close()
 })
 
 test('full queues refuse without losing either kind; only completed slots can be reused', () => {

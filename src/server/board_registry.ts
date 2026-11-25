@@ -233,7 +233,7 @@ export class BoardRegistry {
     if (result.kind !== 'published') return { ...result, title_applied: false }
 
     const title_applied =
-      layer === 'interpretation' && result.title !== null && this.title_apply(id, result.title)
+      layer !== 'ideas' && result.title !== null && this.title_apply(id, result.title)
     assert(!title_applied || this.find(id)?.named_by === 'agent', 'an applied title is listed')
     return { ...result, title_applied }
   }

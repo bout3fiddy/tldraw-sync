@@ -4,8 +4,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Tldraw, useEditor, useValue, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
-import type { Layer } from '../shared/whiteboard'
-import { LayerChoice } from './agent_actions'
 import { path_pairing } from '../shared/constants'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
@@ -20,8 +18,7 @@ type Pairing = { url: string; modules: string[] }
 export function StagePage({ session }: { session: string }) {
   const board = use_board_store('stage', session)
   const [view, view_choose] = use_view('stage')
-  const [layer, choose] = useState<Layer>('interpretation')
-  const cleaned = use_cleaned(session, layer)
+  const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const [pair, showPair] = useState(false)
   const pairing = use_pairing(session)
@@ -48,12 +45,11 @@ export function StagePage({ session }: { session: string }) {
             <StageGuide pairing={pairing} />
           </Tldraw>
         }
-        cleaned={<CleanedPane cleaned={cleaned} ideas={layer === 'ideas'} />}
+        cleaned={<CleanedPane cleaned={cleaned} />}
       />
-      <ViewTabs view={view} linked={linked} stale={layer !== 'ideas' && !!cleaned.status?.stale}
+      <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
         onChoose={view_choose} />
       {linked && <footer className="agent-rail">
-        {view !== 'sketch' && <LayerChoice layer={layer} choose={choose} />}
         <button aria-expanded={pair} onClick={() => showPair(!pair)}>Pair iPad</button>
         {pair && pairing && <aside className="pair-inset"><QrCode modules={pairing.modules} />
           <p>Scan for sketchboard controls</p></aside>}

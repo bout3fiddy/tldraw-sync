@@ -178,7 +178,7 @@ export async function body_read(request: Request, size_bytes_max: number): Promi
   let value: unknown
 
   try {
-    value = JSON.parse(new TextDecoder().decode(bytes))
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
   } catch {
     return { ok: false, response: json_error(400, 'invalid_json', 'The body is not valid JSON.') }
   }

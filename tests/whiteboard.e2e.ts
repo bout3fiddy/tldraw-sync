@@ -106,14 +106,20 @@ async function geometry(page: Page, info: TestInfo, name: string) {
   await info.attach(name, { path: file, contentType: 'image/png' })
 }
 
-test('paired iPad requests, two agent layers, native replacement and one-step undo', async ({
+test('paired notes and interpretation share one canvas, copied in one undo', async ({
   browser,
 }, info) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'linked-e2e-')))
   const file = path.join(root, 'binding.json')
   const cli = (...args: string[]) => command(root, ...args)
   const bound = (action: string, ...args: string[]) =>
-    cli(`whiteboard-${action}`, '--binding', file, ...args)
+    cli(
+      `whiteboard-${action}`,
+      '--binding',
+      file,
+      ...(action === 'poll' ? ['--protocol', '2'] : []),
+      ...args,
+    )
   const stage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   const ipad = await browser.newPage({ viewport: { width: 820, height: 1180 }, hasTouch: true })
 
@@ -125,7 +131,7 @@ test('paired iPad requests, two agent layers, native replacement and one-step un
     const ink_hash = status().document_hash
     await delivery(ipad, bound, ink_hash)
 
-    publish_layers(root, bound, linked.session, ink_hash)
+    publish_canvas(root, bound, linked.session, ink_hash)
 
     await agent_views(ipad, stage, info)
     await ipad.getByRole('button', { name: 'Replace sketchboard' }).tap()
@@ -134,7 +140,7 @@ test('paired iPad requests, two agent layers, native replacement and one-step un
       'true',
     )
     await expect.poll(() => status().shapes_count).toBe(3)
-    const snap = bound('snapshot', '--layer', 'ideas', '--out', path.join(root, 'after'))
+    const snap = bound('snapshot', '--layer', 'canvas', '--out', path.join(root, 'after'))
     expect(snap.status).toBe('success')
     const { records } = JSON.parse(fs.readFileSync(snap.records_path, 'utf8'))
     const shapes = records.filter((r: { typeName: string }) => r.typeName === 'shape')
@@ -148,7 +154,7 @@ test('paired iPad requests, two agent layers, native replacement and one-step un
     expect(records.every((r: { id: string }) => !r.id.includes(':cleaned-'))).toBe(true)
     await ipad.getByRole('button', { name: 'Undo', exact: true }).tap()
     await expect.poll(() => status().document_hash).toBe(ink_hash)
-    expect(status()).toMatchObject({ interpretation_revision: 1, ideas_revision: 1 })
+    expect(status()).toMatchObject({ protocol: 2, agent_revision: 1 })
     const token = JSON.parse(fs.readFileSync(file, 'utf8')).token
     expect(JSON.stringify({ linked, snap }).includes(token)).toBe(false)
   } finally {
@@ -163,7 +169,8 @@ test('paired iPad requests, two agent layers, native replacement and one-step un
 })
 
 async function pair(root: string, file: string, stage: Page, ipad: Page) {
-  const link = () => command(root, 'whiteboard-link', '--owner', 'e2e', '--out', file)
+  const link = () =>
+    command(root, 'whiteboard-link', '--protocol', '2', '--owner', 'e2e', '--out', file)
   const opener = path.join(root, process.platform === 'darwin' ? 'open' : 'xdg-open')
   fs.writeFileSync(opener, '#!/bin/sh\nexit 1\n', { mode: 0o700 })
   expect(link().code).toBe('stage_closed')
@@ -187,37 +194,34 @@ async function pair(root: string, file: string, stage: Page, ipad: Page) {
   return linked
 }
 
-function publish_layers(
+function publish_canvas(
   root: string,
   bound: (action: string, ...args: string[]) => any,
   session: string,
   hash: string,
 ) {
-  for (const layer of ['interpretation', 'ideas']) {
-    const snap = bound('snapshot', '--layer', layer, '--out', path.join(root, 'out'))
-    expect(snap).toMatchObject({ status: 'success', base_revision: 0, snapshot: hash })
-    expect(snap.publish_command).toContain('whiteboard-publish --binding')
-    const label = layer === 'ideas' ? 'What about retries?' : 'Request'
-    fs.writeFileSync(
-      snap.diagram_path,
-      JSON.stringify({
-        format: 'tldraw-sync.diagram.v1',
-        session,
-        snapshot: hash,
-        base_revision: snap.base_revision,
-        nodes: [
-          { id: 'a', kind: 'box', label },
-          { id: 'b', kind: 'ellipse', label: 'Response' },
-        ],
-        edges: [{ id: 'ab', from: 'a', to: 'b', direction: 'forward' }],
-      }),
-    )
-    expect(bound('publish', '--file', snap.diagram_path, '--layer', layer)).toMatchObject({
-      status: 'success',
-      layer,
-      revision: 1,
-    })
-  }
+  const snap = bound('snapshot', '--out', path.join(root, 'out'))
+  expect(snap).toMatchObject({ status: 'success', base_revision: 0, snapshot: hash })
+  expect(snap.publish_command).toContain('whiteboard-publish --binding')
+  fs.writeFileSync(
+    snap.diagram_path,
+    JSON.stringify({
+      format: 'tldraw-sync.diagram.v1',
+      session,
+      snapshot: hash,
+      base_revision: snap.base_revision,
+      nodes: [
+        { id: 'a', kind: 'box', label: 'Request' },
+        { id: 'b', kind: 'ellipse', label: 'What about retries?', origin: 'agent' },
+      ],
+      edges: [{ id: 'ab', from: 'a', to: 'b', direction: 'forward', origin: 'agent' }],
+    }),
+  )
+  expect(bound('publish', '--file', snap.diagram_path)).toMatchObject({
+    status: 'success',
+    layer: 'canvas',
+    revision: 1,
+  })
 }
 
 async function delivery(
@@ -228,7 +232,7 @@ async function delivery(
 
   // Exercise the real server rejection by substituting an unconfirmed document hash in transit.
   await ipad.route(
-    '**/api/whiteboard/event?*',
+    '**/api/whiteboard/event/v2?*',
     (route) =>
       route.continue({
         postData: JSON.stringify({
@@ -243,13 +247,21 @@ async function delivery(
   expect(bound('poll').events).toEqual([])
   await ipad.getByRole('button', { name: 'Notify agent' }).tap()
   await expect(ipad.getByText('Notification: queued')).toBeVisible()
-  await ipad.getByRole('button', { name: 'Interpret sketchboard' }).tap()
+  const toggle = ipad.getByRole('button', { name: 'Interpret', exact: true })
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await toggle.tap()
+  const note = '  筆 📝\nr and d?  '
+  await composer_recovery(ipad, note, bound)
+  await expect(ipad.getByRole('textbox')).toHaveValue('')
   await expect(ipad.getByText('Interpretation: queued')).toBeVisible()
   const poll = bound('poll')
   expect(poll.events.map((e: { kind: string }) => e.kind)).toEqual([
     'sketch_notify',
     'interpret_request',
   ])
+
+  expect(poll.events[0].text).toBeUndefined()
+  expect(poll.events[1].text).toBe(note)
 
   for (const event of poll.events) {
     expect(event.sketch_hash).toBe(hash)
@@ -261,6 +273,108 @@ async function delivery(
 
   await expect(ipad.getByText('Interpretation: updated')).toBeVisible()
   expect(bound('poll').events).toEqual([])
+  await empty_interpret_and_edited_notify(ipad, bound)
+}
+
+async function empty_interpret_and_edited_notify(ipad: Page, bound: (action: string) => any) {
+  const field = ipad.getByRole('textbox', { name: 'Note to agent' })
+  const notify = ipad.getByRole('button', { name: 'Notify agent' })
+  const toggle = ipad.getByRole('button', { name: 'Interpret', exact: true })
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  await notify.tap()
+  await expect.poll(() => bound('poll').events.length).toBe(1)
+  await toggle.tap()
+  await field.fill('First note')
+  let release!: () => void
+  const hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let received!: () => void
+  const committed = new Promise<void>((resolve) => {
+    received = resolve
+  })
+  await ipad.route(
+    '**/api/whiteboard/event/v2?*',
+    async (route) => {
+      const reply = await route.fetch()
+      received()
+      await hold
+      await route.fulfill({ response: reply })
+    },
+    { times: 1 },
+  )
+  await notify.tap()
+
+  try {
+    await committed
+    await expect(notify).toBeDisabled()
+    await field.fill('Newer note')
+    await field.press('Control+Enter')
+  } finally {
+    release()
+  }
+
+  await expect(notify).toBeEnabled()
+  await expect(field).toHaveValue('Newer note')
+  const events = bound('poll').events
+  expect(events).toHaveLength(2)
+  expect(events[0]).toMatchObject({ kind: 'interpret_request' })
+  expect(events[0].text).toBeUndefined()
+  expect(events[1]).toMatchObject({ kind: 'sketch_notify', text: 'First note' })
+  await field.fill('')
+}
+
+async function composer_recovery(ipad: Page, note: string, bound: (action: string) => any) {
+  const field = ipad.getByRole('textbox', { name: 'Note to agent' })
+  const notify = ipad.getByRole('button', { name: 'Notify agent' })
+  await field.fill('d')
+  await field.press('r')
+  await field.press('Backspace')
+  await field.press('Enter')
+  await expect(field).toHaveValue('d\n')
+  await field.fill(note)
+  await field.dispatchEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true })
+  expect(bound('poll').events).toHaveLength(1)
+
+  // Simulate an old daemon before submitting any bytes. Then lose the successful response.
+  await ipad.route('**/api/status?*', (r) => r.fulfill({ json: { protocol: 1 } }), { times: 1 })
+  await field.press('Control+Enter')
+  await expect(ipad.getByText(/Upgrade and restart/)).toBeVisible()
+  expect(bound('poll').events).toHaveLength(1)
+  await expect(field).toHaveValue(note)
+  await ipad.route(
+    '**/api/whiteboard/event/v2?*',
+    async (route) => {
+      expect((await route.fetch()).ok()).toBe(true)
+      await route.abort('failed')
+    },
+    { times: 1 },
+  )
+  await notify.tap()
+  await expect(ipad.getByText(/No confirmation/)).toBeVisible()
+  const polled = bound('poll')
+  const before = polled.events
+  expect(before).toHaveLength(2)
+  const status_url = new URL('/api/cleaned/status', ipad.url())
+  status_url.searchParams.set('session', polled.session)
+  const status = await (await ipad.request.get(status_url.href)).json()
+  expect(status.last_event.id).toBe(before[1].id)
+  expect(status.last_event.text).toBeUndefined()
+  expect(status.last_event.request_id).toBeUndefined()
+  await ipad.reload()
+  await expect(field).toHaveValue(note)
+  await ipad.route('**/api/whiteboard/event/v2?*', async (route) => {
+    const reply = await route.fetch()
+    const body = await reply.json()
+    delete body.text
+    await route.fulfill({ response: reply, json: body })
+  }, { times: 1 })
+  await notify.tap()
+  await expect(ipad.getByText(/No exact confirmation/)).toBeVisible()
+  await expect(field).toHaveValue(note)
+  await notify.tap()
+  await expect(field).toHaveValue('')
+  expect(bound('poll').events).toEqual(before)
 }
 
 type Box = { x: number; y: number; width: number; height: number }
@@ -301,12 +415,12 @@ test('label containment tolerates subpixels but rejects pane and viewport clippi
   }
 })
 
-async function expect_layer_label(page: Page, text: string) {
+async function expect_layer_label(page: Page, text: string, id = 'a') {
 
   // Measure the published node, never the hidden copy tldraw uses to lay out rich text.
   const pane = page.getByRole('region', { name: 'Agent canvas' })
   const label = pane
-    .locator('.tl-shape[data-shape-id="shape:cleaned-a"]:not(.tl-shape-background)')
+    .locator(`.tl-shape[data-shape-id="shape:cleaned-${id}"]:not(.tl-shape-background)`)
     .getByText(text, { exact: true })
 
   await expect(label).toBeVisible()
@@ -319,17 +433,54 @@ async function expect_layer_label(page: Page, text: string) {
     .toBeLessThanOrEqual(label_edge_tolerance_px)
 }
 
+// Chromium on a desktop runner has no software keyboard. Drive its visualViewport contract while
+// keeping the layout viewport fixed, and check that only the action rail follows the inset.
+async function keyboard_geometry(page: Page, info: TestInfo) {
+  const field = page.getByRole('textbox', { name: 'Note to agent' })
+  const sketch = page.locator('.views__pane--sketch')
+  await field.fill('One\nTwo\nThree\nFour\nFive')
+  const before = await sketch.boundingBox()
+  const zoom = () =>
+    sketch
+      .locator('.tl-container')
+      .evaluate((e) => getComputedStyle(e).getPropertyValue('--tl-zoom'))
+  const initial = await zoom()
+  await page.evaluate(() => {
+    Object.defineProperty(visualViewport, 'height', {
+      configurable: true,
+      value: innerHeight - 245,
+    })
+    visualViewport!.dispatchEvent(new Event('resize'))
+  })
+  const rail = await field.boundingBox()
+  expect(rail!.y + rail!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 245 + 0.5)
+  expect(rail!.height).toBeLessThanOrEqual(110.5)
+  expect(await field.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)
+  expect(await sketch.boundingBox()).toEqual(before)
+  expect(await zoom()).toBe(initial)
+  await info.attach('keyboard-inset', { body: await page.screenshot(), contentType: 'image/png' })
+  await page.evaluate(() => {
+    Reflect.deleteProperty(visualViewport!, 'height')
+    visualViewport!.dispatchEvent(new Event('resize'))
+  })
+  await field.fill('')
+}
+
 async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
   for (const page of [ipad, stage]) {
     await page.getByRole('tab', { name: 'Agent canvas' }).click()
     await expect_layer_label(page, 'Request')
-    await page.getByRole('button', { name: 'Ideas', exact: true }).click()
-    await expect_layer_label(page, 'What about retries?')
+    await expect(page.getByRole('group', { name: 'Agent layer' })).toHaveCount(0)
+    await expect_layer_label(page, 'What about retries?', 'b')
+    await expect(page.getByRole('textbox', { name: 'Note to agent' })).toHaveCount(
+      page === ipad ? 1 : 0,
+    )
     await geometry(page, info, page === ipad ? 'ipad-portrait' : 'mac-stage')
   }
 
   await ipad.setViewportSize({ width: 1180, height: 820 })
   await ipad.getByRole('tab', { name: 'Side by side' }).tap()
-  await expect_layer_label(ipad, 'What about retries?')
+  await expect_layer_label(ipad, 'What about retries?', 'b')
   await geometry(ipad, info, 'ipad-landscape-side-by-side')
+  await keyboard_geometry(ipad, info)
 }

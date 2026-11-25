@@ -16,7 +16,7 @@ export type Disk = {
 // only in the data directory.
 export const file_names = [
   'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'sessions.registry',
-  'ideas.state', 'events.state', 'whiteboard.key',
+  'ideas.state', 'events.state', 'whiteboard.key', 'interpretation.archive', 'ideas.archive',
 ] as const
 export type FileName = (typeof file_names)[number]
 
@@ -100,6 +100,12 @@ export function disk_open(directory: string): Disk {
       assert(path.dirname(file) === directory, 'files live directly in the data directory')
       if (name === 'whiteboard.key') return key_read(file)
       if (!fs.existsSync(file)) return null
+      if (name.endsWith('.state') || name.endsWith('.archive')) {
+        // Nine normalized canvas versions, or sixty-four events including ACK messages.
+        const max_bytes = name === 'events.state' ? 2 * 1024 * 1024 : 32 * 1024 * 1024
+        const stat = fs.statSync(file)
+        if (!stat.isFile() || stat.size > max_bytes) throw new StorageError(`Invalid ${name} size.`)
+      }
       return new Uint8Array(fs.readFileSync(file))
     },
     write_atomic(name, bytes) {

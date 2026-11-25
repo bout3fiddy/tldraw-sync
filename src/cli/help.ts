@@ -47,8 +47,8 @@ Linked whiteboards (one board per pih session; credentials stay in the private b
   whiteboard-link      Start or reopen a bound board and its pairing stage
   whiteboard-poll      Read outstanding durable requests
   whiteboard-ack       Mark a request received, working, updated or failed
-  whiteboard-snapshot  Read a coherent sketch and the selected agent layer
-  whiteboard-publish   Compose a semantic proposal into Interpretation or Ideas
+  whiteboard-snapshot  Read a coherent sketch and the unified agent graph
+  whiteboard-publish   Compose and publish the entire Agent canvas
 
 Boards (each is a separate board, listed in the side rail and opened by its own address):
   session-list    List the boards, their ids, names and addresses
@@ -107,14 +107,15 @@ Environment:
   BOARD_DATA_DIR  Where the board is saved (default: data/ in the repository)`
 
 export const help_commands: Record<Command, string> = {
-  'whiteboard-link': 'Usage: tldraw-sync whiteboard-link --owner <id> --out <absolute-file> --json',
-  'whiteboard-poll': 'Usage: tldraw-sync whiteboard-poll --binding <file> --json',
+  'whiteboard-link': `Usage: tldraw-sync whiteboard-link --protocol 2
+    --owner <id> --out <absolute-file> --json`,
+  'whiteboard-poll': 'Usage: tldraw-sync whiteboard-poll --protocol 2 --binding <file> --json',
   'whiteboard-ack': `Usage: tldraw-sync whiteboard-ack --binding <file> --event <id>
     --state <received|working|updated|failed> [--message <text>] --json`,
   'whiteboard-snapshot': `Usage: tldraw-sync whiteboard-snapshot --binding <file>
-    --layer <interpretation|ideas> [--out <directory>] --json`,
+    [--layer canvas] [--out <directory>] --json`,
   'whiteboard-publish': `Usage: tldraw-sync whiteboard-publish --binding <file>
-    --layer <interpretation|ideas> --file <diagram.json> --json`,
+    [--layer canvas] --file <diagram.json> --json`,
   start: `Usage: tldraw-sync start [--port <n>] [--no-open] [--json | --quiet]
 
 Starts the board in the background and returns once it is serving. If a board is already

@@ -84,29 +84,30 @@ To update, stop the board, run `git pull` in the clone, then start it again.
 
 In a pih host with whiteboard support, use `/start_whiteboard`. It opens the Mac stage and links a
 board to **this session**. Run it again to reopen the same board. Scan the **stage QR** on the iPad:
-this pairs the two request buttons for that board in that browser tab. The plain draw address lets
+this pairs the Notify composer for that board in that browser tab. The plain draw address lets
 someone draw, but does not pair their event controls. Use **Pair iPad** on the Mac to scan again.
 Keep the stage open so it can render the PNG your agent reads.
 
-- **Notify agent** asks the agent to look at the current sketch as conversation context.
-- **Interpret sketchboard** asks for a faithful, typeset copy in **Agent canvas → Interpretation**.
-  **Ideas** is separate: the agent can add explanations, questions and proposals without changing
-  the interpretation. Both layers are read-only on the iPad.
-- **Replace sketchboard** copies the layer you are viewing into the sketch as editable shapes and
-  removes the current ink. Only do this when you want the replacement. **Undo** restores the ink in
-  one step. Use **Select shapes** to move or edit items. Neither agent layer changes.
+- **Notify agent** shares the current sketch with your agent. Add an optional note of up to 4000
+  characters. Enter adds a line; Cmd/Ctrl+Enter sends. An unconfirmed note stays in this tab.
+- Turn on **Interpret** before sending for a faithful, typeset copy. The **Agent canvas** holds both
+  that interpretation and the agent’s own explanations, questions and connections.
+- **Replace sketchboard** copies the entire Agent canvas into the sketch as editable shapes and
+  removes the current ink. **Undo** restores the ink in one step. Use **Select shapes** to move or
+  edit items. Sketch edits never change the Agent canvas.
 
 A request is queued only when the Mac has the ink you tapped on. If you see “Ink is syncing”, wait
 for the connection and tap again. The board keeps up to 64 requests; a full pending queue refuses
 new requests instead of discarding undelivered work. Receipt, work and completion are separate
 states. `/stop_whiteboard` detaches the pih listener without deleting the board or stopping the Mac.
 
-For local integrations, `whiteboard-link --owner <id> --out <absolute-file> --json` installs a
-private binding. Pass it with `--binding` to `whiteboard-poll`, `whiteboard-ack`,
-`whiteboard-snapshot` and `whiteboard-publish`. See each command’s `--help`. Both layers require the
-snapshot’s `base_revision`; Interpretation also requires the sketch to be unchanged. Ideas retain
-their source even if drawing continues. Snapshot files are private workspaces under `--out` (or the
-system temporary directory); remove them when done. Legacy `cleanup-*` still uses Interpretation.
+Use `whiteboard-link --protocol 2 --owner <id> --out <absolute-file> --json` to install a private
+binding. Pass `--binding <file>` to `whiteboard-poll --protocol 2`, `whiteboard-ack`,
+`whiteboard-snapshot` and `whiteboard-publish`. Snapshot and publish default to `--layer canvas`.
+Publish the whole graph against its exact `base_revision`. Changes to sketch-origin elements also
+require the current sketch hash. Agent-only edits leave the last interpretation’s source unchanged.
+Snapshot files are private workspaces; remove them when done. Pre-upgrade Interpretation and Ideas
+are archived with their histories. After backing up, stop the old daemon before upgrading.
 
 Use a trusted LAN. Pairing limits the **new controls**; it does not authenticate sketch sync,
 protect drawing reads or encrypt traffic. Anyone with the stage QR can send requests on that board.

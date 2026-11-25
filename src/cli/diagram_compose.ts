@@ -10,7 +10,7 @@
 //
 // No network, no files, no model, no board: a pure function of the diagram, deterministic for
 // the same diagram whatever order its items were listed in. The input limits bound the work:
-// at most 80 nodes and 160 edges, laid out once, with no retries.
+// at most 160 nodes and 320 edges, laid out once, with no retries.
 
 import ELK, { type ElkExtendedEdge, type ElkNode } from 'elkjs/lib/elk.bundled.js'
 import { assert, AssertionError } from '../shared/assert'

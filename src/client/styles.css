@@ -394,12 +394,14 @@ button {
 }
 
 /* On a linked board, keep the view tabs and the action rail off the actual drawing. */
+.board--draw,
 .board[data-linked='true'] {
   display: flex;
   flex-direction: column;
   padding-top: calc(env(safe-area-inset-top) + var(--module) + 2 * var(--edge));
 }
 
+.board--draw > .views,
 .board[data-linked='true'] > .views {
   position: relative;
   flex: 1;
@@ -430,9 +432,28 @@ button {
   cursor: pointer;
 }
 
-.layer-choice { display: flex; }
-.layer-choice button + button { margin-left: -1px; }
-.layer-choice button[aria-pressed='true'] { background: var(--ink); color: var(--vellum); }
+.composer { transform: translateY(calc(0px - var(--keyboard, 0px))); }
+.composer textarea {
+  box-sizing: border-box;
+  flex: 1 1 16rem;
+  min-width: 8rem;
+  min-height: 44px;
+  max-height: 110px;
+  padding: 10px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  border-radius: 0;
+  background: transparent;
+  font: 1rem/22px var(--type);
+  color: var(--ink);
+  overflow-y: auto;
+  resize: none;
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: pan-y;
+}
+.composer textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.composer button[aria-pressed='true'] { background: var(--ink); color: var(--vellum); }
 .agent-rail button:disabled { color: var(--lead); border-color: var(--rule); cursor: default; }
 
 .agent-rail [role='status'] {

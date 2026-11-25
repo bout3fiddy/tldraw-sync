@@ -6,6 +6,9 @@ import {
   layers,
   message_length_max,
   owner_pattern,
+  request_id_pattern,
+  request_size_bytes_max,
+  request_text_valid,
   whiteboard_path,
 } from '../shared/whiteboard'
 import type { BoardRegistry } from './board_registry'
@@ -17,6 +20,7 @@ export const denied = async (request: Request) => {
   await body_discard(request)
   return json_error(403, 'not_authorized', 'This board requires pairing.')
 }
+const upgrade = () => json_error(409, 'upgrade_required', 'Upgrade the host and use protocol 2.')
 const invalid = () => json_error(400, 'invalid_request', 'Check the whiteboard request fields.')
 
 export async function whiteboard_route(
@@ -35,7 +39,9 @@ export async function whiteboard_route(
 
   if (origin !== null && origin !== url.origin) return denied(request)
 
-  if (action === 'event' && owner !== null && request.method === 'POST') {
+  const notifying = action === 'event/v2' || action === 'event'
+
+  if (notifying && owner !== null && request.method === 'POST') {
     if (!authorized(request, scoped_key(key, 'event', session, owner))) return denied(request)
 
     return event_route(request, registry, session)
@@ -61,12 +67,14 @@ export async function whiteboard_route(
   const { board } = lookup
 
   if (action === 'poll' && request.method === 'GET') {
+    if (url.searchParams.get('protocol') !== '2') return upgrade()
+
     const events = board.events.outstanding().map(({ message: _, ...rest }) => rest)
     const sketch_hash = board.document_state().hash
-    const agent_revision = board.cleaned_status().revision + board.cleaned_status('ideas').revision
+    const agent_revision = board.cleaned_status().revision
     assert(Number.isSafeInteger(agent_revision), 'the change counter remains exact')
     assert(board.session === session, 'poll does not cross an owner boundary')
-    return json_no_store({ session, owner, sketch_hash, agent_revision, events })
+    return json_no_store({ protocol: 2, session, owner, sketch_hash, agent_revision, events })
   }
 
   if (action === 'ack' && request.method === 'POST') return ack_route(request, registry, session)
@@ -81,9 +89,12 @@ async function layer_route(
   session: string,
   action: string,
 ): Promise<Response> {
-  const layer = layers.find((value) => value === url.searchParams.get('layer'))
+  const layer = layers.find((value) => value === (url.searchParams.get('layer') ?? 'canvas'))
 
-  if (!layer) return invalid()
+  if (!layer || layer === 'ideas') {
+    await body_discard(request)
+    return json_error(400, 'invalid_layer', 'Snapshot the canvas and publish the complete graph.')
+  }
 
   if (action === 'snapshot' && request.method === 'GET') {
     const hash = url.searchParams.get('document_hash') ?? ''
@@ -121,6 +132,8 @@ async function link_route(request: Request, registry: BoardRegistry, key: string
 
   if (!body.ok) return body.response
 
+  if ((body.value as { protocol?: unknown } | null)?.protocol !== 2) return upgrade()
+
   const owner = (body.value as { owner?: unknown } | null)?.owner
 
   if (typeof owner !== 'string' || !owner_pattern.test(owner)) return invalid()
@@ -131,15 +144,16 @@ async function link_route(request: Request, registry: BoardRegistry, key: string
 
   const session = result.session.id
   assert(registry.owner(session) === owner, 'the board is durably bound before issuing a token')
-  return json_no_store({ session, owner, token: scoped_key(key, 'host', session, owner) })
+  const token = scoped_key(key, 'host', session, owner)
+  return json_no_store({ protocol: 2, session, owner, token })
 }
 
 async function event_route(request: Request, registry: BoardRegistry, session: string) {
-  const body = await body_read(request, 1024)
+  const body = await body_read(request, request_size_bytes_max)
 
   if (!body.ok) return body.response
 
-  const value = body.value as { kind?: unknown; sketch_hash?: unknown } | null
+  const value = body.value as Record<string, unknown> | null
   const kind = event_kinds.find((k) => k === value?.kind)
   const hash = value?.sketch_hash
 
@@ -149,7 +163,28 @@ async function event_route(request: Request, registry: BoardRegistry, session: s
 
   if (lookup.kind !== 'board') return lookup_error(lookup)
 
-  const event = lookup.board.queue_event(kind, hash)
+  const request_id = value?.request_id
+  const text = value?.text
+
+  if (typeof request_id !== 'string' || !request_id_pattern.test(request_id)) return upgrade()
+
+  if (text !== undefined && !request_text_valid(text)) {
+    return json_error(400, 'invalid_text', 'Use up to 4000 Unicode characters without controls.')
+  }
+
+  const fields = ['text', 'kind', 'request_id', 'sketch_hash']
+
+  if (Object.keys(value ?? {}).some((k) => !fields.includes(k))) {
+    return invalid()
+  }
+
+  const event = lookup.board.queue_event(kind, hash, { request_id, ...(text ? { text } : {}) })
+
+  if (event === 'clock') return json_error(400, 'check_clock', 'Check the date on your iPad.')
+
+  if (event === 'expired') return json_error(409, 'expired', 'Retry expired. Check board status.')
+
+  if (event === 'conflict') return json_error(409, 'conflict', 'Request ID already used.')
 
   if (event === 'full') return json_error(409, 'events_full', 'The agent queue is full.')
 
@@ -157,6 +192,8 @@ async function event_route(request: Request, registry: BoardRegistry, session: s
 
   assert(event.kind === kind, 'a notification cannot hide an interpretation request')
   assert(event.sketch_hash === hash, 'the acknowledged event matches the tap')
+  assert(event.request_id === request_id, 'receipt identifies the durable request')
+  assert(event.text === (text || undefined), 'receipt echoes exact text, omitting empty notes')
   return json_no_store(event)
 }
 

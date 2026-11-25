@@ -283,20 +283,22 @@ function markerboard_ink_check(reader: JsonReader, shapes: readonly ProposalShap
 }
 
 // What the renderer draws: the validated shapes and the style to draw them in.
-export type Drawing = Pick<Proposal, 'shapes' | 'style'>
+export type Drawing = Pick<Proposal, 'shapes' | 'style'> & { agent_style?: ProposalStyle }
 
 // Native tldraw records for a valid proposal: one shape per proposal shape and two bindings per
 // arrow, nothing else. Every record is checked against tldraw's own schema; a failure is a bug
 // here. A plain drawing gets exactly the records it always did, so earlier revisions render
 // unchanged; a markerboard differs only in its dash and lettering face.
 export function proposal_records(drawing: Drawing): TLRecord[] {
-  const { shapes, style } = drawing
+  const { shapes } = drawing
   assert(shapes.length > 0, 'a proposal has shapes')
   assert(shapes.length <= proposal_shapes_count_max, 'a proposal is bounded')
   const centers = shape_centers(shapes)
   const records: TLRecord[] = []
 
   shapes.forEach((shape, index) => {
+    const style = shape.id.startsWith('a_') ? (drawing.agent_style ?? drawing.style) : drawing.style
+
     if (shape.kind !== 'arrow') return records.push(shape_record(shape, index_key(index), style))
 
     const from = centers.get(shape.from)

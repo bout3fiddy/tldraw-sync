@@ -56,6 +56,7 @@ export const diagram_schema_text = `{
      "label": "<the exact words>"?, "strokes": ["<stroke id>", ...]?}
   ]
 }
+  Nodes and edges may carry "origin": "sketch" (default) or "agent". Cross-origin edges are valid.
   Ids are 1 to 40 letters, digits, _ or -, unique across nodes and edges. A box is any closed
   outline, an ellipse a circle or oval, text words with no outline, and a group either an
   outline drawn around other items or a heading with the items written under it; its label is

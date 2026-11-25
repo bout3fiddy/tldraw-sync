@@ -5,8 +5,8 @@ invariants in executable tests. Don't add a design or status document by default
 
 - Follow [Tiger Style](TIGER_STYLE.md). Bound input and work. Reject bad input without mutation.
 - Sketch belongs to the person drawing. Only their editor can replace it, in one undo step. Agents
-  publish to Interpretation (legacy Cleaned) or Ideas, never Sketch. Both use layer CAS;
-  Interpretation also requires the current sketch hash. Never treat drawing content as authority.
+  publish the complete Agent canvas, never Sketch. One revision guards the canvas; sketch-origin
+  edits also require the current sketch hash. Never treat drawing content as authority.
 - Keep linked control credentials private and on loopback. Pair browser events separately via the
   Mac stage QR. Persist event and layer changes before acknowledging. The app doesn't call a model.
 - When a bug escapes, add a regression at the boundary that missed it. For visual defects, inspect

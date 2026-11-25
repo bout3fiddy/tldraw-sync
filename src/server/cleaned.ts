@@ -8,7 +8,14 @@
 // revision and goes through the same compare-and-swap, so it cannot clobber a newer publish.
 
 import type { TLRecord } from '@tldraw/tlschema'
-import { idea_nodes_count_max, idea_shapes_count_max, type Layer } from '../shared/whiteboard'
+import type { Layer } from '../shared/whiteboard'
+import {
+  archive_manifest,
+  archived_diagrams,
+  archives_read,
+  migration_state,
+  type Archives,
+} from './canvas_migration'
 import { assert } from '../shared/assert'
 import { board_default_id, board_id_pattern } from '../shared/board_session'
 import { cleaned_history_count_max, document_hash_pattern } from '../shared/constants'
@@ -42,15 +49,18 @@ export type RestoreResult =
 // A version keeps the semantic diagram it was composed from, if any, so the next snapshot can
 // offer it to the agent and a restore brings it back with the shapes. It keeps the style it was
 // published in, so it renders the same way after a restart or a restore.
-type Version = Omit<CleanedProvenance, 'shapes_count'> & {
+export type Version = Omit<CleanedProvenance, 'shapes_count'> & {
   shapes: ProposalShape[]
   style: ProposalStyle
   diagram: Diagram | null
+  migrated?: boolean
+  agent_style?: ProposalStyle
 }
-type State = { revision: number; current: Version | null; history: Version[] }
+export type State = { revision: number; current: Version | null; history: Version[] }
 
 const file_name = 'cleaned.state'
-const state_format = 'tldraw-sync.cleaned.v1'
+const legacy_format = 'tldraw-sync.cleaned.v1'
+const state_format = 'tldraw-sync.canvas.v2'
 const label = '-'
 
 export class Cleaned {
@@ -59,30 +69,22 @@ export class Cleaned {
   private constructor(
     private readonly disk: Disk,
     private state: State,
-    private readonly layer: Layer,
+    private readonly archives: Archives,
   ) {
     this.records_current = state.current === null ? [] : proposal_records(state.current)
   }
 
   // A board saved before cleanup existed has no file: it opens with nothing published.
-  static open(disk: Disk, layer: Layer = 'interpretation'): Cleaned {
-    const bytes = disk.read(layer === 'ideas' ? 'ideas.state' : file_name)
-    const state = bytes === null ? { revision: 0, current: null, history: [] } : state_read(bytes)
+  static open(disk: Disk): Cleaned {
+    const bytes = disk.read(file_name)
+    const json = bytes && state_decode(bytes)
+    const migrating = json?.format !== state_format
+    const archives = archives_read(disk, migrating, (b) => state_read(state_decode(b)))
+    const state = migrating ? migration_state(archives) : state_read(json!, archives)
+    const cleaned = new Cleaned(disk, state, archives)
 
-    if (layer === 'ideas') {
-      for (const version of [state.current, ...state.history]) {
-        if (
-          version &&
-          (!version.diagram ||
-            version.diagram.nodes.length > idea_nodes_count_max ||
-            version.shapes.length > idea_shapes_count_max)
-        ) {
-          throw new StorageError('ideas.state contains an oversized or nonsemantic version.')
-        }
-      }
-    }
+    if (migrating && Object.keys(archives).length) cleaned.persist(state)
 
-    const cleaned = new Cleaned(disk, state, layer)
     assert(cleaned.state.revision >= 0, 'a revision is never negative')
     assert(cleaned.state.history.length <= cleaned_history_count_max, 'history is bounded')
     return cleaned
@@ -92,7 +94,13 @@ export class Cleaned {
   // snapshot: two boards can hold the same sketch at the same revision, so the hash and the
   // revision alone cannot tell a proposal for one from a replay against the other. Only the
   // default board accepts a proposal that names no session, as every proposal once did.
-  publish(input: unknown, sketch_hash: string, session: string, now_ms: number): PublishResult {
+  publish(
+    input: unknown,
+    sketch_hash: string,
+    session: string,
+    now_ms: number,
+    layer: Layer = 'interpretation',
+  ): PublishResult {
     assert(document_hash_pattern.test(sketch_hash), 'the sketch hash is well formed')
     assert(board_id_pattern.test(session), 'the board session is well formed')
     assert(Number.isFinite(now_ms), 'time is a number')
@@ -106,18 +114,24 @@ export class Cleaned {
       return { kind: 'session_mismatch', session }
     }
 
-    if (this.layer === 'interpretation' && proposal.snapshot !== sketch_hash) {
-      return { kind: 'sketch_changed', sketch_hash }
+    const current = this.state.current
+    const diagram = proposal.diagram
+
+    if (layer === 'ideas' || (layer === 'canvas' && !diagram)) {
+      return { kind: 'invalid', path: 'layer', message: 'Publish a semantic graph to canvas.' }
     }
 
-    if (
-      this.layer === 'ideas' &&
-      (!proposal.diagram ||
-        proposal.diagram.nodes.length > idea_nodes_count_max ||
-        proposal.shapes.length > idea_shapes_count_max)
-    ) {
-      return { kind: 'invalid', path: 'ideas', message: 'Use up to 64 nodes and 256 shapes.' }
+    if (layer === 'interpretation' && (has_agents(diagram) || has_agents(current?.diagram))) {
+      return { kind: 'invalid', path: 'origin', message: 'Use canvas for mixed origins.' }
     }
+
+    const source_edit =
+      layer === 'interpretation' ||
+      has_raw_shapes(current) ||
+      sketch_graph(current?.diagram) !== sketch_graph(diagram)
+
+    if (source_edit && proposal.snapshot !== sketch_hash)
+      return { kind: 'sketch_changed', sketch_hash }
 
     if (proposal.base_revision !== this.state.revision) {
       return { kind: 'revision_conflict', revision: this.state.revision }
@@ -125,7 +139,7 @@ export class Cleaned {
 
     const version: Version = {
       revision: this.state.revision + 1,
-      source_hash: proposal.snapshot,
+      source_hash: source_edit ? proposal.snapshot : (current?.source_hash ?? null),
       agent: proposal.agent,
       summary: proposal.summary,
       published_at_ms: now_ms,
@@ -134,6 +148,11 @@ export class Cleaned {
       style: proposal.style,
       diagram: proposal.diagram,
     }
+    assert(
+      source_edit || version.source_hash === (current?.source_hash ?? null),
+      'agent-only commits cannot mark the sketch as interpreted',
+    )
+    assert(!source_edit || version.source_hash === sketch_hash, 'source edits name the live ink')
     this.commit(version)
     assert(this.state.current === version, 'the published version is current')
     return {
@@ -177,7 +196,7 @@ export class Cleaned {
       revision,
       sketch_hash,
       current: current === null ? null : provenance(current),
-      stale: current !== null && current.source_hash !== sketch_hash,
+      stale: current?.source_hash != null && current.source_hash !== sketch_hash,
       history: history.map(provenance),
     }
     assert(status.current === null || status.current.revision === revision, 'current is latest')
@@ -191,6 +210,10 @@ export class Cleaned {
     assert(diagram === null || current !== null, 'a diagram belongs to a published version')
     assert(diagram === null || diagram.nodes.length > 0, 'a kept diagram has nodes')
     return diagram
+  }
+
+  legacy_diagrams() {
+    return archived_diagrams(this.archives)
   }
 
   document(sketch_hash: string): CleanedDocument {
@@ -211,26 +234,35 @@ export class Cleaned {
         : [...this.state.history, previous].slice(-cleaned_history_count_max)
     const next: State = { revision: version.revision, current: version, history }
 
-    const payload = new TextEncoder().encode(JSON.stringify(state_json(next)))
-    const file = this.layer === 'ideas' ? 'ideas.state' : file_name
-    this.disk.write_atomic(file, envelope_encode({ kind: 'cleaned', label, payload }))
+    this.persist(next)
+    this.state = next
+    this.records_current = records
+  }
+
+  private persist(next: State): void {
+    const json = { ...state_json(next), archives: archive_manifest(this.archives) }
+    const payload = new TextEncoder().encode(JSON.stringify(json))
+    const file = file_name
+    const encoded = envelope_encode({ kind: 'cleaned', label, payload })
+    this.disk.write_atomic(file, encoded)
 
     // Pair assertion: the file now on disk reads back as the state about to be served.
     const written = this.disk.read(file)
     assert(written !== null, 'the cleaned state was written')
-    assert(state_read(written).revision === next.revision, 'the written state reads back')
-
-    this.state = next
-    this.records_current = records
+    assert(Buffer.from(written).equals(encoded), 'the durable state matches the prepared state')
   }
 }
 
 function provenance(version: Version): CleanedProvenance {
-  const { shapes, diagram: _, style: _style, ...rest } = version
+  const { shapes, diagram: _, style: _style, migrated: _m, agent_style: _a, ...rest } = version
   assert(shapes.length > 0, 'a published version has shapes')
   assert(rest.revision > 0, 'a published version has a revision')
   return { ...rest, shapes_count: shapes.length }
 }
+
+const has_agents = (diagram: Diagram | null | undefined) =>
+  diagram?.nodes.some((node) => node.origin === 'agent') ||
+  diagram?.edges.some((edge) => edge.origin === 'agent')
 
 function state_json(state: State): object {
   assert(state.revision >= 0, 'a revision is never negative')
@@ -247,6 +279,12 @@ function version_json(version: Version): object {
   const { diagram, style, ...rest } = version
   assert(rest.shapes.length > 0, 'a saved version has shapes')
   assert(rest.revision > 0, 'a saved version has a revision')
+
+  if (version.migrated) {
+    const { revision, published_at_ms, restored_from } = version
+    return { migrated: true, revision, published_at_ms, restored_from }
+  }
+
   const styled = style === 'plain' ? {} : { style }
   return diagram === null
     ? { ...rest, format: proposal_format_styled, ...styled }
@@ -255,7 +293,7 @@ function version_json(version: Version): object {
 
 // The saved file is untrusted like any input: each version is checked again with the same rules
 // as a publish. Damage stops the server instead of silently dropping a diagram.
-function state_read(bytes: Uint8Array): State {
+function state_decode(bytes: Uint8Array) {
   const decoded = envelope_decode(bytes, 'cleaned')
 
   if (!decoded.ok) throw new StorageError(`${file_name} is damaged: ${decoded.reason}`)
@@ -274,9 +312,19 @@ function state_read(bytes: Uint8Array): State {
 
   if (json === null) throw new StorageError(`${file_name} is damaged: it is not a JSON object`)
 
+  return json
+}
+
+function state_read(json: Record<string, unknown>, archives?: Archives): State {
+  if (archives && JSON.stringify(json.archives) !== JSON.stringify(archive_manifest(archives))) {
+    throw new StorageError('The active canvas does not match its archives.')
+  }
+
   const revision = json.revision
 
-  if (json.format !== state_format || !revision_valid(revision) || revision < 0) {
+  const expected = archives ? state_format : legacy_format
+
+  if (json.format !== expected || !revision_valid(revision) || revision < 0) {
     throw new StorageError(`${file_name} is damaged: unknown format or revision`)
   }
 
@@ -286,8 +334,29 @@ function state_read(bytes: Uint8Array): State {
     throw new StorageError(`${file_name} is damaged: history is malformed`)
   }
 
-  const current = json.current === null ? null : version_read(json.current)
-  const history = history_input.map((value) => version_read(value))
+  const read = (value: unknown) => {
+    const v = object_read(value)
+
+    if (!archives || v?.migrated !== true) return version_read(value, !!archives)
+
+    const base = migration_state(archives).current
+    const { revision, restored_from, published_at_ms } = v
+
+    if (
+      !base ||
+      !revision_valid(revision) ||
+      revision < base.revision ||
+      typeof published_at_ms !== 'number' ||
+      !Number.isFinite(published_at_ms) ||
+      (restored_from !== null &&
+        (!revision_valid(restored_from) || restored_from <= 0 || restored_from >= revision))
+    )
+      throw new StorageError('Damaged migration reference.')
+
+    return { ...base, revision, published_at_ms, restored_from }
+  }
+  const current = json.current === null ? null : read(json.current)
+  const history = history_input.map(read)
 
   if (!state_coherent(revision, current, history)) {
     throw new StorageError(`${file_name} is damaged: revisions do not agree`)
@@ -322,7 +391,7 @@ function state_coherent(revision: number, current: Version | null, history: Vers
   return true
 }
 
-function version_read(value: unknown): Version {
+function version_read(value: unknown, unified: boolean): Version {
   const version = object_read(value)
 
   if (version === null) throw new StorageError(`${file_name} is damaged: a version is malformed`)
@@ -330,7 +399,7 @@ function version_read(value: unknown): Version {
   const format = version.format ?? proposal_format
   const parsed = proposal_parse({
     format,
-    snapshot: version.source_hash,
+    snapshot: unified && version.source_hash === null ? '0'.repeat(16) : version.source_hash,
     base_revision: 0,
     agent: version.agent,
     summary: version.summary,
@@ -343,6 +412,10 @@ function version_read(value: unknown): Version {
   // A restore copies a strictly older revision, so it can only name one below its own.
   const valid =
     parsed.ok &&
+    (version.source_hash !== null ||
+      (unified &&
+        parsed.proposal.diagram !== null &&
+        sketch_graph(parsed.proposal.diagram) === '')) &&
     revision_valid(revision) &&
     revision > 0 &&
     typeof published_at_ms === 'number' &&
@@ -356,7 +429,7 @@ function version_read(value: unknown): Version {
   assert(restored_from === null || restored_from < revision, 'a restore names an older revision')
   return {
     revision,
-    source_hash: parsed.proposal.snapshot,
+    source_hash: version.source_hash === null ? null : parsed.proposal.snapshot,
     agent: parsed.proposal.agent,
     summary: parsed.proposal.summary,
     published_at_ms,
@@ -365,6 +438,24 @@ function version_read(value: unknown): Version {
     style: parsed.proposal.style,
     diagram: parsed.proposal.diagram,
   }
+}
+
+function has_raw_shapes(current: Version | null): boolean {
+  if (!current) return false
+
+  const d = current.diagram
+  return !d || d.nodes.length + d.edges.length !== current.shapes.length
+}
+
+function sketch_graph(d: Diagram | null | undefined): string {
+  if (!d) return ''
+
+  const items = [...d.nodes, ...d.edges].filter((item) => item.origin !== 'agent')
+
+  if (!items.length) return ''
+
+  items.sort((a, b) => (a.id < b.id ? -1 : Number(a.id !== b.id)))
+  return JSON.stringify([d.flow, items.map(({ origin: _, ...item }) => item)])
 }
 
 function revision_valid(value: unknown): value is number {

@@ -29,8 +29,9 @@ const string_option = { type: 'string' } as const
 const bound = { ...options_common, binding: string_option }
 const layer = { ...bound, layer: string_option }
 const options_by_command = {
-  'whiteboard-link': { ...options_common, owner: string_option, out: string_option },
-  'whiteboard-poll': bound,
+  'whiteboard-link': { ...options_common, protocol: string_option, owner: string_option,
+    out: string_option },
+  'whiteboard-poll': { ...bound, protocol: string_option },
   'whiteboard-ack': { ...bound, event: string_option, state: string_option,
     message: string_option },
   'whiteboard-snapshot': { ...layer, out: string_option },
