@@ -11,3 +11,6 @@ invariants in executable tests. Don't add a design or status document by default
   the rendered board, not just its records. Keep a failing seed or fixture when useful.
 - Run `bun test`, `bun run typecheck`, `bun run simulate`, and `bun run test:browser` for product
   changes. The browser check builds the app. Use temporary board data for tests.
+
+
+Follow [Tiger Style](TIGER_STYLE.md).
