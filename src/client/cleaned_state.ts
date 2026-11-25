@@ -2,35 +2,25 @@
 // one request at a time, and fetches the records only when the revision changes. The status
 // also says whether the sketch has moved on since the diagram was made from it.
 
-import { useCallback, useEffect, useState } from 'react'
-import { assert } from '../shared/assert'
+import { useEffect, useState } from 'react'
 import { board_query } from '../shared/board_session'
 import type { CleanedDocument, CleanedStatus } from '../shared/cleanup_types'
 import {
   cleaned_poll_interval_ms,
   path_cleaned_json,
-  path_cleaned_restore,
   path_cleaned_status,
 } from '../shared/constants'
 
 export type CleanedState = {
-
-  // The board session this cleaned diagram belongs to.
-  readonly session: string
   readonly status: CleanedStatus | null
   readonly document: CleanedDocument | null
-  refresh(): void
 }
-
-export type RestoreOutcome = 'restored' | 'conflict' | 'failed'
 
 const request_timeout_ms = 5000
 
 export function use_cleaned(session: string): CleanedState {
   const [status, status_set] = useState<CleanedStatus | null>(null)
   const [document, document_set] = useState<CleanedDocument | null>(null)
-  const [generation, generation_set] = useState(0)
-  const refresh = useCallback(() => generation_set((value) => value + 1), [])
 
   useEffect(() => {
     let stopped = false
@@ -77,9 +67,9 @@ export function use_cleaned(session: string): CleanedState {
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [generation, session])
+  }, [session])
 
-  return { session, status, document, refresh }
+  return { status, document }
 }
 
 function json_parse<T>(text: string): T | null {
@@ -99,29 +89,5 @@ async function text_get(pathname: string): Promise<string | null> {
     return response.ok ? await response.text() : null
   } catch {
     return null
-  }
-}
-
-// A restore names the revision it saw as current, so it can never undo a newer publish.
-export async function cleaned_restore(
-  session: string,
-  base_revision: number,
-  revision: number,
-): Promise<RestoreOutcome> {
-  assert(revision < base_revision, 'a restore brings back an earlier revision')
-
-  try {
-    const response = await fetch(`${path_cleaned_restore}?${board_query(session)}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ base_revision, revision }),
-      signal: AbortSignal.timeout(request_timeout_ms),
-    })
-
-    if (response.ok) return 'restored'
-
-    return response.status === 409 ? 'conflict' : 'failed'
-  } catch {
-    return 'failed'
   }
 }

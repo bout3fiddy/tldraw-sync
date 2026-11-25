@@ -3,7 +3,7 @@
 // the iPad's zoom or undo history, or stops the stage rendering the image agents fetch. The
 // cleaned canvas exists only while it is shown.
 
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { Role } from '../shared/constants'
 
 export const views = [
@@ -43,12 +43,31 @@ function view_stored(key: string): View {
 
 type ViewTabsProps = { view: View; stale: boolean; onChoose: (view: View) => void }
 
+// A tab list as the platform expects: one tab stop, arrow keys move between views.
+const tab_keys: Record<string, (index: number) => number> = {
+  ArrowLeft: (index) => (index + views.length - 1) % views.length,
+  ArrowRight: (index) => (index + 1) % views.length,
+  Home: () => 0,
+  End: () => views.length - 1,
+}
+
 export function ViewTabs({ view, stale, onChoose }: ViewTabsProps) {
+  const key_down = (event: KeyboardEvent<HTMLElement>) => {
+    const step = tab_keys[event.key]
+    if (step === undefined) return
+
+    event.preventDefault()
+    const next = step(views.findIndex((candidate) => candidate.id === view))
+    onChoose(views[next]!.id)
+    event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus()
+  }
+
   return (
     <nav
       className="tabs"
       role="tablist"
       aria-label="Views"
+      onKeyDown={key_down}
       onPointerDown={(event) => event.stopPropagation()}
     >
       {views.map((candidate) => (
@@ -58,11 +77,15 @@ export function ViewTabs({ view, stale, onChoose }: ViewTabsProps) {
           role="tab"
           className="tabs__tab"
           aria-selected={view === candidate.id}
+          tabIndex={view === candidate.id ? 0 : -1}
           onClick={() => onChoose(candidate.id)}
         >
           {candidate.label}
           {candidate.id === 'cleaned' && stale && (
-            <span className="tabs__stale" title="The sketch changed since this cleanup" />
+            <>
+              <span className="tabs__stale" title="The sketch changed since this cleanup" />
+              <span className="visually-hidden">, out of date</span>
+            </>
           )}
         </button>
       ))}

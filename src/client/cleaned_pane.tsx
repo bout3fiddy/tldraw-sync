@@ -1,8 +1,9 @@
-// The cleaned diagram: read-only, fitted to its pane, with where it came from and whether the
-// sketch has changed since. Its records live in a local store of their own, never in the sync
-// room, so nothing shown here can reach the human ink.
+// The cleaned diagram: read-only, fitted to its pane, with the agent's description of it and
+// whether the sketch has changed since. Its records live in a local store of their own, never
+// in the sync room, so nothing shown here can reach the human ink. Bringing back an earlier
+// revision is the agent's job, through `tldraw-sync cleanup-restore`.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   createTLSchema,
   createTLStore,
@@ -16,13 +17,11 @@ import {
   type TLRecord,
 } from 'tldraw'
 import { cleaned_page_id, type CleanedDocument } from '../shared/cleanup_types'
-import type { CleanedProvenance, CleanedStatus } from '../shared/cleanup_types'
 import { asset_urls, components_quiet } from './board_store'
-import { cleaned_restore, type CleanedState, type RestoreOutcome } from './cleaned_state'
+import type { CleanedState } from './cleaned_state'
 import { Notice } from './notice'
 import { fit_inset_cleaned_px, fit_start } from './stage_mount'
 
-const restore_confirm_ms = 3000
 const schema = createTLSchema()
 
 export function CleanedPane({ cleaned }: { cleaned: CleanedState }) {
@@ -44,12 +43,7 @@ export function CleanedPane({ cleaned }: { cleaned: CleanedState }) {
   return (
     <div className="cleaned">
       <CleanedCanvas key={document.revision} document={document} />
-      <CleanedBar
-        session={cleaned.session}
-        status={status}
-        shown={document.current}
-        onRestored={cleaned.refresh}
-      />
+      <CleanedCaption summary={document.current.summary} stale={status.stale} />
     </div>
   )
 }
@@ -89,70 +83,19 @@ function cleaned_mount(editor: Editor): () => void {
   return fit_start(editor, fit_inset_cleaned_px)
 }
 
-type CleanedBarProps = {
-  session: string
-  status: CleanedStatus
-  shown: CleanedProvenance
-  onRestored: () => void
-}
+// The one thing written over the diagram: what the agent says it shows, and a line when the
+// sketch has moved on since. Nothing is shown when there is nothing to say.
+function CleanedCaption({ summary, stale }: { summary: string; stale: boolean }) {
+  if (summary === '' && !stale) return null
 
-function CleanedBar({ session, status, shown, onRestored }: CleanedBarProps) {
-  const published = new Date(shown.published_at_ms).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-  const origin = shown.restored_from === null ? '' : `, restored from ${shown.restored_from}`
   return (
-    <aside className="cleaned__bar" aria-label="Cleaned diagram details">
-      <p className="cleaned__provenance">
-        Revision {shown.revision}
-        {origin} · {shown.agent} · from sketch {shown.source_hash.slice(0, 8)} · {published}
-      </p>
-      {shown.summary !== '' && <p className="cleaned__summary">{shown.summary}</p>}
-      {status.stale && (
-        <p className="cleaned__stale" role="status">
+    <aside className="caption" aria-label="About this diagram">
+      {summary !== '' && <p className="caption__summary">{summary}</p>}
+      {stale && (
+        <p className="caption__stale" role="status">
           The sketch has changed since this cleanup.
         </p>
       )}
-      <RestoreButton session={session} status={status} onRestored={onRestored} />
     </aside>
-  )
-}
-
-// Two taps, like Clear: the first arms, the second restores the most recent earlier revision.
-type RestoreButtonProps = { session: string; status: CleanedStatus; onRestored: () => void }
-
-function RestoreButton({ session, status, onRestored }: RestoreButtonProps) {
-  const [armed, armed_set] = useState(false)
-  const [outcome, outcome_set] = useState<RestoreOutcome | null>(null)
-  const previous = status.history.at(-1)
-
-  useEffect(() => {
-    if (!armed) return
-
-    const timer = window.setTimeout(() => armed_set(false), restore_confirm_ms)
-    return () => window.clearTimeout(timer)
-  }, [armed])
-
-  if (previous === undefined) return null
-
-  const press = async () => {
-    if (!armed) return armed_set(true)
-
-    armed_set(false)
-    const result = await cleaned_restore(session, status.revision, previous.revision)
-    outcome_set(result)
-    onRestored()
-  }
-  return (
-    <div className="cleaned__restore">
-      <button type="button" data-armed={armed} onClick={() => void press()}>
-        {armed
-          ? `Tap again to restore revision ${previous.revision}`
-          : `Restore revision ${previous.revision}`}
-      </button>
-      {outcome === 'conflict' && <span>A newer cleanup arrived first; nothing was restored.</span>}
-      {outcome === 'failed' && <span>The board did not answer; nothing was restored.</span>}
-    </div>
   )
 }

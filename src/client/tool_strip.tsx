@@ -44,7 +44,7 @@ export function ToolStrip() {
           className="strip__ink"
           aria-label={candidate.label}
           aria-pressed={ink === candidate.name}
-          style={{ '--ink': candidate.colour } as React.CSSProperties}
+          style={{ '--ink-well': candidate.colour } as React.CSSProperties}
           onClick={() => {
             editor.setStyleForNextShapes(DefaultColorStyle, candidate.name)
             editor.setCurrentTool('draw')

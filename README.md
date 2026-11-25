@@ -31,7 +31,7 @@ You say to your agent: "clean up my sketch". The agent looks at the drawing, and
 Cleaned tab shows the same diagram in neat shapes: a straight-edged "API" box, an "Orders DB"
 ellipse, a “writes” arrow between them, and a “Checkout” title. Switch to **Side by side** to
 compare it with your handwriting. Keep drawing and the board marks the cleanup as out of date.
-Earlier cleanups are kept, so you can bring one back.
+Earlier cleanups are kept, and your agent can bring one back.
 
 ## Quickstart
 

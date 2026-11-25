@@ -162,6 +162,9 @@ test('draw, snapshot, publish, view, go stale, restart and restore', async ({ br
 })
 
 const cleaned_pane = (page: Page) => page.locator('section[aria-label="Cleaned"]')
+// The only words over the cleaned diagram: the agent's description, and whether it is stale.
+const caption = (page: Page) =>
+  cleaned_pane(page).getByRole('complementary', { name: 'About this diagram' })
 const stale_notice = (page: Page) =>
   cleaned_pane(page).getByText('The sketch has changed since this cleanup.')
 
@@ -190,7 +193,8 @@ async function first_cleanup_publish_and_view(ipad: Page, stage: Page): Promise<
   await ipad.getByRole('tab', { name: 'Cleaned' }).click()
   await expect(shape_text(ipad, 'Client')).toBeVisible()
   await expect(shape_text(ipad, 'Server')).toBeVisible()
-  await expect(cleaned_pane(ipad).getByText(/Revision 1 · e2e-agent · from sketch/)).toBeVisible()
+  await expect(caption(ipad)).toHaveText('First: a client and a server.')
+  await expect(caption(ipad).getByRole('button')).toHaveCount(0)
   await expect(ipad.locator('section[aria-label="Sketch"]')).toBeHidden()
   await expect(stale_notice(ipad)).toHaveCount(0)
 
@@ -243,15 +247,20 @@ async function board_restart_and_restore(ipad: Page, stage: Page): Promise<void>
   await expect(stale_notice(ipad)).toBeVisible()
   expect(await status()).toMatchObject({ shapes_count: 2, cleaned_revision: 1 })
 
-  // A second cleanup of the new sketch, then an explicit two-tap restore of the first.
+  // A second cleanup of the new sketch, then the agent brings back the first. The page has no
+  // control for that: it only shows the result.
   const fresh = cli('cleanup-snapshot', '--no-open', '--out', out_directory)
   expect(fresh.json).toMatchObject({ base_revision: 1, shapes_count: 2 })
   expect(publish(String(fresh.json.snapshot), 1, 'Second').json).toMatchObject({ revision: 2 })
   await expect(shape_text(ipad, 'Second')).toBeVisible()
   await expect(stale_notice(ipad)).toHaveCount(0)
-  await cleaned.getByRole('button', { name: 'Restore revision 1' }).click()
-  await cleaned.getByRole('button', { name: 'Tap again to restore revision 1' }).click()
-  await expect(cleaned.getByText(/Revision 3, restored from 1/)).toBeVisible()
+  await expect(cleaned.getByRole('button', { name: /Restore/ })).toHaveCount(0)
+  const restored = cli('cleanup-restore', '--base-revision', '2', '--revision', '1')
+  expect(restored.json).toMatchObject({ code: 'restored', revision: 3, restored_from: 1 })
   await expect(shape_text(ipad, 'First')).toBeVisible()
+  // The first cleanup was made from the one-stroke sketch, so it comes back marked stale.
+  await expect(caption(ipad)).toHaveText(
+    'First: a client and a server.The sketch has changed since this cleanup.',
+  )
   expect(await status()).toMatchObject({ cleaned_revision: 3, shapes_count: 2 })
 }

@@ -349,7 +349,7 @@ async function cleaned_measure(page: Page): Promise<Measured> {
       }
     }
 
-    const bar = pane.querySelector('.cleaned__bar')
+    const bar = pane.querySelector('.caption')
     const draw_font_loaded = Array.from(document.fonts).some(
       (face) => face.family.replace(/["']/g, '') === 'tldraw_draw' && face.status === 'loaded',
     )
@@ -1649,17 +1649,15 @@ async function legacy_and_restores(
   expect(colours.yellow).toBeGreaterThan(100)
   expect(colours.coloured).toBeGreaterThan(colours.pixels_count * coloured_share_max)
 
-  await cleaned_pane.getByRole('button', { name: 'Restore revision 2' }).click()
-  await cleaned_pane.getByRole('button', { name: 'Tap again to restore revision 2' }).click()
-  await expect(cleaned_pane.getByText(/Revision 4, restored from 2/)).toBeVisible()
+  const restored_2 = cli('cleanup-restore', '--base-revision', '3', '--revision', '2')
+  expect(restored_2.json).toMatchObject({ revision: 4, restored_from: 2 })
   await expect(cleaned_pane.locator('.tl-shape').getByText('Plain lines join peers')).toBeVisible()
   const restored = await monochrome_check(stage, info, 'restored-1280x800', fixture_ovals, 16)
   expect(restored.problems).toEqual([])
   expect(drawn_identically(ovals_cleaned, restored.measured)).toEqual([])
 
-  await cleaned_pane.getByRole('button', { name: 'Restore revision 3' }).click()
-  await cleaned_pane.getByRole('button', { name: 'Tap again to restore revision 3' }).click()
-  await expect(cleaned_pane.getByText(/Revision 5, restored from 3/)).toBeVisible()
+  const restored_3 = cli('cleanup-restore', '--base-revision', '4', '--revision', '3')
+  expect(restored_3.json).toMatchObject({ revision: 5, restored_from: 3 })
   await expect(cleaned_pane.locator('.tl-shape').getByText('Legacy checkout')).toBeVisible()
   const plain_again = await cleaned_measure_stable(stage)
   expect(plain_check(plain_again)).toEqual([])

@@ -18,7 +18,7 @@ import {
 } from '../shared/board_session'
 import { board_name_length_max, type Role } from '../shared/constants'
 import { session_create, session_rename, type SessionsState } from './board_sessions'
-import { icon_boards, icon_close, icon_pen, icon_pin, icon_plus } from './icons'
+import { icon_boards, icon_close, icon_pin, icon_plus, icon_rename } from './icons'
 
 type ShellProps = {
   role: Role
@@ -258,7 +258,7 @@ function RailItem({ role, session, active, onChoose, onRenamed }: ItemProps) {
   }
 
   return (
-    <li className="rail__item">
+    <li className="rail__item" data-active={active}>
       <a
         className="rail__link"
         href={href}
@@ -289,7 +289,7 @@ function RailItem({ role, session, active, onChoose, onRenamed }: ItemProps) {
         title="Rename"
         onClick={() => editing_set(true)}
       >
-        {icon_pen}
+        {icon_rename}
       </button>
     </li>
   )
@@ -348,7 +348,7 @@ function RenameField({ session, onDone }: { session: BoardSession; onDone: (r: R
 function created_text(created_at_ms: number): string {
   const created = new Date(created_at_ms)
   const today = new Date().toDateString() === created.toDateString()
-  const time = created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const time = created.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 
   if (today) return `Today, ${time}`
 
