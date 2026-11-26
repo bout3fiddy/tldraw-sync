@@ -1,16 +1,12 @@
 # tldraw-sync
 
-Draw on your iPad with an Apple Pencil while your Mac shows the whole board. Zoom in to label one
-arrow in a checkout flow. On a call, everyone watching your Mac still sees where that arrow goes.
+Draw on your iPad with an Apple Pencil while your Mac shows the whole board. Choose **Side by side**
+on the Mac to see your Sketchboard next to the Agent canvas.
 
-Ask your coding agent to clean up the flow. It can turn two rough boxes and a handwritten “writes”
-arrow into a typeset diagram on a separate canvas, without changing your ink. Choose **Side by
-side** to compare the two. A picture next to the diagram keeps the strokes you drew.
+![Mac screenshot: the Sketchboard on the left shows an architecture diagram with handwritten
+questions and circles. The Agent canvas on the right shows the diagram without those marks.][mac]
 
-![The Mac’s Side by side view shows the original strokes and landscape on the left and an
-API → Postgres diagram beside the same landscape on the right.][whiteboard]
-
-[whiteboard]: docs/images/whiteboard.png
+[mac]: docs/images/whiteboard.png
 
 ## Run it locally
 
@@ -35,3 +31,13 @@ session. Scan the QR code on the Mac stage and leave the stage open. On the iPad
 The board runs on your Mac and has no model of its own. Use a trusted network: sketch access has no
 password and traffic is unencrypted. If your agent uses a hosted model, the sketch you share with it
 goes to that provider.
+
+## iPad Sketchboard
+
+This screenshot shows the app in an emulated 820 × 1180 iPad portrait viewport.
+
+<img
+  src="docs/images/ipad-sketchboard.png"
+  alt="Sketchboard tab with a pen palette, a small landscape sketch and a note field."
+  width="360"
+/>
