@@ -42,6 +42,19 @@ export function CleanedPane({ cleaned }: { cleaned: CleanedState }) {
     )
   }
 
+  // A published canvas with nothing on it: the faithful copy of an empty sketch. There is
+  // nothing for tldraw to fit or draw, so the pane says so in words.
+  if (!document.records.some((record) => record.typeName === 'shape')) {
+    return (
+      <div className="cleaned">
+        <p className="cleaned__empty">
+          {status.linked ? 'The agent canvas is empty.' : 'The cleaned diagram is empty.'}
+        </p>
+        <CleanedCaption summary={document.current.summary} stale={status.stale} />
+      </div>
+    )
+  }
+
   return (
     <div className="cleaned">
       <CleanedCanvas key={document.revision} document={document} />

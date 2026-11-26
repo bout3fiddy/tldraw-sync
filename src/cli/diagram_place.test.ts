@@ -81,7 +81,9 @@ test('a placed diagram passes the board\'s checks, and its notes read from the l
   expect(composed.route_conflicts_count).toBe(0)
 
   for (const shape of composed.shapes) {
-    expect(shape.color).toBe('black')
+    expect(shape.kind).not.toBe('ink')
+
+    if (shape.kind !== 'ink') expect(shape.color).toBe('black')
 
     if (shape.kind === 'text') expect(shape.align).toBe('start')
   }

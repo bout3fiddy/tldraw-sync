@@ -37,7 +37,8 @@ Commands:
   stop     Stop the board
   serve    Run the board in this terminal instead of the background
 
-Cleanup (an external agent reads the sketch; the tool typesets it on a separate Cleaned canvas):
+Cleanup (an external agent reads the sketch; the tool typesets diagrams and writing on a
+separate Cleaned canvas, and keeps pictures there as the pen strokes they were drawn with):
   cleanup-snapshot  Save the sketch image, stroke summaries and instructions for the agent
   cleanup-compose   Lay out a semantic diagram locally, without publishing it
   cleanup-publish   Lay out and publish a semantic diagram as the new cleaned diagram
@@ -113,9 +114,51 @@ export const help_commands: Record<Command, string> = {
   'whiteboard-ack': `Usage: tldraw-sync whiteboard-ack --binding <file> --event <id>
     --state <received|working|updated|failed> [--message <text>] --json`,
   'whiteboard-snapshot': `Usage: tldraw-sync whiteboard-snapshot --binding <file>
-    [--layer canvas] [--out <directory>] --json`,
+    [--layer canvas] [--out <directory>] --json
+
+Saves a coherent snapshot of the bound board, as cleanup-snapshot does, in a new private folder
+under --out: the sketch image, its pen records (sketch.json), a summary of each stroke, and
+the complete graph of the Agent canvas when there is one. "prompt" says what each kind of
+request asks for:
+
+  An ordinary Notify request asks for no cleanup. Leave the sketch-origin items as they are
+  and add, change or remove your own items ("origin": "agent") as its note asks.
+
+  An Interpret request asks for a faithful copy of the sketch as it is now. Rebuild the graph
+  from the current sketch alone: a diagram and writing are typeset, a picture is kept as a
+  "drawing" of its own pen strokes, and what the sketch no longer shows is left out, earlier
+  agent-origin notes included, unless the request's note asks for them.
+
+A sketch with nothing on it still has a snapshot: its image is a blank page, "shapes_count"
+is 0, and the prompt asks for an empty canvas ("nodes": [] and "edges": []).
+
+Example:
+  tldraw-sync whiteboard-snapshot --binding /private/binding.json --json`,
   'whiteboard-publish': `Usage: tldraw-sync whiteboard-publish --binding <file>
-    [--layer canvas] --file <diagram.json> --json`,
+    [--layer canvas] --file <diagram.json> --json
+
+Lays out the semantic diagram in --file, as cleanup-compose does, and publishes it as the
+whole Agent canvas of the bound board, replacing what was there. The diagram names the
+snapshot's "session", "snapshot" and "base_revision". A new reading of the sketch is accepted
+only from a snapshot of the sketch as it is now. A publish that changes only agent-origin
+items is accepted after the sketch has moved on, and keeps the drawings the canvas holds.
+
+Keep the file where the snapshot put it: a "drawing" is sized from the sketch.json beside it,
+and the board copies the strokes it names from the sketch itself. An empty diagram publishes
+an empty canvas. See tldraw-sync cleanup-compose --help for the schema.
+
+Output:
+  --json   {"status": "success", "code": "published", "session", "layer", "revision"}
+
+Failure codes:
+  invalid_diagram    exit 1: the message names the field, stroke or file; fix the diagram
+  invalid_proposal   exit 1: the board refused the composed diagram; the message says why
+  sketch_changed     exit 5: the sketch changed; take a new snapshot
+  revision_conflict  exit 5: the canvas changed; take a new snapshot
+  session_mismatch   exit 5: the diagram names another board
+
+Example:
+  tldraw-sync whiteboard-publish --binding /private/binding.json --file diagram.json --json`,
   start: `Usage: tldraw-sync start [--port <n>] [--no-open] [--json | --quiet]
 
 Starts the board in the background and returns once it is serving. If a board is already
@@ -172,9 +215,10 @@ Output:
             "bytes_count"}
 
 Reading the drawing:
-  It is a hand-drawn whiteboard: boxes, arrows, handwriting, often a system design. Open the
-  PNG with your image tool and use it as context for what the user is asking. If they asked
-  nothing specific, say what is on the board and what looks unresolved.
+  It is a hand-drawn whiteboard: boxes, arrows, handwriting, sometimes a picture. It is often a
+  system design, but not always: read what is there. Open the PNG with your image tool and use
+  it as context for what the user is asking. If they asked nothing specific, say what is on the
+  board and what looks unresolved.
 
   "document_hash" changes whenever the drawing changes. The same hash as last time means you
   have already seen this drawing.
@@ -248,6 +292,12 @@ means as a semantic diagram; cleanup-publish lays it out and publishes it.
 Read the sketch best effort, without asking the user to clarify: copy every word exactly,
 keep every arrowhead, and invent nothing. The tool chooses every position and style.
 
+Clean up each part of the sketch in its own way. A diagram and writing are typeset. A picture
+(scenery, people, objects, a doodle, anything that is neither a diagram nor writing) is kept
+as a "drawing": a node that lists the ids of its pen strokes, which the tool copies unchanged,
+at the size and in the arrangement they were drawn. Never redraw a picture as boxes, ovals or
+words, and never stand in for one with a symbol.
+
 The snapshot names its board in "session", and the diagram must carry it: a board refuses a
 diagram made from another board's snapshot. While the board has no name, "title_wanted" is
 true and the prompt asks for a short "title"; an accepted publish names the board with it,
@@ -290,6 +340,12 @@ arrangement: what was beside, above or below what, typeset and closed up to an e
 Otherwise items are arranged by their connections alone. cleanup-publish runs the same
 composition before it publishes.
 
+A "drawing" node is not typeset. It keeps part of the sketch as the pen strokes it names and
+takes the box of those strokes, never scaled. Their size is read from the sketch.json that
+cleanup-snapshot saved beside the diagram file (for a diagram on stdin, the one in the board's
+default snapshot folder), which must be of the same snapshot. The board copies the strokes
+from the sketch when it publishes. A diagram with no nodes composes to an empty canvas.
+
 Diagram (JSON, not code):
 ${diagram_schema_text}
 
@@ -304,7 +360,7 @@ Output:
   join, which the layout could not avoid. 0 is the usual answer.
 
 Failure codes:
-  invalid_diagram     exit 1: the message names the field; fix the diagram
+  invalid_diagram     exit 1: the message names the field, stroke or file; fix the diagram
   composition_failed  exit 1: the layout failed its own checks; report the diagram
   diagram_too_large   exit 1: the diagram is over ${proposal_size_bytes_max} bytes
   diagram_unreadable  exit 1: the diagram is not a readable regular file or stdin
@@ -332,6 +388,10 @@ the end of the input.
 A semantic diagram ("format": "tldraw-sync.diagram.v1") is laid out here first, exactly as
 cleanup-compose does, and the styled result is published together with the diagram, which the
 next snapshot offers back for its ids. See tldraw-sync cleanup-compose --help for the schema.
+
+A "drawing" in the diagram is published as the person's own pen strokes: the board copies the
+strokes it names from the sketch as it is now, and refuses a stroke the sketch does not have.
+Keep the diagram file beside the snapshot's sketch.json, which sizes the drawing.
 
 A shape proposal ("format": "tldraw-sync.cleanup.v1"), the older format with coordinates and
 colours chosen by the agent, is still accepted from scripts written for it. New cleanups write a

@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom'
 import type { Editor } from 'tldraw'
 import { AgentDock, inbox_news } from './agent_dock'
 import { use_pair_token } from './board_pair'
+import { cleaned_page_id, type CleanedDocument } from '../shared/cleanup_types'
 import type { CleanedState } from './cleaned_state'
 import { Notice } from './notice'
 import { NotifyComposer, use_composer } from './notify_composer'
@@ -45,18 +46,30 @@ function use_notice(): [string, (text: string) => void] {
   return [notice, notice_set]
 }
 
-// Only the person drawing replaces the sketch, in one step that Undo takes back.
+// Whether a published canvas holds anything to copy into the sketch: a shape placed on its
+// page, which is what `replace_sketch` pastes. An empty canvas is a valid revision with nothing
+// to copy, and a canvas never published has no revision at all.
+function copyable(document: CleanedDocument | null): document is CleanedDocument {
+  if (!document?.current) return false
+
+  const records = document.records as Array<{ typeName: string; parentId?: string }>
+  return records.some((r) => r.typeName === 'shape' && r.parentId === cleaned_page_id)
+}
+
+// Only the person drawing replaces the sketch, in one step that Undo takes back. The step is
+// offered only when there is something to copy, so it is never offered where it can only fail.
 function use_replace({ editor, cleaned, online, showSketch }: Props) {
   const [notice, notice_show] = use_notice()
+  const possible = online && copyable(cleaned.document)
   const replace = () => {
-    if (!editor || !cleaned.document?.current || !online) return
+    if (!editor || !online || !copyable(cleaned.document)) return
 
     const ok = replace_sketch(editor, cleaned.document)
     notice_show(ok ? 'Sketch replaced. Undo restores your ink.' : 'Could not replace the sketch.')
 
     if (ok) showSketch()
   }
-  return { notice, replace, possible: online && !!cleaned.document?.current }
+  return { notice, replace, possible }
 }
 
 type Readiness = { online: boolean; upgrade: boolean; paired: boolean; available: boolean }

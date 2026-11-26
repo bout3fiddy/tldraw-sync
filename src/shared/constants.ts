@@ -133,6 +133,16 @@ export const diagram_at_units_max = 10_000_000
 // Source stroke ids an agent may attach to its nodes and edges, across the whole diagram.
 export const diagram_stroke_ids_count_max = 2000
 
+// Drawings: parts of the sketch a cleanup keeps as the person's own pen strokes. A publish names
+// the strokes; the board copies them from the sketch itself. One canvas keeps at most this many
+// pen samples across its drawings, about 2 MB of saved strokes a revision, so the retained
+// history, nine revisions at most, still saves in one quick write.
+export const ink_points_count_max = 64_000
+
+// The sketch records a snapshot saves beside a diagram, which the command line reads back to
+// size the diagram's drawings. Larger than any sketch the board syncs in one message.
+export const sketch_file_size_bytes_max = 64 * 1024 * 1024
+
 // Stroke summaries in a cleanup snapshot: ids and bounds, not every pen sample.
 export const stroke_summaries_count_max = 2000
 
@@ -162,6 +172,8 @@ assert(
 )
 assert(diagram_label_length_max <= proposal_text_length_max, 'a diagram label fits a shape')
 assert(diagram_depth_max < diagram_nodes_count_max, 'nesting is bounded by the nodes')
+assert(ink_points_count_max > 0, 'a drawing keeps some pen samples')
+assert(sketch_file_size_bytes_max > sync_message_size_bytes_max, 'a synced sketch can be read')
 assert(cleaned_poll_interval_ms >= poll_interval_ms, 'pages poll no faster than the command')
 assert(board_title_length_max <= board_name_length_max, 'a title fits a name')
 assert(boards_open_count_max <= board_sessions_count_max, 'open boards are listed boards')

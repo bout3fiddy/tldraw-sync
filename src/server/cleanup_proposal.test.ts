@@ -12,7 +12,7 @@ import {
 } from '../shared/constants'
 import { diagram_proposal_parse } from '../shared/diagram_parse'
 import { Prng } from '../simulation/prng'
-import { proposal_example } from '../simulation/test_sketch'
+import { proposal_example, sketch_stroke } from '../simulation/test_sketch'
 import { text_block } from '../shared/text_measure'
 import { index_key, proposal_parse, proposal_records } from './cleanup_proposal'
 
@@ -764,3 +764,157 @@ for (const [name, tamper, path] of tamperings_sparse) {
     expect(parsed).toMatchObject({ ok: false, path })
   })
 }
+
+// A diagram with a box, a drawing of three strokes and another box, composed as the command
+// line does. The drawing's box is given: its strokes are the board's to measure.
+async function composed_drawing(): Promise<any> {
+  const parsed = diagram_proposal_parse({
+    format: 'tldraw-sync.diagram.v1',
+    snapshot,
+    base_revision: 0,
+    nodes: [
+      { id: 'a', kind: 'box', label: 'A' },
+      { id: 'art', kind: 'drawing', strokes: ['shape:s0', 'shape:s1', 'shape:s2'] },
+      { id: 'z', kind: 'box', label: 'Z' },
+    ],
+    edges: [{ id: 'a-z', from: 'a', to: 'z', direction: 'forward' }],
+  })
+
+  if (!parsed.ok) throw new Error(parsed.message)
+
+  const result = await diagram_compose(parsed.proposal, new Map([['art', { w: 40, h: 24 }]]))
+
+  if (!result.ok) throw new Error(result.message)
+
+  return JSON.parse(result.composed.text)
+}
+
+const held_stroke = (place: number) => ({
+  type: 'draw',
+  x: place * 10,
+  y: place,
+  rotation: 0,
+  opacity: 1,
+  props: (sketch_stroke('shape:s', 0, 0, [[0, 0], [5, 5]], 'red') as any).props,
+})
+
+test('a drawing names its strokes on the way to the board and holds them once saved', async () => {
+  const proposal = await composed_drawing()
+  const index = proposal.shapes.findIndex((shape: any) => shape.id === 'art')
+  expect(proposal.shapes[index]).toMatchObject({ kind: 'ink', w: 40, h: 24, ink: null })
+  expect(parse_ok(proposal).shapes[index]).toMatchObject({ kind: 'ink', ink: null })
+
+  // A saved version must hold every stroke; a proposal for the board must hold none.
+  const at_ink = { ok: false, path: `shapes[${index}].ink` }
+  expect(proposal_parse(proposal, 'held')).toMatchObject(at_ink)
+  proposal.shapes[index].ink = [0, 1, 2].map(held_stroke)
+  expect(proposal_parse(proposal)).toMatchObject(at_ink)
+  const held = proposal_parse(proposal, 'held')
+  expect(held.ok).toBe(true)
+
+  // The older format, and a proposal without its diagram, have no drawings.
+  const v1 = { format: 'tldraw-sync.cleanup.v1', snapshot, base_revision: 0, shapes: [] as any[] }
+  v1.shapes = [{ kind: 'ink', id: 'art', x: 0, y: 0, w: 9, h: 9 }]
+  expect(proposal_parse(v1)).toMatchObject({ ok: false, path: 'shapes[0].kind' })
+  const bare = await composed_drawing()
+  delete bare.diagram
+  expect(proposal_parse(bare)).toMatchObject({ ok: false, path: `shapes[${index}].kind` })
+})
+
+test('a drawing renders one native stroke for each it holds, in drawing order', async () => {
+  const proposal = await composed_drawing()
+  const drawing = proposal.shapes.find((shape: any) => shape.id === 'art')
+  drawing.ink = [0, 1, 2].map(held_stroke)
+  const held = proposal_parse(proposal, 'held')
+
+  if (!held.ok) throw new Error(`${held.path}: ${held.message}`)
+
+  const records = proposal_records(held.proposal) as any[]
+  const shapes = records.filter((record) => record.typeName === 'shape')
+  expect(shapes.map((record) => record.id)).toEqual([
+    'shape:cleaned-a',
+    'shape:cleaned-art.0',
+    'shape:cleaned-art.1',
+    'shape:cleaned-art.2',
+    'shape:cleaned-z',
+    'shape:cleaned-a-z',
+  ])
+
+  // Each stroke sits at its own offset inside the drawing's box, and draws in list order.
+  const strokes = shapes.slice(1, 4)
+  expect(strokes.map((record) => [record.x - drawing.x, record.y - drawing.y])).toEqual([
+    [0, 0],
+    [10, 1],
+    [20, 2],
+  ])
+  expect(strokes.every((record) => record.type === 'draw' && record.props.color === 'red')).toBe(
+    true,
+  )
+  const indices = shapes.map((record) => record.index as string)
+  expect([...indices].sort()).toEqual(indices)
+  expect(new Set(indices).size).toBe(indices.length)
+
+  for (const record of records) {
+    const types = record.typeName === 'shape' ? schema.types.shape : schema.types.binding
+    expect(() => types.validate(record)).not.toThrow()
+  }
+})
+
+const ink_damages: Array<[string, (drawing: any, proposal: any) => void, string]> = [
+  ['a stroke of an unknown colour', (d) => (d.ink[1].props.color = 'chartreuse'), '.ink[1].props'],
+  ['a stroke with a field of its own', (d) => (d.ink[0].script = 'x'), '.ink[0].script'],
+  ['a stroke that is a shape', (d) => (d.ink[2].type = 'geo'), '.ink[2].type'],
+  ['a stroke turned without end', (d) => (d.ink[0].rotation = 1e9), '.ink[0].rotation'],
+  ['fewer strokes than ids', (d) => d.ink.pop(), '.ink'],
+  ['a stroke id twice', (d) => (d.strokes[1] = d.strokes[0]), '.strokes'],
+  ['a malformed stroke id', (d) => (d.strokes[1] = 'abc'), '.strokes'],
+  ['no stroke ids', (d) => (d.strokes = []), '.strokes'],
+  ['a box without a size', (d) => (d.w = 0), '.w'],
+  ['a field of another kind', (d) => (d.text = 'Sun'), '.text'],
+]
+
+for (const [name, damage, where] of ink_damages) {
+  test(`a saved drawing is refused, not asserted on, with ${name}`, async () => {
+    const proposal = await composed_drawing()
+    const index = proposal.shapes.findIndex((shape: any) => shape.id === 'art')
+    proposal.shapes[index].ink = [0, 1, 2].map(held_stroke)
+    expect(proposal_parse(proposal, 'held').ok).toBe(true)
+    damage(proposal.shapes[index], proposal)
+    expect(proposal_parse(proposal, 'held')).toMatchObject({
+      ok: false,
+      path: `shapes[${index}]${where}`,
+    })
+  })
+}
+
+test('an arrow cannot bind to a drawing, and a composed empty diagram has no shapes', async () => {
+  const proposal = await composed_drawing()
+  const arrow = proposal.shapes.findIndex((shape: any) => shape.kind === 'arrow')
+  proposal.shapes[arrow].to = 'art'
+  expect(proposal_parse(proposal)).toMatchObject({ ok: false, path: `shapes[${arrow}].to` })
+
+  const empty = diagram_proposal_parse({
+    format: 'tldraw-sync.diagram.v1',
+    snapshot,
+    base_revision: 3,
+    nodes: [],
+    edges: [],
+  })
+
+  if (!empty.ok) throw new Error(empty.message)
+
+  const result = await diagram_compose(empty.proposal)
+
+  if (!result.ok) throw new Error(result.message)
+
+  expect(result.composed).toMatchObject({ shapes: [], width_units: 0, height_units: 0 })
+  const parsed = parse_ok(JSON.parse(result.composed.text))
+  expect(parsed).toMatchObject({ shapes: [], base_revision: 3, style: 'markerboard' })
+  expect(parsed.diagram).toEqual({ flow: 'right', nodes: [], edges: [] })
+  expect(proposal_records(parsed)).toEqual([])
+
+  // Without a diagram to say so, no shapes is still a mistake, in either format.
+  const undiagrammed = { ...JSON.parse(result.composed.text) }
+  delete undiagrammed.diagram
+  expect(proposal_parse(undiagrammed)).toMatchObject({ ok: false, path: 'proposal.shapes' })
+})

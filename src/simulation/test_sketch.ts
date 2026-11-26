@@ -29,6 +29,28 @@ export function sketch_square(shape_id: string, x: number): TLRecord {
   } as unknown as TLRecord
 }
 
+// A pen stroke as the iPad draws one: where it starts on the page, its pen samples relative to
+// that point, and its ink. One stroke is one native tldraw draw shape.
+export function sketch_stroke(
+  shape_id: string,
+  x: number,
+  y: number,
+  points: ReadonlyArray<readonly [number, number]>,
+  color = 'black',
+): TLRecord {
+  assert(shape_id.startsWith('shape:'), 'a shape id has the shape prefix')
+  assert(points.length > 0, 'a stroke has pen samples')
+  return {
+    id: shape_id, typeName: 'shape', type: 'draw', x, y, rotation: 0, index: 'a1',
+    parentId: 'page:page', isLocked: false, opacity: 1, meta: {},
+    props: {
+      color, fill: 'none', dash: 'draw', size: 'm', isComplete: true, isClosed: false,
+      isPen: true, scale: 1,
+      segments: [{ type: 'free', points: points.map(([px, py]) => ({ x: px, y: py, z: 0.5 })) }],
+    },
+  } as unknown as TLRecord
+}
+
 // Writes a saved board holding these shapes, replacing any board already on the disk.
 export function sketch_save(disk: SimulatedDisk, shapes: readonly TLRecord[]): void {
   const records = [

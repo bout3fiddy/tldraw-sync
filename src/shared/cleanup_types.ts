@@ -12,6 +12,10 @@ export const cleaned_page_id = 'page:page'
 export const proposal_kinds = ['text', 'rectangle', 'ellipse', 'arrow'] as const
 export type ProposalKind = (typeof proposal_kinds)[number]
 
+// A styled proposal may also keep a part of the sketch as it was drawn: the person's own pen
+// strokes, copied by the board from the sketch. See `InkStroke`.
+export const proposal_kinds_styled = [...proposal_kinds, 'ink'] as const
+
 export const proposal_colors = [
   'black',
   'grey',
@@ -66,8 +70,42 @@ export type ProposalRoute = (typeof proposal_routes)[number]
 // Null aims at the center, and tldraw stops the arrow at the outline.
 export type ProposalAnchor = { x: number; y: number }
 
+// The sketch shapes that can be kept as they were drawn: pen and highlighter strokes.
+export const ink_stroke_types = ['draw', 'highlight'] as const
+export type InkStrokeType = (typeof ink_stroke_types)[number]
+
+// One pen stroke kept from the sketch, as tldraw holds it: its type, turn and opacity, and its
+// own props, which are the pen samples, colour and weight, unchanged. `x` and `y` place the
+// stroke's origin relative to the corner of the drawing it belongs to, so every stroke of a
+// drawing keeps its shape, its size and its place among the others.
+export type InkStroke = {
+  type: InkStrokeType
+  x: number
+  y: number
+  rotation: number
+  opacity: number
+  props: Record<string, unknown>
+}
+
 // One validated shape. Optional fields have been filled with their defaults.
 export type ProposalShape =
+  | {
+      kind: 'ink'
+      id: string
+      x: number
+      y: number
+
+      // The box around the strokes, with room for the width of the pen.
+      w: number
+      h: number
+
+      // The ids of the sketch strokes this drawing keeps, in the order they are drawn.
+      strokes: string[]
+
+      // The strokes themselves, one for each id. Null on the way to the board, which copies
+      // them from the sketch when it accepts the publish; never null in a published version.
+      ink: InkStroke[] | null
+    }
   | {
       kind: 'text'
       id: string
@@ -138,8 +176,9 @@ export type Proposal = {
 // command line lays it out (cleanup-compose) and publishes the result as a styled proposal.
 export const diagram_format = 'tldraw-sync.diagram.v1'
 
-// A box, a circle or oval, free text, or a group drawn around other items.
-export const diagram_node_kinds = ['box', 'ellipse', 'text', 'group'] as const
+// A box, a circle or oval, free text, a group drawn around other items, or a drawing: a picture
+// or any part of the sketch kept as the person's own pen strokes instead of being typeset.
+export const diagram_node_kinds = ['box', 'ellipse', 'text', 'group', 'drawing'] as const
 export type DiagramNodeKind = (typeof diagram_node_kinds)[number]
 
 // A connection points from its "from" end to its "to" end, both ways, or neither way.
@@ -223,6 +262,10 @@ export type CleanedStatus = {
 // The full cleaned document: the status and the native tldraw records of the current revision.
 export type CleanedDocument = CleanedStatus & { records: Array<{ id: string; typeName: string }> }
 
+// A drawing on the current canvas: its node id, the strokes it keeps and the box they fill.
+// The command line sizes a carried-over drawing with it once the sketch has moved on.
+export type DrawingPrevious = { id: string; strokes: string[]; w: number; h: number }
+
 // The page-space rectangle the stage rendered, and how image pixels map onto it.
 export type SketchBounds = { x: number; y: number; w: number; h: number }
 
@@ -245,4 +288,7 @@ export type SketchSnapshot = {
   // The semantic diagram behind the current cleaned revision, when it was composed from one.
   // An agent reuses its ids, so the same things keep their identity across revisions.
   diagram_previous: Diagram | null
+
+  // The drawings of the current revision. Absent from a board older than drawings.
+  drawings_previous?: DrawingPrevious[]
 }

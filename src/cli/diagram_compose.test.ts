@@ -64,7 +64,13 @@ test('the fixture keeps labels, kinds, parents, endpoints and arrowheads exactly
   const proposal = input()
   const composed = await compose(proposal)
   const shapes = by_id(composed.shapes)
-  const kinds = { box: 'rectangle', ellipse: 'ellipse', text: 'text', group: 'rectangle' }
+  const kinds = {
+    box: 'rectangle',
+    ellipse: 'ellipse',
+    text: 'text',
+    group: 'rectangle',
+    drawing: 'ink',
+  }
   const heads = { forward: 'end', both: 'both', none: 'none' }
 
   for (const node of proposal.diagram.nodes) {
@@ -199,7 +205,7 @@ test('adding an item outside a group leaves that group arranged as before', asyn
     expect(relative(after)).toEqual(relative(before))
   }
 
-  expect(after.get('pager')?.text).toBe('Pager')
+  expect((after.get('pager') as Geo).text).toBe('Pager')
 })
 
 test('the downward flow composes too, with headings above their contents', async () => {
