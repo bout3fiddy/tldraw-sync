@@ -106,8 +106,8 @@ function use_delivery(props: Props) {
   }
 }
 
-export function NotifyComposer(props: Props) {
-  const form = use_delivery(props)
+// Grows the note field to fit its text, and again when the window changes width.
+function use_autosize(text: string) {
   const area = useRef<HTMLTextAreaElement>(null)
   useLayoutEffect(() => {
     const field = area.current
@@ -116,47 +116,66 @@ export function NotifyComposer(props: Props) {
 
     const resize = () => {
       field.style.height = 'auto'
-      field.style.height = `${field.scrollHeight + 1}px`
+
+      // The content, plus whatever border the field is drawn with.
+      const border = field.offsetHeight - field.clientHeight
+      field.style.height = `${field.scrollHeight + border}px`
     }
     resize()
     window.addEventListener('resize', resize)
     return () => window.removeEventListener('resize', resize)
-  }, [form.text])
+  }, [text])
+  return area
+}
+
+export function NotifyComposer(props: Props) {
+  const form = use_delivery(props)
+  const area = use_autosize(form.text)
   return (
     <>
-      <textarea
-        ref={area}
-        rows={1}
-        aria-label="Note to agent"
-        placeholder="Add a note (optional)"
-        value={form.text}
-        disabled={!form.available}
-        onChange={(e) => form.change(e.target.value)}
-        onKeyUp={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          e.stopPropagation()
+      <div className="notify">
+        <textarea
+          ref={area}
+          rows={1}
+          aria-label="Note to agent"
+          placeholder="Add a note (optional)"
+          value={form.text}
+          disabled={!form.available}
+          onChange={(e) => form.change(e.target.value)}
+          onKeyUp={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation()
 
-          if (
-            e.key === 'Enter' &&
-            (e.metaKey || e.ctrlKey) &&
-            !e.nativeEvent.isComposing &&
-            e.nativeEvent.keyCode !== 229
-          ) {
-            e.preventDefault()
-            void form.send()
-          }
-        }}
-      />
-      <button
-        type="button"
-        aria-pressed={form.interpret}
-        onClick={() => form.setInterpret(!form.interpret)}
-      >
-        Interpret
-      </button>
-      <button type="button" disabled={form.disabled} onClick={() => void form.send()}>
-        Notify agent
-      </button>
+            if (
+              e.key === 'Enter' &&
+              (e.metaKey || e.ctrlKey) &&
+              !e.nativeEvent.isComposing &&
+              e.nativeEvent.keyCode !== 229
+            ) {
+              e.preventDefault()
+              void form.send()
+            }
+          }}
+        />
+        <div className="notify__actions">
+          <button
+            type="button"
+            className="notify__toggle"
+            aria-pressed={form.interpret}
+            onClick={() => form.setInterpret(!form.interpret)}
+          >
+            Interpret
+          </button>
+          <button
+            type="button"
+            className="notify__send"
+            disabled={form.disabled}
+            onClick={() => void form.send()}
+          >
+            Notify agent
+          </button>
+        </div>
+      </div>
       {!form.available && (
         <span role="alert">Cannot read this tab’s draft. Check board status.</span>
       )}

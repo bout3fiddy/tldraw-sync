@@ -432,17 +432,42 @@ button {
   cursor: pointer;
 }
 
-.composer { transform: translateY(calc(0px - var(--keyboard, 0px))); }
+/* The composer. The note and its two actions are one instrument: a sheet to write on, in the
+   ink frame the tabs and the tool strip use. Every rule here is scoped to .composer, because
+   the stage's rail shares .agent-rail and must not change. */
+
+.composer {
+  gap: 6px 12px;
+  transform: translateY(calc(0px - var(--keyboard, 0px)));
+}
+
+.composer .notify {
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 24rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--frame);
+  min-width: 0;
+  max-width: 60rem;
+  padding: var(--frame);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--sheet);
+}
+
+/* The note takes all the spare width. Where there is none, the actions drop to a row of their
+   own beneath it and share that row instead. */
 .composer textarea {
   box-sizing: border-box;
-  flex: 1 1 16rem;
+  flex: 999 1 12rem;
   min-width: 8rem;
-  min-height: 44px;
+  min-height: var(--control);
   max-height: 110px;
-  padding: 10px 4px;
+  margin: 0;
+  padding: 11px 10px;
   border: 0;
-  border-bottom: 1px solid var(--ink);
-  border-radius: 0;
+  border-radius: var(--radius-inner);
   background: transparent;
   font: 1rem/22px var(--type);
   color: var(--ink);
@@ -452,7 +477,60 @@ button {
   -webkit-user-select: text;
   touch-action: pan-y;
 }
-.composer textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+.composer textarea::placeholder {
+  color: var(--lead);
+  opacity: 1;
+}
+
+.composer textarea:disabled {
+  color: var(--lead);
+}
+
+/* The ring is drawn inside the field, so the frame never hides it. */
+.composer textarea:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.composer .notify__actions {
+  display: flex;
+  flex: 1 0 auto;
+  gap: var(--frame);
+}
+
+.composer .notify__actions button {
+  flex: 1 0 auto;
+  border-radius: var(--radius-inner);
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+
+/* Interpret is a setting, not an action: it carries a box that fills with ink when chosen. */
+.composer .notify__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.composer .notify__toggle::before {
+  content: '';
+  box-sizing: border-box;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+}
+
+.composer .notify__toggle[aria-pressed='true']::before {
+  background: currentColor;
+}
+
+.composer .notify__send {
+  font-weight: 600;
+}
+
 .composer button[aria-pressed='true'] { background: var(--ink); color: var(--vellum); }
 .agent-rail button:disabled { color: var(--lead); border-color: var(--rule); cursor: default; }
 

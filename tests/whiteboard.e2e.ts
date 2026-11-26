@@ -101,9 +101,102 @@ async function geometry(page: Page, info: TestInfo, name: string) {
     expect(b.bottom).toBeLessThanOrEqual(page.viewportSize()!.height)
   }
 
+  await capture(page, info, name)
+}
+
+// A pairing QR is a credential. Mask wherever one could be drawn before photographing a page.
+async function capture(page: Page, info: TestInfo, name: string) {
   const file = info.outputPath(`${name}.png`)
-  await page.screenshot({ path: file })
+  await page.screenshot({ path: file, mask: [page.locator('.guide__code')] })
   await info.attach(name, { path: file, contentType: 'image/png' })
+}
+
+function boxes_overlap(a: Box, b: Box): boolean {
+  const slack = label_edge_tolerance_px
+  return (
+    a.x + a.width - slack > b.x &&
+    b.x + b.width - slack > a.x &&
+    a.y + a.height - slack > b.y &&
+    b.y + b.height - slack > a.y
+  )
+}
+
+// The composer in one state: every control named, whole, a full touch target, inside its frame
+// and the screen, clear of its neighbours and of the canvas above it.
+async function composer_geometry(page: Page, info: TestInfo, name: string) {
+  const field = page.getByRole('textbox', { name: 'Note to agent' })
+  const toggle = page.getByRole('button', { name: 'Interpret', exact: true })
+  const notify = page.getByRole('button', { name: 'Notify agent', exact: true })
+  await expect(field).toHaveAttribute('placeholder', 'Add a note (optional)')
+  const frame = await page.locator('.composer .notify').boundingBox()
+  const views = await page.locator('.board > .views').boundingBox()
+  const screen = page.viewportSize()!
+  expect(frame).not.toBeNull()
+  expect(views).not.toBeNull()
+  const slack = label_edge_tolerance_px
+  expect(frame!.y + slack).toBeGreaterThanOrEqual(views!.y + views!.height)
+  const placed: Box[] = []
+
+  for (const control of [field, toggle, notify]) {
+    await expect(control).toBeVisible()
+    const box = await control.boundingBox()
+    expect(box).not.toBeNull()
+    expect(box!.height).toBeGreaterThanOrEqual(44)
+    expect(box!.width).toBeGreaterThanOrEqual(44)
+    expect(box!.x + slack).toBeGreaterThanOrEqual(frame!.x)
+    expect(box!.y + slack).toBeGreaterThanOrEqual(frame!.y)
+    expect(box!.x + box!.width - slack).toBeLessThanOrEqual(frame!.x + frame!.width)
+    expect(box!.y + box!.height - slack).toBeLessThanOrEqual(frame!.y + frame!.height)
+    placed.push(box!)
+  }
+
+  expect(frame!.x).toBeGreaterThanOrEqual(0)
+  expect(frame!.x + frame!.width).toBeLessThanOrEqual(screen.width)
+  expect(frame!.y + frame!.height).toBeLessThanOrEqual(screen.height)
+
+  // A label that wraps or is cut off scrolls inside its button.
+  for (const button of [toggle, notify]) {
+    const clipped = await button.evaluate(
+      (el) => el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight,
+    )
+    expect(clipped).toBe(false)
+  }
+
+  // Everything else in the rail keeps clear of the frame: Replace sketchboard and the status.
+  const rest = page.locator('.composer > :not(.notify)')
+
+  for (const other of await rest.all()) {
+    const box = await other.boundingBox()
+
+    if (box) placed.push(box)
+  }
+
+  for (const [n, a] of placed.entries()) {
+    for (const b of placed.slice(n + 1)) expect(boxes_overlap(a, b)).toBe(false)
+  }
+
+  await capture(page, info, name)
+}
+
+// Empty, then holding a two-line note with Interpret chosen. Leaves the composer as it found it.
+async function composer_states(page: Page, info: TestInfo, name: string) {
+  const field = page.getByRole('textbox', { name: 'Note to agent' })
+  const toggle = page.getByRole('button', { name: 'Interpret', exact: true })
+  const note = 'Label the retry path\nKeep the arrow pointing at the question'
+  await expect(field).toHaveValue('')
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await composer_geometry(page, info, `composer-${name}-empty`)
+  const empty = await field.boundingBox()
+  await field.fill(note)
+  await toggle.tap()
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(field).toHaveValue(note)
+  await expect.poll(async () => (await field.boundingBox())!.height).toBeGreaterThan(empty!.height)
+  expect(await field.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(false)
+  await composer_geometry(page, info, `composer-${name}-populated`)
+  await toggle.tap()
+  await field.fill('')
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
 }
 
 test('paired notes and interpretation share one canvas, copied in one undo', async ({
@@ -478,9 +571,16 @@ async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
     await geometry(page, info, page === ipad ? 'ipad-portrait' : 'mac-stage')
   }
 
+  await composer_states(ipad, info, 'portrait')
   await ipad.setViewportSize({ width: 1180, height: 820 })
   await ipad.getByRole('tab', { name: 'Side by side' }).tap()
   await expect_layer_label(ipad, 'What about retries?', 'b')
   await geometry(ipad, info, 'ipad-landscape-side-by-side')
+  await composer_states(ipad, info, 'landscape')
+
+  // Narrower than any iPad: the actions must drop beneath the note rather than squeeze it.
+  await ipad.setViewportSize({ width: 390, height: 844 })
+  await composer_states(ipad, info, 'narrow')
+  await ipad.setViewportSize({ width: 1180, height: 820 })
   await keyboard_geometry(ipad, info)
 }
