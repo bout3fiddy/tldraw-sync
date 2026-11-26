@@ -4,11 +4,10 @@
 import { useCallback, useState } from 'react'
 import { AgentActions } from './agent_actions'
 import { DefaultSizeStyle, Tldraw, type Editor } from 'tldraw'
-import { asset_urls, use_board_store } from './board_store'
+import { asset_urls, components_quiet, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
 import { use_cleaned } from './cleaned_state'
 import { Notice } from './notice'
-import { components_sketch } from './sketch_canvas'
 import { ToolSide } from './tool_side'
 import { use_view, ViewPanes, ViewTabs } from './views'
 
@@ -21,6 +20,9 @@ export function DrawPage({ session }: { session: string }) {
 
   // Where the agent's two buttons go while the sketch is on screen: beside its tools.
   const [tools, tools_set] = useState<HTMLElement | null>(null)
+
+  // Where the one action on the Agent canvas goes while that canvas is on screen: its head.
+  const [head, head_set] = useState<HTMLElement | null>(null)
   const mount = useCallback((value: Editor) => {
     draw_mount(value)
     setEditor(value)
@@ -40,19 +42,26 @@ export function DrawPage({ session }: { session: string }) {
             store={board.store}
             hideUi
             assetUrls={asset_urls}
-            components={components_sketch}
+            components={components_quiet}
             onMount={mount}
           >
             <ToolSide editable={linked} onSlot={tools_set} />
           </Tldraw>
         }
-        cleaned={<CleanedPane cleaned={cleaned} />}
+        cleaned={
+          <div className="agent-pane">
+            <div ref={head_set} className="agent-pane__head" />
+            <div className="agent-pane__canvas">
+              <CleanedPane cleaned={cleaned} />
+            </div>
+          </div>
+        }
       />
       <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
         onChoose={view_choose} />
       <AgentActions editor={editor} session={session}
         cleaned={cleaned} view={view} online={board.connectionStatus !== 'offline'}
-        tools={tools} showSketch={() => view_choose('sketch')} />
+        tools={tools} head={head} showSketch={() => view_choose('sketch')} />
       {!linked && board.connectionStatus === 'offline' && (
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}

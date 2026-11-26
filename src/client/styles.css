@@ -1,7 +1,9 @@
 /*
   A drafting board. The ink is the loudest thing on the page. The chrome is drawn in that same
   ink, at a hairline, on the paper it floats over: no colour, no shadows, square-cut corners.
-  Filled ink always means chosen. Danger is said in words, never in red.
+  Filled ink always means chosen. Danger is said in words, never in red. The one exception is
+  the note to the agent: a soft slip of paper that lies over the board for a moment, and is
+  the only thing here to cast a shadow.
 
   Type is Atkinson Hyperlegible Next, bundled with the client, so it works with no internet
   connection. It tells 1, l and I apart, and 0 and O, which matters in sketch hashes.
@@ -20,7 +22,7 @@
   --wash: rgb(29 29 29 / 0.06);
   --ink-quiet: rgb(29 29 29 / 0.28);
   --paper-quiet: rgb(246 247 244 / 0.72);
-  /* Paper a shade under the vellum, for the note capsule. Lead reads 5.4:1 on it. */
+  /* Paper a shade under the vellum, for a control under the pointer. */
   --blotter: #ecede9;
   --type: 'Atkinson Hyperlegible Next Variable', 'Avenir Next', system-ui, sans-serif;
   /* Every floating instrument is one module tall or wide: a 44px control in a 3px frame. */
@@ -69,7 +71,7 @@ body {
 .rail,
 .dock,
 .inbox,
-.composer {
+.notepad {
   font-family: var(--type);
 }
 
@@ -324,9 +326,9 @@ button {
 
 /* The tool column, under the hand that is not holding the Pencil. Its rail runs the height of
    the pane and lets the pen through: only the strip and the agent's buttons take a touch.
-   The strip rests at the middle of the pane as it is with the note closed, and stays there
-   when the note opens and the pane shortens, so that no button moves from under a finger.
-   It gives way only when the pane is too short to hold it. */
+   The strip rests at the middle of the pane. Nothing the note does changes the pane, so no
+   button moves from under a finger. The strip gives way only when the pane is too short to
+   hold it. */
 
 .toolside {
   position: absolute;
@@ -345,11 +347,10 @@ button {
   flex: 1 1 0;
 }
 
-/* The board is as tall as the pane with the note closed, less the rule over the views. The
-   pane is shorter by what an open note takes; the space above the strip is longer by as
-   much, and is the first to give. Without container units the strip is simply centred. */
+/* The rail stops eight pixels short of the pane's bottom. The space above the strip starts
+   out longer by as much, so the strip is centred in the pane and not in the rail. */
 .toolside::before {
-  flex-basis: calc(100cqh - 1px - 100%);
+  flex-basis: 8px;
 }
 
 .toolside__set {
@@ -473,32 +474,13 @@ button {
 
 .agent-rail button:disabled { color: var(--lead); border-color: var(--rule); cursor: default; }
 
-/* The sketch as a sheet with a lower margin. The drawing surface, tldraw's own canvas, ends
-   above the bottom of its pane. The margin under it is paper a shade deeper, with no grid:
-   it takes no ink, and a hand resting there presses nothing of the canvas. tldraw anchors
-   its notice to the bottom of the editor, so the notice rests in the margin, clear of the
-   drawing surface: four pixels or the home-indicator inset from the bottom, as tldraw sets
-   it, then the taller of its two forms, 52px, then eight pixels of air. Nothing here styles
-   or moves the notice itself. */
+/* The sketch is tldraw's own canvas, as it comes, and it fills its pane: the pen draws to the
+   bottom of the screen. tldraw keeps its notice in the corner of that canvas. Nothing here
+   styles, moves, covers or handles the notice, and nothing of this app's is laid under it. */
 
 .board--draw {
-  --sheet-margin: calc(max(4px, env(safe-area-inset-bottom)) + 60px);
   /* The board is the measure for its instruments: its content box is the views' full size. */
   container: board / size;
-}
-
-.sheet {
-  position: absolute;
-  inset: 0 0 var(--sheet-margin) 0;
-}
-
-.sheet__margin {
-  position: absolute;
-  inset: auto 0 0 0;
-  box-sizing: border-box;
-  height: var(--sheet-margin);
-  border-top: 1px solid var(--rule);
-  background: var(--blotter);
 }
 
 /* The agent's two instruments on the iPad: one opens the note, one lists what became of each
@@ -525,9 +507,9 @@ button {
 }
 
 /* A board tall enough carries them at the head of the column, over the strip. Tall enough
-   means that the tallest note, 148px of band, can push the 499px strip up from the middle
-   and still leave the 98px of the two buttons, the gap and eight pixels of air above it.
-   The board's height does not change when the note opens, so neither does the placing. */
+   means that the 499px strip at the middle of the pane leaves the 98px of the two buttons,
+   the gap and air to spare above it. The board's height does not change when the note
+   opens, so neither does the placing. */
 @container board (min-height: 770px) {
   .toolside__slot {
     top: auto;
@@ -754,54 +736,80 @@ button {
   white-space: nowrap;
 }
 
-/* The note. Closed, it takes no room. Open, it is a band under the views, so it never lies
-   over the drawing, the Agent canvas, or the notice tldraw keeps in the corner of a canvas.
-   The keyboard lifts the band and leaves every canvas the size it was. */
+/* The note. Closed, it takes no room at all. Open, it is a modal dialog of the browser's
+   own, a slip of paper over the board: the page behind it takes no press, so nothing of this
+   app's has to be laid over a canvas, or over the notice tldraw keeps in a canvas's corner,
+   to stop a stray mark. The board stays in plain sight behind it, undimmed.
 
-.composer {
+   The slip is in the middle of the screen's width and a little above the middle of what can
+   be seen of its height, which the keyboard and a rotation change. No canvas is resized.
+
+   It is centred the way a browser centres any dialog: a box to rest in, a height of its own
+   and margins that share what is left. The box is as wide as what can be seen and 84% as
+   tall, so the slip's middle is 42% of the way down and stays there as the note grows. Laid
+   out and not shifted, it lands on whole pixels and its words stay sharp. */
+
+.notepad {
   --note-line: 22px;
   --note-pad: 11px;
-  position: relative;
-  z-index: 440;
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 8px 12px;
-  /* As deep as the action rail it replaces, so the views above it keep their old height. */
-  padding: 5px max(var(--edge), env(safe-area-inset-right))
-    max(5px, env(safe-area-inset-bottom)) max(var(--edge), env(safe-area-inset-left));
-  border-top: 1px solid var(--rule);
-  background: var(--vellum);
+  position: fixed;
+  top: var(--visible-top, 0px);
+  right: calc(100% - var(--visible-left, 0px) - var(--visible-width, 100%));
+  bottom: calc(100% - var(--visible-top, 0px) - var(--visible-height, 100%) * 0.84);
+  left: var(--visible-left, 0px);
+  box-sizing: border-box;
+  width: min(34rem, calc(var(--visible-width, 100%) - 2 * var(--edge)));
+  max-width: none;
+  height: fit-content;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--control) / 2 + var(--frame));
+  background: transparent;
+  color: var(--ink);
+  overflow: visible;
   touch-action: manipulation;
-  transform: translateY(calc(0px - var(--keyboard, 0px)));
 }
 
-.composer[hidden],
-.composer__capsule[hidden] {
-  display: none;
+.notepad[open] {
+  animation: note-arrive 140ms ease-out;
 }
 
-/* The capsule is the one soft shape on the board: paper a shade deeper than the vellum, with
-   no ink edge. Its two controls keep their size and stay on its bottom line while the note
-   grows upward, from one line to five. */
-.composer__capsule {
+/* A press beside the note is the note's to hear, whole: the browser makes no gesture of it. */
+.notepad::backdrop {
+  background: transparent;
+  touch-action: none;
+}
+
+/* The paper itself holds the focus until the field is tapped. Shown to a keyboard only. */
+.notepad:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* The slip is the one soft shape on the board: the white of a clean sheet, a ruled edge, and
+   a shadow to say that it lies over the drawing and is not part of it. Its two controls keep
+   their size and stay on its bottom line while the note grows, from one line to five. */
+.composer {
+  --lift: 0 1px 2px rgb(29 29 29 / 0.06), 0 16px 40px -12px rgb(29 29 29 / 0.24);
   display: flex;
-  flex: 0 1 34rem;
   align-items: flex-end;
   box-sizing: border-box;
   min-width: 0;
-  max-width: 100%;
   padding: var(--frame) var(--frame) var(--frame) 18px;
-  border-radius: calc(var(--control) / 2 + var(--frame));
-  background: var(--blotter);
-  box-shadow: inset 0 0 0 1px var(--rule);
+  border-radius: inherit;
+  background: var(--sheet);
+  box-shadow:
+    inset 0 0 0 1px var(--rule),
+    var(--lift);
 }
 
-/* Being typed in, the capsule's edge firms up from a rule to pencil lead. */
-.composer__capsule:focus-within {
-  box-shadow: inset 0 0 0 1px var(--lead);
+/* Being typed in, the slip's edge firms up from a rule to pencil lead. */
+.composer:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--lead),
+    var(--lift);
 }
 
 .composer__field {
@@ -928,17 +936,51 @@ button {
   background: var(--ink-quiet);
 }
 
-/* A send that did not go through: the capsule shakes its head once. The reason is under the
+/* A send that did not go through: the slip shakes its head once. The reason is under the
    bell. Two names for one motion, so that a second refusal plays it again. */
-.composer__capsule[data-nudge='a'] {
+.composer[data-nudge='a'] {
   animation: note-refused-a 260ms ease-out;
 }
 
-.composer__capsule[data-nudge='b'] {
+.composer[data-nudge='b'] {
   animation: note-refused-b 260ms ease-out;
 }
 
-.composer__replace {
+/* The Agent canvas on the iPad, under a head of its own: a strip of the same sheet, ruled
+   off like a drawing's title block. The head holds the one action on that canvas, copying
+   it into the sketch. Nothing of this app's is laid over the canvas itself: a diagram is
+   fitted to within 24px of its canvas's edges, so anything floated there could cover it.
+   The head takes its room from the Agent canvas alone. The sketch keeps its size, and
+   nothing lies under the views. */
+
+.agent-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sheet);
+}
+
+/* One module deep, whether or not its action has arrived, so the canvas never jumps. */
+.agent-pane__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  min-height: var(--module);
+  padding: var(--frame) calc(env(safe-area-inset-right) + var(--edge)) var(--frame) var(--edge);
+  border-bottom: 1px solid var(--rule);
+  touch-action: manipulation;
+}
+
+.agent-pane__canvas {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.cleaned__replace {
   min-height: var(--control);
   padding: 0 12px;
   border: 1px solid var(--ink);
@@ -947,7 +989,7 @@ button {
   cursor: pointer;
 }
 
-.composer__replace:disabled {
+.cleaned__replace:disabled {
   border-color: var(--rule);
   color: var(--lead);
   cursor: default;
@@ -967,13 +1009,9 @@ button {
 
 /* Stacked views. The sketch is the upper half, too short for a column: the two buttons stay
    beside the head of the strip. On a linked board the strip lies along the bottom of the
-   sketch, in the sheet's margin, and the two buttons lie with it: at its left end where the
-   pane is wide enough for both, over its left end where it is not. */
+   sketch, and the two buttons lie with it: at its left end where the pane is wide enough
+   for both, over its left end where it is not. */
 @media (max-aspect-ratio: 1/1) {
-  .views[data-view='side'] .toolside::before {
-    flex-basis: calc(50cqh - 1px - 100%);
-  }
-
   .views[data-view='side'] .toolside__slot {
     top: 0;
     bottom: auto;
@@ -1380,8 +1418,8 @@ button {
 
   .rail-toggle:hover,
   .rail__new:not(:disabled):hover,
-  .composer__replace:not(:disabled):hover {
-    background: #ecede9;
+  .cleaned__replace:not(:disabled):hover {
+    background: var(--blotter);
   }
 
   .rail__item[data-active='true'] .rail__rename:hover {
@@ -1401,6 +1439,12 @@ button {
 }
 
 @keyframes guide-arrive {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes note-arrive {
   from {
     opacity: 0;
   }
@@ -1429,7 +1473,8 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .guide--card,
   .shell[data-rail='open'] .rail,
-  .composer__capsule[data-nudge] {
+  .notepad[open],
+  .composer[data-nudge] {
     animation: none;
   }
 }
@@ -1445,7 +1490,7 @@ button {
     outline-offset: -2px;
   }
 
-  .composer__capsule,
+  .composer,
   .composer__send .composer__plate {
     outline: 1px solid CanvasText;
   }
