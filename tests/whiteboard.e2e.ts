@@ -2,6 +2,11 @@
 // a note, the agent's replies arrive as rows under the bell, the Agent canvas is published
 // and shown on both screens, and the person copies it into the sketch and takes that back.
 //
+// The note is a modal dialog over the board. While it is open nothing behind it can be
+// pressed, so the journey puts it away before it draws, reads the bell's list, changes view
+// or replaces the sketch, and asks for it again to write or send. The draft, the Interpret
+// switch and an unconfirmed request have to survive each of those closings.
+//
 // Run: bun run build && npx playwright test tests/whiteboard.e2e.ts
 
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
@@ -9,68 +14,386 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   bell,
+  bell_behind,
   board_linked,
   chat,
+  composer_close,
   composer_open,
   draw,
+  expect_dock,
   expect_marks_clear,
-  inbox,
+  inbox_behind,
   inbox_open,
   interpret,
   ipad_landscape,
+  layout,
+  mark_placed,
+  marks,
   note,
   notify,
   row_with,
   rows,
   rows_about,
+  soon,
   step,
   step_long_ms,
   type Cli,
+  type DockSide,
 } from './whiteboard_board'
 
 // Disposable pairing material belongs neither in traces nor in screenshots. Capture the agent
 // surface only after the paired iPad has removed the QR fragment from its history.
 test.use({ trace: 'off' })
 
-// Every control is at least a 44px target and on the screen. On the iPad the note's controls
-// and Replace sit in the band under the views, never over the Agent canvas.
-async function geometry(page: Page, info: TestInfo, name: string, ipad: boolean) {
-  const band = ipad ? '.composer button' : '.agent-rail button'
-  const measure = (selector: string) =>
-    page.locator(selector).evaluateAll((buttons) =>
-      buttons.map((button) => {
-        const r = button.getBoundingClientRect()
-        return {
-          width: r.width,
-          height: r.height,
-          x: r.x,
-          right: r.right,
-          top: r.top,
-          bottom: r.bottom,
-        }
-      }),
-    )
-  const below = await measure(band)
-  const beside = ipad ? await measure('.dock button') : []
-  const pane = await page.locator('.views__pane--cleaned').boundingBox()
-  expect(pane).not.toBeNull()
-  expect(below.length).toBeGreaterThanOrEqual(ipad ? 3 : 1)
-  expect(beside).toHaveLength(ipad ? 2 : 0)
+type Target = {
+  width: number
+  height: number
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
 
-  for (const b of [...below, ...beside]) {
-    expect(b.width).toBeGreaterThanOrEqual(44)
-    expect(b.height).toBeGreaterThanOrEqual(44)
-    expect(b.x).toBeGreaterThanOrEqual(0)
-    expect(b.right).toBeLessThanOrEqual(page.viewportSize()!.width)
-    expect(b.bottom).toBeLessThanOrEqual(page.viewportSize()!.height)
+// Where every control that `selector` finds is on the screen, in CSS pixels.
+const targets = (page: Page, selector: string): Promise<Target[]> =>
+  page.locator(selector).evaluateAll((controls) =>
+    controls.map((control) => {
+      const { width, height, left, right, top, bottom } = control.getBoundingClientRect()
+      return { width, height, left, right, top, bottom }
+    }),
+  )
+
+// Everything wrong with a set of controls, in words: each is to be a target of at least 44px
+// and wholly on the screen. Pure, so that it can be shown to catch a fault without a browser.
+function target_problems(list: Target[], screen: { width: number; height: number }): string[] {
+  const problems: string[] = []
+
+  for (const [index, target] of list.entries()) {
+    if (target.width < 44 || target.height < 44) problems.push(`control ${index} is under 44px`)
+
+    const inside =
+      target.left >= 0 &&
+      target.top >= 0 &&
+      target.right <= screen.width &&
+      target.bottom <= screen.height
+
+    if (!inside) problems.push(`control ${index} is off the screen`)
   }
 
-  for (const b of below) expect(b.top + 1).toBeGreaterThanOrEqual(pane!.y + pane!.height)
+  return problems
+}
 
+type Shown = { x: number; y: number; width: number; height: number }
+
+// What the iPad's Agent canvas is made of, with the note shut. Replace is the one control at
+// the head of that canvas; the canvas begins under the head and runs to the pane's bottom,
+// which is the bottom of the screen. `footers_count` is every band or rail under the views.
+type AgentSeen = {
+  screen: { width: number; height: number }
+  footers_count: number
+  dock: Target[]
+  replace: Target[]
+  replace_pressed: boolean
+  pane: Shown | null
+  head: Shown | null
+  canvas: Shown | null
+}
+
+const edge_px = 0.5
+
+// Everything wrong with the iPad's Agent canvas, in words. The faults are the ones the old
+// band under the views would be: a footer, a canvas that stops short of the screen's bottom,
+// and Replace anywhere but the head. Pure, so that it can be shown to catch each of them.
+function agent_problems(seen: AgentSeen): string[] {
+  const { pane, head, canvas, screen } = seen
+  const problems = target_problems([...seen.dock, ...seen.replace], screen)
+
+  if (seen.footers_count > 0) problems.push('a band lies under the views')
+
+  if (seen.dock.length !== 2) problems.push(`${seen.dock.length} agent buttons, not 2`)
+
+  if (seen.replace.length !== 1) problems.push(`${seen.replace.length} Replace buttons, not 1`)
+
+  if (!pane || !head || !canvas) return [...problems, 'the Agent canvas or its head is missing']
+
+  if (Math.abs(pane.y + pane.height - screen.height) > edge_px) {
+    problems.push('the Agent canvas pane stops short of the bottom of the screen')
+  }
+
+  if (Math.abs(canvas.y + canvas.height - (pane.y + pane.height)) > edge_px) {
+    problems.push('something lies under the Agent canvas')
+  }
+
+  if (canvas.y < head.y + head.height - edge_px) problems.push('the head lies over the canvas')
+
+  for (const button of seen.replace) {
+    const head_bottom = head.y + head.height
+    const in_head = button.top >= head.y - edge_px && button.bottom <= head_bottom + edge_px
+    const over_canvas =
+      button.bottom > canvas.y + edge_px && button.top < canvas.y + canvas.height - edge_px
+
+    if (!in_head) problems.push('Replace is not in the head')
+
+    if (over_canvas) problems.push('Replace lies over the Agent canvas')
+  }
+
+  if (!seen.replace_pressed) problems.push('a press on Replace lands on something else')
+
+  return problems
+}
+
+async function agent_seen(ipad: Page): Promise<AgentSeen> {
+  const replace = ipad.locator('.cleaned__replace')
+  const pressed = replace.evaluateAll((buttons) =>
+    buttons.every((button) => {
+      const at = button.getBoundingClientRect()
+      const hit = document.elementFromPoint((at.left + at.right) / 2, (at.top + at.bottom) / 2)
+      return hit !== null && button.contains(hit)
+    }),
+  )
+  return {
+    screen: ipad.viewportSize()!,
+    footers_count: await ipad.locator('footer, .agent-rail').count(),
+    dock: await targets(ipad, '.dock button'),
+    replace: await targets(ipad, '.cleaned__replace'),
+    replace_pressed: await pressed,
+    pane: await ipad.locator('.views__pane--cleaned').boundingBox(),
+    head: await ipad.locator('.agent-pane__head').boundingBox(),
+    canvas: await ipad.locator('.agent-pane__canvas').boundingBox(),
+  }
+}
+
+async function capture(page: Page, info: TestInfo, name: string) {
   const file = info.outputPath(`${name}.png`)
   await page.screenshot({ path: file })
   await info.attach(name, { path: file, contentType: 'image/png' })
 }
+
+// What the Mac stage is made of. It only presents: its one action, pairing an iPad, is an
+// instrument in the band above the views, and the views run to the bottom of the screen.
+type StageSeen = {
+  screen: { width: number; height: number }
+  footers_count: number
+  views: Shown | null
+  pair: Target[]
+  pair_pressed: boolean
+}
+
+// Everything wrong with the stage, in words. The faults are the ones the old footer was: a
+// band under the views, views that stop short of the bottom, and Pair iPad down in it. Pure,
+// so that it can be shown to catch each of them.
+function stage_problems(seen: StageSeen): string[] {
+  const { views, screen } = seen
+  const problems = target_problems(seen.pair, screen)
+
+  if (seen.footers_count > 0) problems.push('a band lies under the views')
+
+  if (seen.pair.length !== 1) problems.push(`${seen.pair.length} Pair iPad buttons, not 1`)
+
+  if (views === null) return [...problems, 'the views are missing']
+
+  if (Math.abs(views.y + views.height - screen.height) > edge_px) {
+    problems.push('the views stop short of the bottom of the screen')
+  }
+
+  for (const button of seen.pair) {
+    if (button.bottom > views.y + edge_px) problems.push('Pair iPad is not in the band above')
+  }
+
+  if (!seen.pair_pressed) problems.push('a press on Pair iPad lands on something else')
+
+  return problems
+}
+
+async function stage_seen(stage: Page): Promise<StageSeen> {
+  const pair = stage.locator('.pair__button')
+  const pressed = pair.evaluateAll((buttons) =>
+    buttons.every((button) => {
+      const at = button.getBoundingClientRect()
+      const hit = document.elementFromPoint((at.left + at.right) / 2, (at.top + at.bottom) / 2)
+      return hit !== null && button.contains(hit)
+    }),
+  )
+  return {
+    screen: stage.viewportSize()!,
+    footers_count: await stage.locator('footer, .agent-rail').count(),
+    views: await stage.locator('.views').boundingBox(),
+    pair: await targets(stage, '.pair__button'),
+    pair_pressed: await pressed,
+  }
+}
+
+// The stage has no footer: Pair iPad is in the band above the views, and pressing it shows
+// the QR on a sheet over the board without moving or shrinking anything. Escape puts it away.
+async function geometry_stage(stage: Page, info: TestInfo, name: string) {
+  await expect.poll(async () => stage_problems(await stage_seen(stage))).toEqual([])
+  const pair = stage.getByRole('button', { name: 'Pair iPad' })
+  const sheet = stage.getByRole('complementary', { name: 'Pair iPad' })
+  const views = await stage.locator('.views').boundingBox()
+  await expect(pair).toHaveAttribute('aria-expanded', 'false')
+  await expect(sheet).toHaveCount(0)
+  await capture(stage, info, name)
+
+  await pair.click()
+  await expect(pair).toHaveAttribute('aria-expanded', 'true')
+  await expect(sheet.locator('.guide__code')).toBeVisible()
+  await expect(sheet).toContainText('Scan for sketchboard controls')
+  const shown = await targets(stage, '.pair__sheet')
+  expect(target_problems(shown, stage.viewportSize()!)).toEqual([])
+  expect(await stage.locator('.views').boundingBox()).toEqual(views)
+  await capture(stage, info, `${name}-pair`)
+
+  await stage.keyboard.press('Escape')
+  await expect(sheet).toHaveCount(0)
+  await expect(pair).toHaveAttribute('aria-expanded', 'false')
+}
+
+// The iPad has no rail and no band: the views run to the bottom of the screen, Replace has
+// the head of the Agent canvas, and the agent's two buttons are on the side asked. tldraw's
+// notice is whole and uncovered in each of the `notices_count` canvases on screen.
+//
+// Asked for, the note is a modal dialog laid over that board: two 44px targets on a slip
+// wholly on the screen, with no press reaching the buttons behind it. Nothing behind it
+// moves or shrinks, and it covers no notice and moves none. It is put away again after.
+async function geometry_ipad(
+  ipad: Page,
+  info: TestInfo,
+  name: string,
+  side: DockSide,
+  notices_count: number,
+) {
+  const screen = ipad.viewportSize()!
+  await composer_close(ipad)
+  await expect_dock(ipad, side)
+  await expect.poll(async () => agent_problems(await agent_seen(ipad))).toEqual([])
+  const resting = await expect_marks_clear(ipad, notices_count)
+  const shut = await layout(ipad)
+  const shut_canvas = (await agent_seen(ipad)).canvas
+  expect(shut.band).toBeNull()
+  expect(shut.reach).toEqual({ chat: true, bell: true })
+
+  await composer_open(ipad)
+  const controls = await targets(ipad, '.composer button')
+  expect(controls).toHaveLength(2)
+  expect(target_problems(controls, screen)).toEqual([])
+  const open = await layout(ipad)
+  expect(open.band).not.toBeNull()
+  expect(target_problems([open.band!], screen)).toEqual([])
+  expect(open.reach).toEqual({ chat: false, bell: false })
+  expect(open.views).toEqual(shut.views)
+  expect(open.dock).toEqual(shut.dock)
+  expect((await agent_seen(ipad)).canvas).toEqual(shut_canvas)
+  expect((await marks(ipad)).map(mark_placed)).toEqual(resting.map(mark_placed))
+  await capture(ipad, info, name)
+  await composer_close(ipad)
+}
+
+// The checks above are the safeguard against the band coming back. Each fault below is one
+// they must name, and the sound layout, read off the retained design, is one they must pass.
+test('the Agent canvas check passes the modal layout and names the old band', () => {
+  const screen = { width: 820, height: 1180 }
+  const target = (left: number, top: number, width: number, height: number): Target => ({
+    width,
+    height,
+    left,
+    right: left + width,
+    top,
+    bottom: top + height,
+  })
+  const sound: AgentSeen = {
+    screen,
+    footers_count: 0,
+    dock: [target(80, 20, 44, 44), target(126, 20, 44, 44)],
+    replace: [target(644, 88, 160, 44)],
+    replace_pressed: true,
+    pane: { x: 0, y: 85, width: 820, height: 1095 },
+    head: { x: 0, y: 85, width: 820, height: 52 },
+    canvas: { x: 0, y: 137, width: 820, height: 1043 },
+  }
+  expect(agent_problems(sound)).toEqual([])
+
+  // The band this design replaced: a footer under the views, holding Replace, with the pane
+  // and its canvas ending above it.
+  const banded: AgentSeen = {
+    ...sound,
+    footers_count: 1,
+    replace: [target(644, 1130, 160, 44)],
+    pane: { x: 0, y: 85, width: 820, height: 1040 },
+    canvas: { x: 0, y: 137, width: 820, height: 988 },
+  }
+  expect(agent_problems(banded)).toEqual([
+    'a band lies under the views',
+    'the Agent canvas pane stops short of the bottom of the screen',
+    'Replace is not in the head',
+  ])
+  expect(agent_problems({ ...sound, canvas: { x: 0, y: 137, width: 820, height: 988 } })).toEqual([
+    'something lies under the Agent canvas',
+  ])
+  expect(agent_problems({ ...sound, canvas: { x: 0, y: 85, width: 820, height: 1095 } })).toEqual([
+    'the head lies over the canvas',
+    'Replace lies over the Agent canvas',
+  ])
+  expect(agent_problems({ ...sound, replace: [target(644, 150, 160, 44)] })).toEqual([
+    'Replace is not in the head',
+    'Replace lies over the Agent canvas',
+  ])
+  expect(agent_problems({ ...sound, replace: [target(644, 90, 160, 40)] })).toEqual([
+    'control 2 is under 44px',
+  ])
+  expect(agent_problems({ ...sound, dock: [target(800, 20, 44, 44)] })).toEqual([
+    'control 0 is off the screen',
+    '1 agent buttons, not 2',
+  ])
+  expect(agent_problems({ ...sound, replace: [] })).toEqual(['0 Replace buttons, not 1'])
+  expect(agent_problems({ ...sound, replace_pressed: false })).toEqual([
+    'a press on Replace lands on something else',
+  ])
+  expect(agent_problems({ ...sound, head: null })).toEqual([
+    'the Agent canvas or its head is missing',
+  ])
+})
+
+// The same for the stage. The footer it had, holding Pair iPad, is the fault each check names.
+test('the stage check passes the band layout and names the old footer', () => {
+  const screen = { width: 1440, height: 900 }
+  const target = (left: number, top: number, width: number, height: number): Target => ({
+    width,
+    height,
+    left,
+    right: left + width,
+    top,
+    bottom: top + height,
+  })
+  const sound: StageSeen = {
+    screen,
+    footers_count: 0,
+    views: { x: 0, y: 84, width: 1440, height: 816 },
+    pair: [target(80, 20, 132, 44)],
+    pair_pressed: true,
+  }
+  expect(stage_problems(sound)).toEqual([])
+
+  // The base this replaced: a footer under the views, holding Pair iPad, the views above it.
+  const footed: StageSeen = {
+    ...sound,
+    footers_count: 1,
+    views: { x: 0, y: 84, width: 1440, height: 761 },
+    pair: [target(16, 850, 95, 44)],
+  }
+  expect(stage_problems(footed)).toEqual([
+    'a band lies under the views',
+    'the views stop short of the bottom of the screen',
+    'Pair iPad is not in the band above',
+  ])
+  expect(stage_problems({ ...sound, pair: [] })).toEqual(['0 Pair iPad buttons, not 1'])
+  expect(stage_problems({ ...sound, pair_pressed: false })).toEqual([
+    'a press on Pair iPad lands on something else',
+  ])
+  expect(stage_problems({ ...sound, pair: [target(80, 20, 132, 40)] })).toEqual([
+    'control 0 is under 44px',
+  ])
+  expect(stage_problems({ ...sound, views: null })).toEqual(['the views are missing'])
+})
 
 test('paired notes and interpretation share one canvas, copied in one undo', async ({
   browser,
@@ -165,27 +488,43 @@ async function delivery(ipad: Page, bound: Cli, hash: string) {
   )
   await notify(ipad).tap()
 
-  // The refusal is news on the bell. The list stays closed, and the band says nothing.
-  await expect(bell(ipad)).toHaveAccessibleName('Notifications, 1 unread')
-  await expect(inbox(ipad)).toBeHidden()
+  // The refusal is news on the bell, which is behind the open note: what it says is read off
+  // the page. No list opens and the paper says nothing. A screen reader, which cannot hear
+  // the page behind an open note, is told on the note itself.
+  await expect(bell_behind(ipad)).toHaveAttribute('aria-label', 'Notifications, 1 unread')
+  await expect(inbox_behind(ipad)).toHaveCount(0)
   await expect(ipad.locator('.composer')).not.toContainText('Ink is syncing')
+  await expect(ipad.locator('.notepad [role="status"]')).toContainText('Ink is syncing')
+
+  // Reading the list means putting the note away: the bell can be pressed and named again.
   const refused = await row_with(ipad, 'Ink is syncing. Tap again to send.')
   await expect(refused).toHaveAttribute('data-state', 'refused')
   await expect(bell(ipad)).toHaveAccessibleName('Notifications')
   expect(bound('poll').events).toEqual([])
+
+  // Asking for the note again shuts the list. A second tap sends what the first could not.
+  await composer_open(ipad)
+
+  // The slip shook its head at the refusal, and not again as it is shown once more: an
+  // opening note rests still at its centre, where `keyboard_geometry` measures it.
+  const motions = await ipad.locator('.composer').evaluate((e) => e.getAnimations().length)
+  expect(motions).toBe(0)
+  await expect(inbox_behind(ipad)).toHaveCount(0)
   await notify(ipad).tap()
   await inbox_open(ipad)
   await expect(rows(ipad)).toHaveCount(2)
   await expect(rows_about(ipad, 'sketch_notify', 'queued')).toHaveCount(1)
+  await composer_open(ipad)
   const toggle = interpret(ipad)
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
   await toggle.tap()
   await expect(toggle).toHaveAttribute('aria-checked', 'true')
   const text = '  筆 📝\nr and d?  '
   await composer_recovery(ipad, text, bound)
-  await expect(note(ipad)).toHaveValue('')
 
-  // Interpret was for that one send.
+  // The confirmed send cleared the note. Interpret was for that one send.
+  await composer_open(ipad)
+  await expect(note(ipad)).toHaveValue('')
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
   await expect(toggle).toBeEnabled()
   const poll = bound('poll')
@@ -214,12 +553,16 @@ async function delivery(ipad: Page, bound: Cli, hash: string) {
   await expect(rows(ipad)).toHaveCount(3)
   expect(bound('poll').events).toEqual([])
   await empty_interpret_and_edited_notify(ipad, bound)
+
+  // The board is left as a person leaves it: the note put away, so the views can be pressed.
+  await composer_close(ipad)
 }
 
 async function empty_interpret_and_edited_notify(ipad: Page, bound: Cli) {
   const field = note(ipad)
   const send = notify(ipad)
   const toggle = interpret(ipad)
+  await composer_open(ipad)
   await toggle.tap()
   await expect(toggle).toHaveAttribute('aria-checked', 'true')
   await send.tap()
@@ -282,6 +625,9 @@ async function composer_recovery(ipad: Page, text: string, bound: Cli) {
   const upgrade = await row_with(ipad, /Upgrade and restart/)
   await expect(upgrade).toHaveAttribute('data-state', 'unconfirmed')
   expect(bound('poll').events).toHaveLength(1)
+
+  // Put away to read the list and asked for again, the note has kept its words.
+  await composer_open(ipad)
   await expect(field).toHaveValue(text)
   await ipad.route(
     '**/api/whiteboard/event/v2?*',
@@ -326,7 +672,12 @@ async function composer_recovery(ipad: Page, text: string, bound: Cli) {
   await notify(ipad).tap()
   const inexact = await row_with(ipad, /No exact confirmation/)
   await expect(inexact).toHaveAttribute('data-state', 'unconfirmed')
+
+  // Still unconfirmed after the note was put away: the words and the locked switch are kept.
+  await composer_open(ipad)
   await expect(field).toHaveValue(text)
+  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'true')
+  await expect(interpret(ipad)).toBeDisabled()
   await notify(ipad).tap()
   await expect(field).toHaveValue('')
   expect(bound('poll').events).toEqual(before)
@@ -394,12 +745,16 @@ async function expect_layer_label(page: Page, text: string, id = 'a') {
 }
 
 // Chromium on a desktop runner has no software keyboard. Drive its visualViewport contract while
-// keeping the layout viewport fixed, and check that only the note's band follows the inset.
+// keeping the layout viewport fixed, and check that only the note follows the inset: the slip
+// moves up into what can still be seen, and no canvas is resized or zoomed.
 async function keyboard_geometry(page: Page, info: TestInfo) {
   const field = note(page)
+  const paper = page.locator('.composer')
   const sketch = page.locator('.views__pane--sketch')
+  await composer_open(page)
   await field.fill('One\nTwo\nThree\nFour\nFive\nSix')
   const before = await sketch.boundingBox()
+  const rested = await paper.boundingBox()
   const zoom = () =>
     sketch
       .locator('.tl-container')
@@ -413,7 +768,13 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
     visualViewport!.dispatchEvent(new Event('resize'))
   })
   const rail = await field.boundingBox()
+  const lifted = await paper.boundingBox()
   expect(rail!.y + rail!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 245 + 0.5)
+
+  // The whole slip is in what the keyboard leaves in sight, and it moved up to get there.
+  expect(lifted!.y).toBeGreaterThanOrEqual(0)
+  expect(lifted!.y + lifted!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 245)
+  expect(lifted!.y).toBeLessThan(rested!.y)
 
   // Five lines of 22px and the field's own padding; the sixth line scrolls.
   expect(rail!.height).toBeLessThanOrEqual(132.5)
@@ -425,9 +786,15 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
     Reflect.deleteProperty(visualViewport!, 'height')
     visualViewport!.dispatchEvent(new Event('resize'))
   })
+
+  // With the keyboard gone the slip is back where it rested.
+  await expect.poll(() => paper.boundingBox()).toEqual(rested)
   await field.fill('')
+  await composer_close(page)
 }
 
+// Every tab and button here is pressed with the note shut: `delivery` leaves it put away,
+// and each geometry check puts it away again after looking at it open.
 async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
   for (const page of [ipad, stage]) {
     await page.getByRole('tab', { name: 'Agent canvas' }).click()
@@ -435,20 +802,24 @@ async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
     await expect(page.getByRole('group', { name: 'Agent layer' })).toHaveCount(0)
     await expect_layer_label(page, 'What about retries?', 'b')
 
-    // The note and its bell are the iPad's. The stage only presents.
-    await expect(note(page)).toHaveCount(page === ipad ? 1 : 0)
+    // The note, its button and the bell are the iPad's. The stage only presents. The note
+    // is hidden until asked for, so the dialog is counted on the page, not found by role.
+    await expect(page.locator('dialog.notepad')).toHaveCount(page === ipad ? 1 : 0)
+    await expect(note(page)).toHaveCount(0)
     await expect(chat(page)).toHaveCount(page === ipad ? 1 : 0)
     await expect(bell(page)).toHaveCount(page === ipad ? 1 : 0)
-    await geometry(page, info, page === ipad ? 'ipad-portrait' : 'mac-stage', page === ipad)
   }
 
-  // With the note open under the Agent canvas, tldraw's notice in that canvas is untouched;
-  // with both canvases on screen, so is each one's.
-  await expect_marks_clear(ipad, 1)
-  await ipad.setViewportSize(ipad_landscape)
+  // With only the Agent canvas on screen the two buttons wait in the band above the views,
+  // and tldraw's notice in that canvas is untouched, with the note shut and with it open.
+  await geometry_ipad(ipad, info, 'ipad-portrait', 'band', 1)
+  await geometry_stage(stage, info, 'mac-stage')
+
+  // Turned on its side with both canvases on screen: each has its own notice, the sketch is
+  // too short for a column of buttons over the strip, and Replace keeps the canvas's head.
+  await soon(ipad.setViewportSize(ipad_landscape))
   await ipad.getByRole('tab', { name: 'Side by side' }).tap()
   await expect_layer_label(ipad, 'What about retries?', 'b')
-  await expect_marks_clear(ipad, 2)
-  await geometry(ipad, info, 'ipad-landscape-side-by-side', true)
+  await geometry_ipad(ipad, info, 'ipad-landscape-side-by-side', 'right', 2)
   await keyboard_geometry(ipad, info)
 }

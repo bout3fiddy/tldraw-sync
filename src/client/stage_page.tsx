@@ -1,13 +1,14 @@
 // The Mac presentation view: the whole drawing, fitted to the window, and nothing else.
 // Until an iPad is connected it also shows how to connect one.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type KeyboardEvent } from 'react'
 import { Tldraw, useEditor, useValue, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
 import { path_pairing } from '../shared/constants'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
 import { use_cleaned } from './cleaned_state'
+import { icon_pair } from './icons'
 import { Notice } from './notice'
 import { stage_mount } from './stage_mount'
 import { use_view, ViewPanes, ViewTabs } from './views'
@@ -20,7 +21,6 @@ export function StagePage({ session }: { session: string }) {
   const [view, view_choose] = use_view('stage')
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
-  const [pair, showPair] = useState(false)
   const pairing = use_pairing(session)
   const mount = useCallback((editor: Editor) => stage_mount(editor, session), [session])
   if (board.status === 'loading') return <Notice text="Opening the board" />
@@ -49,11 +49,7 @@ export function StagePage({ session }: { session: string }) {
       />
       <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
         onChoose={view_choose} />
-      {linked && <footer className="agent-rail">
-        <button aria-expanded={pair} onClick={() => showPair(!pair)}>Pair iPad</button>
-        {pair && pairing && <aside className="pair-inset"><QrCode modules={pairing.modules} />
-          <p>Scan for sketchboard controls</p></aside>}
-      </footer>}
+      {linked && <StagePair pairing={pairing} />}
       {board.connectionStatus === 'offline' && (
         <Notice
           floating
@@ -61,6 +57,49 @@ export function StagePage({ session }: { session: string }) {
         />
       )}
     </main>
+  )
+}
+
+const pair_sheet_id = 'stage-pair'
+
+// Pairing an iPad with a linked board: one instrument in the band above the views, beside the
+// list of boards. Pressed, it shows the stage's QR on a sheet under it; pressed again, or
+// Escape, puts the sheet away. Nothing of it lies under the views.
+function StagePair({ pairing }: { pairing: Pairing | null }) {
+  const [open, open_set] = useState(false)
+  const key_down = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || !open) return
+
+    event.preventDefault()
+    open_set(false)
+  }
+  return (
+    <div className="pair" onKeyDown={key_down}>
+      <div className="pair__frame">
+        <button
+          type="button"
+          className="pair__button"
+          aria-expanded={open}
+          aria-controls={pair_sheet_id}
+          onClick={() => open_set(!open)}
+        >
+          {icon_pair}
+          Pair iPad
+        </button>
+      </div>
+      {open && (
+        <aside id={pair_sheet_id} className="pair__sheet" aria-label="Pair iPad">
+          {pairing === null ? (
+            <p className="pair__caption">The pairing code has not loaded. Reload this page.</p>
+          ) : (
+            <>
+              <QrCode modules={pairing.modules} />
+              <p className="pair__caption">Scan for sketchboard controls</p>
+            </>
+          )}
+        </aside>
+      )}
+    </div>
   )
 }
 

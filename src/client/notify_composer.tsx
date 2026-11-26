@@ -1,10 +1,19 @@
-// The note to the agent: a capsule with a field, the Interpret switch and one send button.
-// It says nothing itself. What became of a request is told by the bell's list, so a failure
-// never moves or resizes the field, and a draft is only ever cleared by a confirmed send.
+// The note to the agent: a slip of paper with a field, the Interpret switch and one send
+// button, laid over the board as a modal dialog of the browser's own. It shows no words of
+// its own. What became of a request is told by the bell's list, so a failure never moves or
+// resizes the field, and a draft is only ever cleared by a confirmed send.
 
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type RefObject,
+} from 'react'
 import type { Editor } from 'tldraw'
-import { AssertionError } from '../shared/assert'
+import { assert, AssertionError } from '../shared/assert'
 import type { BoardEvent } from '../shared/whiteboard'
 import { icon_interpret, icon_send } from './icons'
 import {
@@ -117,9 +126,7 @@ function request_stage(
 }
 
 type Outcome =
-  | { ok: true; event: BoardEvent }
-  | { ok: false; message: string }
-  | { ok: null; message: string }
+  { ok: true; event: BoardEvent } | { ok: false; message: string } | { ok: null; message: string }
 
 // `ok: null` means nobody knows whether the Mac has the request: it stays pending for a retry.
 async function request_fly(session: string, token: string, request: Send): Promise<Outcome> {
@@ -241,19 +248,47 @@ export function use_composer(props: Delivery) {
   }
 }
 
+type Caret = [number, number, 'forward' | 'backward' | 'none']
+
+// The note is shown as a modal dialog of the browser's own. While it is open the browser
+// keeps every press and key from the page behind it, so a press beside the note can put it
+// away and can never leave a mark on the sketch.
+//
+// Opening must not raise the keyboard: a bare send needs none. The browser hands a dialog's
+// first focus to the first thing inside that can take it, which would be the field. Nothing
+// inside can take it while the dialog opens, so it rests on the dialog itself, and the field
+// waits for a tap of its own.
+//
 // Closing hides the field without unmounting it, so its text, caret and undo history stay.
 // A browser that drops the caret of a hidden field gets it back here, without taking focus.
-function use_caret(open: boolean) {
+function use_modal(open: boolean) {
+  const sheet = useRef<HTMLDialogElement>(null)
+  const paper = useRef<HTMLDivElement>(null)
   const field = useRef<HTMLTextAreaElement>(null)
-  const caret = useRef<[number, number, 'forward' | 'backward' | 'none'] | null>(null)
+  const caret = useRef<Caret | null>(null)
   useLayoutEffect(() => {
+    const dialog = sheet.current
+    const slip = paper.current
     const element = field.current
 
-    if (!element) return
+    if (!dialog || !slip || !element) return
 
     if (!open) {
       caret.current = [element.selectionStart, element.selectionEnd, element.selectionDirection]
+
+      if (dialog.open) dialog.close()
+
       return
+    }
+
+    if (!dialog.open) {
+      slip.inert = true
+
+      try {
+        dialog.showModal()
+      } finally {
+        slip.inert = false
+      }
     }
 
     const saved = caret.current
@@ -264,13 +299,155 @@ function use_caret(open: boolean) {
       element.setSelectionRange(saved[0], saved[1], saved[2])
     }
   }, [open])
-  return field
+  return { sheet, paper, field }
 }
 
-type ComposerProps = { form: Composer; open: boolean; hint: string }
+// The part of the screen that can be seen, told to the note as four lengths. The keyboard
+// and a rotation change it; the page's own size stays as it was. The note is laid out
+// against these, so it keeps its place in what is visible and no canvas is resized.
+function use_visible(sheet: RefObject<HTMLElement>, open: boolean) {
+  useLayoutEffect(() => {
+    const viewport = window.visualViewport
+    const element = sheet.current
 
-export function NotifyComposer({ form, open, hint }: ComposerProps) {
-  const field = use_caret(open)
+    if (!open || !viewport || !element) return
+
+    const update = () => {
+      element.style.setProperty('--visible-left', `${viewport.offsetLeft}px`)
+      element.style.setProperty('--visible-top', `${viewport.offsetTop}px`)
+      element.style.setProperty('--visible-width', `${viewport.width}px`)
+      element.style.setProperty('--visible-height', `${viewport.height}px`)
+    }
+    update()
+    viewport.addEventListener('resize', update)
+    viewport.addEventListener('scroll', update)
+    return () => {
+      viewport.removeEventListener('resize', update)
+      viewport.removeEventListener('scroll', update)
+    }
+  }, [sheet, open])
+}
+
+// A send that did not go through: the slip shakes its head once, as it is refused. The reason
+// is under the bell. The motion is played here, at the refusal, and not by a style the slip
+// keeps: the browser plays such a style again each time the put-away note is shown, and the
+// slip would shake, off its centre, at every opening. The shake is only for the open note
+// that was refused: putting the note away ends it, so a note shown again, however soon, rests
+// still at its centre, and a refusal heard while the note is away plays nothing.
+const nudge_keyframes: Keyframe[] = [
+  { transform: 'none', easing: 'ease-out' },
+  { transform: 'translateX(-5px)', offset: 0.3, easing: 'ease-out' },
+  { transform: 'translateX(4px)', offset: 0.7, easing: 'ease-out' },
+  { transform: 'none' },
+]
+const nudge_ms = 260
+
+function use_nudge(
+  sheet: RefObject<HTMLDialogElement>,
+  paper: RefObject<HTMLElement>,
+  refusals_count: number,
+  open: boolean,
+) {
+  assert(
+    Number.isSafeInteger(refusals_count) && refusals_count >= 0,
+    `refusals_count is a count: ${refusals_count}`,
+  )
+
+  const motion = useRef<Animation | null>(null)
+
+  // `use_modal` has already shown or shut the dialog for this render, so `open` is current.
+  useLayoutEffect(() => {
+    const element = paper.current
+
+    if (refusals_count === 0 || !element || sheet.current?.open !== true) return
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    const played = element.animate(nudge_keyframes, { duration: nudge_ms })
+    motion.current = played
+    return () => {
+      played.cancel()
+
+      if (motion.current === played) motion.current = null
+    }
+  }, [sheet, paper, refusals_count])
+  useLayoutEffect(() => {
+    if (open || motion.current === null) return
+
+    motion.current.cancel()
+    motion.current = null
+  }, [open])
+}
+
+// A press that travels this far is a stroke. A touch screen makes no click of a stroke, and
+// every browser's allowance for a wavering tap is well under it.
+const stroke_px_min = 24
+
+type Press = { id: number; x: number; y: number }
+
+// A press beside the note puts the note away. The browser gives such a press to the dialog
+// itself and to nothing on the page, so it draws nothing. A tap is answered at its click,
+// when the whole gesture is over: closing any sooner would let the browser hand that click
+// to whatever lies under the finger. A stroke makes no click on a touch screen, so it is
+// answered when the pen lifts. A press that began on the note, such as a selection dragged
+// out past its edge, is the note's own and closes nothing.
+function use_press_beside(dismiss: () => void) {
+  const press = useRef<Press | null>(null)
+  const beside = (event: { target: EventTarget; currentTarget: EventTarget }) =>
+    event.target === event.currentTarget
+  return {
+    onPointerDown: (event: PointerEvent<HTMLDialogElement>) => {
+      const { pointerId: id, clientX: x, clientY: y } = event
+      press.current = beside(event) ? { id, x, y } : null
+    },
+    onPointerUp: (event: PointerEvent<HTMLDialogElement>) => {
+      const from = press.current
+
+      if (from === null || from.id !== event.pointerId) return
+
+      if (!beside(event)) {
+        press.current = null
+        return
+      }
+
+      if (Math.hypot(event.clientX - from.x, event.clientY - from.y) < stroke_px_min) return
+
+      press.current = null
+      dismiss()
+    },
+    onPointerCancel: () => {
+      press.current = null
+    },
+    onClick: (event: MouseEvent<HTMLDialogElement>) => {
+      const pressed = press.current !== null
+      press.current = null
+
+      if (pressed && beside(event)) dismiss()
+    },
+  }
+}
+
+type ComposerProps = {
+  form: Composer
+  open: boolean
+  hint: string
+
+  // The newest change not yet seen, for a screen reader: while the note is open the page
+  // behind it, and the bell's own announcement with it, cannot be heard.
+  news: string
+
+  // Asks for the note to be put away.
+  onDismiss: () => void
+
+  // The note has been put away, by this page or by the browser itself.
+  onClosed: () => void
+}
+
+export function NotifyComposer({ form, open, hint, news, onDismiss, onClosed }: ComposerProps) {
+  const { sheet, paper, field } = use_modal(open)
+  use_visible(sheet, open)
+  use_nudge(sheet, paper, form.refusals_count, open)
+  const beside = use_press_beside(onDismiss)
   const describe = form.retry ? 'Sends the pending request again.' : hint
   const key_down = (event: KeyboardEvent<HTMLElement>) => {
 
@@ -286,35 +463,51 @@ export function NotifyComposer({ form, open, hint }: ComposerProps) {
     event.preventDefault()
     void form.send()
   }
-  const nudge = form.refusals_count === 0 ? undefined : form.refusals_count % 2 ? 'a' : 'b'
+
+  // The browser says so a moment after the dialog shuts. If the note was opened again in
+  // that moment, the word is about the time before, and is let go.
+  const closed = () => {
+    if (sheet.current?.open === false) onClosed()
+  }
   return (
-    <div
+    <dialog
+      ref={sheet}
       id={composer_id}
-      className="composer__capsule"
-      hidden={!open}
-      data-nudge={nudge}
-      onKeyDown={key_down}
-      onKeyUp={(event) => event.stopPropagation()}
+      className="notepad"
+      aria-label="Agent note"
+      tabIndex={-1}
+      onClose={closed}
+      {...beside}
     >
-      <div className="composer__field">
-        <div className="composer__mirror" aria-hidden="true">{`${form.text}​`}</div>
-        <textarea
-          ref={field}
-          className="composer__input"
-          rows={1}
-          aria-label="Note to agent"
-          placeholder={hint || 'Add a note (optional)'}
-          value={form.text}
-          disabled={!form.available}
-          onChange={(event) => form.change(event.target.value)}
-        />
+      <div
+        ref={paper}
+        className="composer"
+        onKeyDown={key_down}
+        onKeyUp={(event) => event.stopPropagation()}
+      >
+        <div className="composer__field">
+          <div className="composer__mirror" aria-hidden="true">{`${form.text}​`}</div>
+          <textarea
+            ref={field}
+            className="composer__input"
+            rows={1}
+            aria-label="Note to agent"
+            placeholder={hint || 'Add a note (optional)'}
+            value={form.text}
+            disabled={!form.available}
+            onChange={(event) => form.change(event.target.value)}
+          />
+        </div>
+        <ComposerControls form={form} describe={describe} />
       </div>
-      <ComposerControls form={form} describe={describe} />
-    </div>
+      <p className="visually-hidden" role="status">
+        {news}
+      </p>
+    </dialog>
   )
 }
 
-// Two fixed targets on the capsule's bottom line: the switch for the next send, and the send.
+// Two fixed targets on the paper's bottom line: the switch for the next send, and the send.
 function ComposerControls({ form, describe }: { form: Composer; describe: string }) {
   return (
     <>

@@ -13,7 +13,7 @@
 //
 // Run: bun run build && npx playwright test   (Bun and a Playwright Chromium on the host)
 
-import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { expect, test, type CDPSession, type Page, type TestInfo } from '@playwright/test'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -722,6 +722,11 @@ type Pixel = { r: number; g: number; b: number; light: number; chroma: number }
 async function pixels_read(page: Page, measured: Measured): Promise<Pixels> {
   await page.mouse.move(0, 0)
   const png = await page.screenshot({ scale: 'css', animations: 'disabled' })
+  return { ...(await png_decode(page, png)), bar: measured.bar }
+}
+
+async function png_decode(page: Page, png: Buffer) {
+  expect(png.length).toBeGreaterThan(0)
   const decoded = await page.evaluate(async (base64) => {
     const image = new Image()
     image.src = `data:image/png;base64,${base64}`
@@ -742,8 +747,11 @@ async function pixels_read(page: Page, measured: Measured): Promise<Pixels> {
   }, png.toString('base64'))
   const data = Buffer.from(decoded.rgba, 'base64')
   expect(data.length).toBe(decoded.width * decoded.height * 4)
-  return { width: decoded.width, height: decoded.height, data, bar: measured.bar }
+  return { width: decoded.width, height: decoded.height, data }
 }
+
+// How far round the details bar a pixel is left out, before the shared tolerance.
+const bar_clear_px = 4
 
 // Light is a pixel's luminance from 0 to 255; chroma is how far its channels spread.
 function pixel_at(pixels: Pixels, x: number, y: number): Pixel | null {
@@ -752,7 +760,9 @@ function pixel_at(pixels: Pixels, x: number, y: number): Pixel | null {
 
   if (px < 0 || py < 0 || px >= pixels.width || py >= pixels.height) return null
 
-  if (pixels.bar !== null && inside({ x: px, y: py, w: 1, h: 1 }, pixels.bar, -4)) return null
+  const pixel_rect = { x: px, y: py, w: 1, h: 1 }
+
+  if (pixels.bar !== null && inside(pixel_rect, pixels.bar, -bar_clear_px)) return null
 
   const index = (py * pixels.width + px) * 4
   const [r, g, b] = [0, 1, 2].map((channel) => pixels.data[index + channel] as number) as [
@@ -900,19 +910,27 @@ function words_inked(pixels: Pixels, shape: Shape): number {
 // inside the box and wholly beyond the words, so neither the clipped line's anti-aliased end
 // nor the words' own edges can reach it. The band is anchored to the box tldraw actually cut,
 // not to the words plus the nominal padding: on the iPad's split pane the padding is about two
-// pixels, and a band placed from the padding alone reached the clip edge's anti-aliasing.
+// pixels, and a band placed from the padding alone reached the clip edge's anti-aliasing. The
+// pixels are the screen's, or a magnified view's when the screen holds no band pixel; see
+// `label_view`.
+//
+// `clear_px` is how far a band pixel's centre keeps from the words and from the box's edge,
+// in the pixels being read. Half a screen pixel does two things: the pixel is whole, and the
+// measured words and box may be that far from where the browser painted them. The second is a
+// distance on the screen, so a view of finer pixels keeps the same half screen pixel, which is
+// several of its own.
+const band_clear_px = 0.5
+
+type Point = { x: number; y: number }
+type Label = { words: Rect; box: Rect; unit_px: number; clear_px: number; points: Point[] }
 type Gap = { band: number; band_inked: number; body: number; body_inked: number }
 type BandPixel = { x: number; y: number; light: number }
 
-function label_gap(
-  pixels: Pixels,
-  words: Rect,
-  box: Rect,
-  unit_px: number,
-  points: Array<{ x: number; y: number }>,
-) {
+function label_gap(pixels: Pixels, label: Label) {
+  const { words, box, unit_px, clear_px, points } = label
   expect(unit_px).toBeGreaterThan(0)
   expect(box.w).toBeGreaterThan(0)
+  expect(clear_px).toBeGreaterThanOrEqual(band_clear_px)
   const gap: Gap = { band: 0, band_inked: 0, body: 0, body_inked: 0 }
   const band_dark: BandPixel[] = []
   const seen = new Set<number>()
@@ -936,12 +954,12 @@ function label_gap(
     const inside_box_px = Math.min(cx - box.x, box.x + box.w - cx, cy - box.y, box.y + box.h - cy)
     const dark = pixel.light < dark_light_max
 
-    if (words_px >= 0.5 && inside_box_px >= 0.5) {
+    if (words_px >= clear_px && inside_box_px >= clear_px) {
       gap.band += 1
       gap.band_inked += dark ? 1 : 0
 
       if (dark) band_dark.push({ x: px, y: py, light: Math.round(pixel.light) })
-    } else if (words_px >= unit_px * 8 && inside_box_px <= -0.5) {
+    } else if (words_px >= unit_px * 8 && inside_box_px <= -clear_px) {
       gap.body += 1
       gap.body_inked += dark ? 1 : 0
     }
@@ -1042,9 +1060,220 @@ function label_gap_judge(
   return problems
 }
 
+// A label's break can be finer than the screen. tldraw cuts the box 4.25 units beyond the words:
+// 1.65 pixels on the iPad's split pane at 0.389 pixels to the unit. A band pixel lies wholly
+// between words and box, half a pixel clear of each, and a strip under two pixels wide need not
+// hold one: the `ovals-split-1180x820` run found none where the body crossed, so the break went
+// unjudged. Only such a label is read from a view instead: the same page, with nothing in it
+// changed, painted again by Chromium at four image pixels to the CSS pixel round the label. The
+// measured rects still hold and are only mapped into the view's pixels. Four is also how often
+// the body is sampled per CSS pixel, so every view pixel along it is still reached.
+//
+// The screen is always read first, and a label it samples is judged from it, however narrow
+// its band: the view is for the break the screen cannot judge, not a second opinion on one it
+// can. A view pixel keeps the screen's half pixel clear of words and box, two pixels of its
+// own. Kept only half a view pixel clear, the `split-1180x820` run judged the line painted
+// through two labels the screen shows clean: two dark pixels of 18 and of 14, each the clip
+// edge within a quarter of a screen pixel of where the box was measured. A strip of one and
+// a quarter screen pixels or more still holds a view pixel that far clear of both. A label
+// whose band is two screen pixels or more always holds a whole screen pixel on each side, so
+// it is never given a view: unsampled, it is reported.
+const band_screen_px_min = 2
+const view_scale = 4
+
+// A view reaches this far past where the body beyond the box is judged, in CSS pixels.
+const view_margin_px = 8
+
+// One view's image pixels at most: four megabytes decoded, far above any label's.
+const view_pixels_max = 1_000_000
+
+type View = { clip: Rect; scale: number }
+
+// The view a label may be read from, or null when its band always holds a whole screen pixel.
+// The view is whole CSS pixels within the pane, so each CSS pixel is exactly `scale` by `scale`
+// of its own.
+function label_view(label: Label, pane: Rect): View | null {
+  const { words, box } = label
+  expect(label.unit_px).toBeGreaterThan(0)
+  const band_px = Math.min(
+    words.x - box.x,
+    words.y - box.y,
+    box.x + box.w - (words.x + words.w),
+    box.y + box.h - (words.y + words.h),
+  )
+
+  if (band_px >= band_screen_px_min) return null
+
+  const reach_px = label.unit_px * 8 + view_margin_px
+  const left = Math.max(Math.ceil(pane.x), Math.floor(box.x - reach_px))
+  const top = Math.max(Math.ceil(pane.y), Math.floor(box.y - reach_px))
+  const right = Math.min(Math.floor(pane.x + pane.w), Math.ceil(box.x + box.w + reach_px))
+  const bottom = Math.min(Math.floor(pane.y + pane.h), Math.ceil(box.y + box.h + reach_px))
+  expect(right).toBeGreaterThan(left)
+  expect(bottom).toBeGreaterThan(top)
+  return { clip: { x: left, y: top, w: right - left, h: bottom - top }, scale: view_scale }
+}
+
+function rect_in_view(rect: Rect, view: View): Rect {
+  return {
+    x: (rect.x - view.clip.x) * view.scale,
+    y: (rect.y - view.clip.y) * view.scale,
+    w: rect.w * view.scale,
+    h: rect.h * view.scale,
+  }
+}
+
+// A label's measurements in a view's image pixels, where `label_gap` judges it unchanged.
+function label_in_view(label: Label, view: View): Label {
+  expect(view.scale).toBeGreaterThanOrEqual(1)
+  return {
+    words: rect_in_view(label.words, view),
+    box: rect_in_view(label.box, view),
+    unit_px: label.unit_px * view.scale,
+    clear_px: label.clear_px * view.scale,
+    points: label.points.map((point) => ({
+      x: (point.x - view.clip.x) * view.scale,
+      y: (point.y - view.clip.y) * view.scale,
+    })),
+  }
+}
+
+// Chromium paints a clip of the page at a scale through DevTools, which is how Playwright takes
+// every clipped screenshot; Playwright only never asks for a scale above one. The call needs a
+// session of its own. Chromium keeps device emulation per session and, after a capture, puts
+// back what the capturing session had set, so a session that had set nothing would switch
+// Playwright's viewport emulation off behind its back. Each page's session therefore first sets
+// the same metrics Playwright set, and is kept until the page closes, as detaching would also
+// switch them off. Kept per page, so at most one session for each of the journey's pages.
+const view_sessions = new WeakMap<Page, CDPSession>()
+
+async function view_session(page: Page): Promise<CDPSession> {
+  const kept = view_sessions.get(page)
+
+  if (kept !== undefined) return kept
+
+  const viewport = page.viewportSize()
+  expect(viewport).not.toBeNull()
+  expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1)
+  const session = await page.context().newCDPSession(page)
+  await session.send('Emulation.setDeviceMetricsOverride', {
+    mobile: false,
+    width: viewport!.width,
+    height: viewport!.height,
+    screenWidth: viewport!.width,
+    screenHeight: viewport!.height,
+    deviceScaleFactor: 1,
+    screenOrientation: { angle: 0, type: 'landscapePrimary' },
+  })
+  view_sessions.set(page, session)
+  return session
+}
+
+// What a label is read from: null for the screen, whenever the screen's own pixels hold its
+// band where the body crosses, and otherwise the view it may be given. `screen` and `label`
+// are in the same pixels.
+function label_reading_view(screen: Pixels, label: Label, pane: Rect): View | null {
+  expect(label.clear_px).toBe(band_clear_px)
+
+  if (label_gap(screen, label).gap.band > 0) return null
+
+  return label_view(label, pane)
+}
+
+// A view as a PNG. The clip is in document coordinates, as DevTools takes it.
+async function view_png(page: Page, view: View): Promise<Buffer> {
+  const { clip, scale } = view
+  expect([clip.x, clip.y, clip.w, clip.h, scale].every(Number.isInteger)).toBe(true)
+  expect(clip.w * clip.h * scale ** 2).toBeGreaterThan(0)
+  expect(clip.w * clip.h * scale ** 2).toBeLessThanOrEqual(view_pixels_max)
+  await page.mouse.move(0, 0)
+  const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+  const session = await view_session(page)
+  const shot = await session.send('Page.captureScreenshot', {
+    format: 'png',
+    clip: { x: scroll.x + clip.x, y: scroll.y + clip.y, width: clip.w, height: clip.h, scale },
+    captureBeyondViewport: false,
+  })
+  return Buffer.from(shot.data, 'base64')
+}
+
+// A view's pixels. `pixel_at` keeps clear of the details bar by a margin counted in its own
+// pixels; the bar is grown first, so that the margin stays the same distance on the screen.
+async function view_pixels(page: Page, measured: Measured, view: View): Promise<Pixels> {
+  const decoded = await png_decode(page, await view_png(page, view))
+  expect(decoded.width).toBe(view.clip.w * view.scale)
+  expect(decoded.height).toBe(view.clip.h * view.scale)
+  const { bar } = measured
+
+  if (bar === null) return { ...decoded, bar: null }
+
+  const grow_px = (bar_clear_px + tolerance_px) * (1 - 1 / view.scale)
+  const grown = {
+    x: bar.x - grow_px,
+    y: bar.y - grow_px,
+    w: bar.w + grow_px * 2,
+    h: bar.h + grow_px * 2,
+  }
+  return { ...decoded, bar: rect_in_view(grown, view) }
+}
+
+// Whether a view really holds detail finer than the screen, and is not the screen's own pixels
+// enlarged, which would judge nothing new. Ink painted at the view's scale meets white within a
+// pixel or two, so somewhere two neighbouring pixels differ by half the contrast or more: 113
+// at the worst alignment of a slanted edge. Screen pixels enlarged four times and blended can
+// step by a quarter of the contrast, 57, or about 71 with a cubic blend; 96 lies between.
+// Screen pixels merely repeated do step sharply, but only between CSS pixels, never within
+// one, so some CSS pixel's own image pixels must also spread that far.
+const view_step_min = 96
+
+type Detail = { step_max: number; cells_mixed: number }
+
+function view_detail(pixels: Pixels, scale: number): Detail {
+  expect(pixels.width % scale).toBe(0)
+  expect(pixels.height % scale).toBe(0)
+  const detail: Detail = { step_max: 0, cells_mixed: 0 }
+  const light = (x: number, y: number) => {
+    const index = (y * pixels.width + x) * 4
+    const [r, g, b] = [0, 1, 2].map((channel) => pixels.data[index + channel] as number)
+    return 0.299 * (r as number) + 0.587 * (g as number) + 0.114 * (b as number)
+  }
+
+  // Every image pixel once, by the CSS pixel that holds it.
+  for (let cell = 0; cell < (pixels.width * pixels.height) / scale ** 2; cell += 1) {
+    const left = (cell % (pixels.width / scale)) * scale
+    const top = Math.floor(cell / (pixels.width / scale)) * scale
+    let [low, high] = [255, 0]
+
+    for (let inner = 0; inner < scale ** 2; inner += 1) {
+      const [x, y] = [left + (inner % scale), top + Math.floor(inner / scale)]
+      const here = light(x, y)
+      const right = x + 1 < pixels.width ? light(x + 1, y) : here
+      const below = y + 1 < pixels.height ? light(x, y + 1) : here
+      const step = Math.max(Math.abs(right - here), Math.abs(below - here))
+      detail.step_max = Math.max(detail.step_max, Math.round(step))
+      low = Math.min(low, here)
+      high = Math.max(high, here)
+    }
+
+    if (high - low >= view_step_min) detail.cells_mixed += 1
+  }
+
+  return detail
+}
+
+function view_detail_problems(id: string, pixels: Pixels, view: View): string[] {
+  const detail = view_detail(pixels, view.scale)
+
+  if (detail.step_max >= view_step_min && detail.cells_mixed > 0) return []
+
+  const record = JSON.stringify({ ...detail, view })
+  return [`${id}: label gap view no finer than the screen ${record}`]
+}
+
 // The pane painted with labelled connectors altered in place, then put back exactly: each
 // element's own style attribute is saved and restored. `unclipped` removes the label's mask
 // from the line; the others hide the line, then also the words, then the whole connector.
+// Read from the screen, or from `view` when one is given.
 type Layer = 'unclipped' | 'no_body' | 'no_words' | 'no_arrow'
 
 async function layer_pixels(
@@ -1052,6 +1281,7 @@ async function layer_pixels(
   measured: Measured,
   ids: string[],
   layer: Layer,
+  view: View | null,
 ): Promise<Pixels> {
   expect(ids.length).toBeGreaterThan(0)
   const changed = await page.evaluate(
@@ -1091,7 +1321,8 @@ async function layer_pixels(
 
   try {
     expect(changed).toBe(ids.length)
-    pixels = await pixels_read(page, measured)
+    pixels =
+      view === null ? await pixels_read(page, measured) : await view_pixels(page, measured, view)
   } finally {
     restored = await page.evaluate(async () => {
       const holder = window as unknown as { layer_saved?: Array<[Element, string | null]> }
@@ -1113,9 +1344,11 @@ async function layer_pixels(
   return pixels as Pixels
 }
 
-// Every labelled connector's break, judged as above. The unmasked control is one extra paint for
-// all of them; the three attribution layers are painted only for a connector whose band shows
-// ink, and a close view of that label is attached for review.
+// Every labelled connector's break, judged as above. A label the screen samples is read from
+// the pane's pixels, and the unmasked control is one extra paint for all such labels; one it
+// cannot sample is read from its own view, as painted and unmasked.
+type Reading = { view: View | null; painted: Pixels; unclipped: Pixels }
+
 async function label_gaps_check(
   page: Page,
   info: TestInfo,
@@ -1129,10 +1362,7 @@ async function label_gaps_check(
   const ids = source.edges
     .map((edge) => edge.id)
     .filter((id) => measured.shapes[id]?.text_rect != null)
-
-  if (ids.length === 0) return problems
-
-  const unclipped_pixels = await layer_pixels(page, measured, ids, 'unclipped')
+  let unclipped_screen: Pixels | null = null
 
   for (const id of ids) {
     const shape = measured.shapes[id] as Shape
@@ -1144,22 +1374,64 @@ async function label_gaps_check(
     if (box_problems.length > 0 || box === null) continue
 
     const points = arrows[id]?.body_points ?? []
-    const painted = label_gap(pixels, words, box, shape.unit_px, points)
-    const unclipped = label_gap(unclipped_pixels, words, box, shape.unit_px, points)
-    let layers: Layers | null = null
+    const label: Label = { words, box, unit_px: shape.unit_px, clear_px: band_clear_px, points }
+    const view = label_reading_view(pixels, label, measured.pane)
+    let reading: Reading
 
-    if (painted.band_dark.length > 0) {
-      layers = {
-        no_body: await layer_pixels(page, measured, [id], 'no_body'),
-        no_words: await layer_pixels(page, measured, [id], 'no_words'),
-        no_arrow: await layer_pixels(page, measured, [id], 'no_arrow'),
-      }
-      await heading_evidence(page, info, `${name}-${id}-label`, box)
+    if (view === null) {
+      unclipped_screen ??= await layer_pixels(page, measured, ids, 'unclipped', null)
+      reading = { view, painted: pixels, unclipped: unclipped_screen }
+    } else {
+      const painted = await view_pixels(page, measured, view)
+      const unclipped = await layer_pixels(page, measured, [id], 'unclipped', view)
+      reading = { view, painted, unclipped }
     }
 
-    const attribution = band_attribute(painted.band_dark, layers)
-    const detail = { words, box, unit_px: shape.unit_px, line_rects: shape.line_rects }
-    problems.push(...label_gap_judge(id, painted.gap, unclipped.gap, attribution, detail))
+    problems.push(...(await label_gap_check(page, info, name, measured, id, label, reading)))
+  }
+
+  return problems
+}
+
+// One label's break from its reading. The three attribution layers are painted only when its
+// band shows ink, and a close view of that label is attached for review. A view must first
+// prove finer than the screen, and is attached, as it was judged, with any problem it shows.
+async function label_gap_check(
+  page: Page,
+  info: TestInfo,
+  name: string,
+  measured: Measured,
+  id: string,
+  label: Label,
+  reading: Reading,
+): Promise<string[]> {
+  const { view } = reading
+  const seen = view === null ? label : label_in_view(label, view)
+  const painted = label_gap(reading.painted, seen)
+  const unclipped = label_gap(reading.unclipped, seen)
+  let layers: Layers | null = null
+
+  if (painted.band_dark.length > 0) {
+    layers = {
+      no_body: await layer_pixels(page, measured, [id], 'no_body', view),
+      no_words: await layer_pixels(page, measured, [id], 'no_words', view),
+      no_arrow: await layer_pixels(page, measured, [id], 'no_arrow', view),
+    }
+    await heading_evidence(page, info, `${name}-${id}-label`, label.box)
+  }
+
+  const attribution = band_attribute(painted.band_dark, layers)
+  const line_rects = measured.shapes[id]?.line_rects ?? []
+  const detail = { words: label.words, box: label.box, unit_px: label.unit_px, line_rects, view }
+  const problems = label_gap_judge(id, painted.gap, unclipped.gap, attribution, detail)
+
+  if (view === null) return problems
+
+  problems.unshift(...view_detail_problems(id, reading.painted, view))
+
+  if (problems.length > 0) {
+    const body = await view_png(page, view)
+    await info.attach(`${name}-${id}-label-view`, { body, contentType: 'image/png' })
   }
 
   return problems
@@ -1408,23 +1680,29 @@ test('a label gap is judged within the box tldraw cut, not the nominal padding',
   const words: Rect = { x: 100, y: 46, w: 40, h: 8 }
   const box: Rect = { x: 98.3, y: 43.875, w: 43.4, h: 12.25 }
   const points = Array.from({ length: 480 }, (_, index) => ({ x: 60 + index / 4, y: 50.5 }))
-  const unit_px = 0.5
+  const label: Label = { words, box, unit_px: 0.5, clear_px: band_clear_px, points }
   const judge = (painted: Pixels, unclipped: Pixels, layers: Layers | null) => {
-    const { gap, band_dark } = label_gap(painted, words, box, unit_px, points)
-    const control = label_gap(unclipped, words, box, unit_px, points).gap
+    const { gap, band_dark } = label_gap(painted, label)
+    const control = label_gap(unclipped, label).gap
     return label_gap_judge('reports', gap, control, band_attribute(band_dark, layers), {})
   }
 
   const clean = label_pixels_paint(box, 'clipped', null)
   const through = label_pixels_paint(box, 'through', null)
   const blank = label_pixels_paint(box, 'blank', null)
-  expect(label_gap(clean, words, box, unit_px, points).gap).toEqual({
+  expect(label_gap(clean, label).gap).toEqual({
     band: 2,
     band_inked: 0,
     body: 72,
     body_inked: 72,
   })
   expect(judge(clean, through, null)).toEqual([])
+
+  // Its band is under two pixels, so it could be given a view; the screen samples it, so it
+  // is read from the screen, as the split pane's labels were before any view existed.
+  const pane: Rect = { x: 0, y: 0, w: 200, h: 100 }
+  expect(label_view(label, pane)).not.toBeNull()
+  expect(label_reading_view(clean, label, pane)).toBeNull()
 
   // The negative controls: the line painted through the break is the line's own ink, and a
   // mask that was not really removed leaves the band without the line's ink.
@@ -1457,6 +1735,160 @@ test('a label gap is judged within the box tldraw cut, not the nominal padding',
     'reports: no label box cut from its line',
   ])
   expect(label_box_problems('reports', words, box)).toEqual([])
+})
+
+// A straight connector as a view would capture it: each image pixel's ink is the share of its
+// four by four sample points that the line covers. The line is `width_px` wide and cut to
+// outside `cut`, as tldraw's clip path cuts it; a null line paints a blank view.
+type Line = { from: Point; to: Point; width_px: number }
+
+function label_view_paint(view: View, line: Line | null, cut: Rect | null): Pixels {
+  const [width, height] = [view.clip.w * view.scale, view.clip.h * view.scale]
+  const data = Buffer.alloc(width * height * 4, 255)
+
+  for (let index = 0; index < width * height && line !== null; index += 1) {
+    const [run_x, run_y] = [line.to.x - line.from.x, line.to.y - line.from.y]
+    let covered = 0
+
+    for (let sample = 0; sample < 16; sample += 1) {
+      const [sub_x, sub_y] = [((sample % 4) + 0.5) / 4, (Math.floor(sample / 4) + 0.5) / 4]
+      const x = view.clip.x + ((index % width) + sub_x) / view.scale
+      const y = view.clip.y + (Math.floor(index / width) + sub_y) / view.scale
+      const cross = (x - line.from.x) * run_y - (y - line.from.y) * run_x
+      const away_px = Math.abs(cross) / Math.hypot(run_x, run_y)
+      const within_x = cut !== null && x > cut.x && x < cut.x + cut.w
+      const within_y = cut !== null && y > cut.y && y < cut.y + cut.h
+
+      if (away_px <= line.width_px / 2 && !(within_x && within_y)) covered += 1
+    }
+
+    data.fill(Math.round(255 * (1 - covered / 16)), index * 4, index * 4 + 3)
+  }
+
+  return { width, height, data, bar: null }
+}
+
+// The screen's pixels enlarged, as a capture that painted nothing finer would be: each pixel
+// repeated, or blended linearly between its neighbours. Grey pixels only.
+function pixels_enlarge(pixels: Pixels, scale: number, blend: boolean): Pixels {
+  const [width, height] = [pixels.width * scale, pixels.height * scale]
+  const data = Buffer.alloc(width * height * 4, 255)
+  const light = (x: number, y: number) => {
+    const column = Math.min(pixels.width - 1, Math.max(0, x))
+    const row = Math.min(pixels.height - 1, Math.max(0, y))
+    return pixels.data[(row * pixels.width + column) * 4] as number
+  }
+
+  for (let index = 0; index < width * height; index += 1) {
+    const at_x = ((index % width) + 0.5) / scale - 0.5
+    const at_y = (Math.floor(index / width) + 0.5) / scale - 0.5
+    const [x, y] = blend
+      ? [Math.floor(at_x), Math.floor(at_y)]
+      : [Math.round(at_x), Math.round(at_y)]
+    const [far_x, far_y] = [at_x - x, at_y - y]
+    const upper = light(x, y) * (1 - far_x) + light(x + 1, y) * far_x
+    const lower = light(x, y + 1) * (1 - far_x) + light(x + 1, y + 1) * far_x
+    const blended = upper * (1 - far_y) + lower * far_y
+    data.fill(Math.round(blend ? blended : light(x, y)), index * 4, index * 4 + 3)
+  }
+
+  return { width, height, data, bar: null }
+}
+
+// The regression for the `ovals-split-1180x820` failure, from its recorded measurements: the
+// "reports" label at 0.389 pixels to the unit, its box 1.65 pixels beyond the words. A straight
+// body stands in for the elbow and crosses the left and top sides, where no whole screen pixel
+// lies between words and box. From the screen the band holds no pixel and the break goes
+// unjudged; the view the label is then given holds the band, sees the break white, and still
+// refuses the line painted through it. The view is judged half a screen pixel clear of words
+// and box, as the screen is: the later `split-1180x820` failure is kept here too. Enlarged
+// screen pixels are refused as a view, and the same label with a box two pixels beyond its
+// words keeps to the screen.
+test('a label gap finer than the screen is judged from a magnified view', () => {
+  const words: Rect = { x: 734.8034057617188, y: 473.8984375, w: 26.60394287109375, h: 9.336 }
+  const box: Rect = { x: 733.1532199462592, y: 472.24215625281334, w: 29.91044329000715, h: 12.758 }
+  const unit_px = 0.3889999985694885
+  const pane: Rect = { x: 590, y: 0, w: 590, h: 820 }
+  const line: Line = { from: { x: 718, y: 485.2 }, to: { x: 767, y: 462.8 }, width_px: unit_px * 2 }
+  const points = Array.from({ length: 217 }, (_, index) => ({
+    x: line.from.x + ((line.to.x - line.from.x) * index) / 216,
+    y: line.from.y + ((line.to.y - line.from.y) * index) / 216,
+  }))
+  const label: Label = { words, box, unit_px, clear_px: band_clear_px, points }
+  const judge = (seen: Label, painted: Pixels, unclipped: Pixels, layers: Layers | null) => {
+    const { gap, band_dark } = label_gap(painted, seen)
+    const control = label_gap(unclipped, seen).gap
+    return label_gap_judge('reports', gap, control, band_attribute(band_dark, layers), {})
+  }
+
+  const view = label_view(label, pane) as View
+  expect(view).toEqual({ clip: { x: 722, y: 461, w: 53, h: 36 }, scale: 4 })
+  const screen: View = { clip: view.clip, scale: 1 }
+  const on_screen = label_in_view(label, screen)
+  const seen = label_in_view(label, view)
+  expect([on_screen.clear_px, seen.clear_px]).toEqual([0.5, 2])
+
+  // As the failing run read it: the screen's pixels, with the break left unjudged. Only for
+  // that is the label given its view.
+  const screen_clean = label_view_paint(screen, line, box)
+  const screen_through = label_view_paint(screen, line, null)
+  const [unsampled] = judge(on_screen, screen_clean, screen_through, null)
+  expect(unsampled).toContain('reports: label gap not sampled {"band":0,"band_inked":0,')
+  const pane_on_screen = rect_in_view(pane, screen)
+  expect(label_reading_view(screen_clean, on_screen, pane_on_screen)).toEqual({
+    clip: { x: 0, y: 0, w: view.clip.w, h: view.clip.h },
+    scale: 4,
+  })
+
+  // The view holds the band on both sides the body crosses, and the break is white in it.
+  const clean = label_view_paint(view, line, box)
+  const through = label_view_paint(view, line, null)
+  expect(label_gap(clean, seen).gap).toEqual({
+    band: 9,
+    band_inked: 0,
+    body: 88,
+    body_inked: 88,
+  })
+  expect(judge(seen, clean, through, null)).toEqual([])
+  expect(view_detail_problems('reports', clean, view)).toEqual([])
+
+  // The negative controls: a line really painted through the break still fails, as does a mask
+  // that was not really removed.
+  const blank = label_view_paint(view, null, null)
+  const layers_blank = { no_body: blank, no_words: blank, no_arrow: blank }
+  const [first, second] = judge(seen, through, through, layers_blank)
+  expect(first).toContain('reports: label gap band gains no ink without the mask')
+  expect(second).toContain('reports: label gap with the line painted through it')
+  expect(judge(seen, clean, clean, null)[0]).toContain('band gains no ink without the mask')
+
+  // The regression for the `split-1180x820` failure: the browser cut the line a quarter of a
+  // screen pixel inside the measured box, which the screen's half pixel allows for. Kept only
+  // half a view pixel clear, the band reaches the cut's edge and a clean break is refused as
+  // the line painted through it. Half a screen pixel clear, the same view is white.
+  const cut: Rect = { x: box.x + 0.25, y: box.y + 0.25, w: box.w - 0.5, h: box.h - 0.5 }
+  const cut_inside = label_view_paint(view, line, cut)
+  const half_view_pixel: Label = { ...seen, clear_px: band_clear_px }
+  const refused = judge(half_view_pixel, cut_inside, through, layers_blank)
+  expect(refused).toHaveLength(1)
+  expect(refused[0]).toContain(
+    'reports: label gap with the line painted through it {"band":19,"band_inked":3,',
+  )
+  expect(judge(seen, cut_inside, through, null)).toEqual([])
+
+  // Screen pixels enlarged are no view, whether repeated or blended, and nor is a blank one.
+  const [repeated] = view_detail_problems('reports', pixels_enlarge(screen_clean, 4, false), view)
+  expect(repeated).toContain(
+    'reports: label gap view no finer than the screen {"step_max":207,"cells_mixed":0,',
+  )
+  const [blended] = view_detail_problems('reports', pixels_enlarge(screen_clean, 4, true), view)
+  expect(blended).toContain('reports: label gap view no finer than the screen {"step_max":49,')
+  expect(view_detail_problems('reports', blank, view)).toHaveLength(1)
+
+  // The neighbouring valid case: two pixels between words and box hold a whole screen pixel.
+  const roomy: Rect = { x: words.x - 2, y: words.y - 2, w: words.w + 4, h: words.h + 4 }
+  expect(label_view({ ...label, box: roomy }, pane)).toBeNull()
+  const tight: Rect = { x: words.x - 1.99, y: words.y - 2, w: words.w + 4, h: words.h + 4 }
+  expect(label_view({ ...label, box: tight }, pane)).not.toBeNull()
 })
 
 test('a semantic diagram is composed, rendered legibly, refused when invalid, and kept', async ({

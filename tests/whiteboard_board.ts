@@ -1,6 +1,11 @@
 // What the linked-board journeys share: a disposable board started through the real command
 // line, a Mac stage and a paired iPad page, and the handles a person has on the iPad: the note
 // button, the bell, the note itself and its two controls. Nothing here touches a live board.
+//
+// The note is a modal dialog. While it is open the page behind it is inert: no press reaches
+// it, and it is out of the accessibility tree. What lies behind is then read from the page
+// itself, by attribute, and is never pressed. Pairing ends with the note put away, so every
+// journey starts on a board that can be drawn on and pressed.
 
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
 import { spawnSync } from 'node:child_process'
@@ -18,6 +23,19 @@ export const navigation_ms = 10_000
 export const step_long_ms = 60_000
 const step_ms = 30_000
 const command_ms = 30_000
+
+// Playwright times what is done to a locator and what is expected of one. It does not time a
+// bare key, a touch, a pointer move, a window size or a script in the page: with no answer
+// from the browser those wait for as long as the test lasts. Each is given a few seconds
+// here, and the error is made at the call, so that it names the line that got no answer.
+export function soon<T>(work: Promise<T>, wait_ms = action_ms): Promise<T> {
+  const late = new Error(`No answer from the browser within ${wait_ms}ms.`)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const overdue = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(late), wait_ms)
+  })
+  return Promise.race([work, overdue]).finally(() => clearTimeout(timer))
+}
 
 export type Cli = (...args: string[]) => any
 
@@ -123,19 +141,49 @@ export const interpret = (page: Page) => page.getByRole('switch', { name: 'Inter
 export const inbox = (page: Page) => page.getByRole('dialog', { name: 'Notifications' })
 export const rows = (page: Page) => inbox(page).getByRole('listitem')
 
-// The note is closed until asked for. Opening it is a tap on the button by the tools.
+// The same two buttons and the list, found on the page itself. With the note open they are
+// behind a modal dialog, where a role would not look for them: `chat`, `bell` and `inbox`,
+// which find them by role, are for when the note is shut.
+export const chat_behind = (page: Page) =>
+  page.locator('.dock__button[aria-controls="agent-composer"]')
+export const bell_behind = (page: Page) =>
+  page.locator('.dock__button[aria-controls="agent-inbox"]')
+export const inbox_behind = (page: Page) => page.locator('.inbox')
+
+// The note is closed until asked for. Opening it is a tap on the button by the tools, which
+// is pressed by role: it can be, with the note shut. Open, the note is the browser's own
+// modal dialog, and its button says so from behind it.
 export async function composer_open(page: Page) {
-  const trigger = chat(page)
-  await expect(trigger).toBeVisible()
+  const state = chat_behind(page)
+  await expect(state).toBeVisible()
 
-  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.tap()
+  if ((await state.getAttribute('aria-expanded')) !== 'true') await chat(page).tap()
 
-  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  await expect(state).toHaveAttribute('aria-expanded', 'true')
   await expect(note(page)).toBeVisible()
+  const sheet = page.getByRole('dialog', { name: 'Agent note' })
+  expect(await sheet.evaluate((element) => element.matches(':modal'))).toBe(true)
 }
 
-// The list never opens by itself, and a press anywhere else closes it: open it to look.
+// The note is put away with Escape, which is heard wherever the focus is. While the note is
+// open nothing else on the page can be pressed, so every step outside it starts here. Its
+// words, its switch and a request still on its way are kept.
+export async function composer_close(page: Page) {
+  const state = chat_behind(page)
+  await expect(state).toBeVisible()
+
+  if ((await state.getAttribute('aria-expanded')) === 'true') {
+    await soon(page.keyboard.press('Escape'))
+  }
+
+  await expect(state).toHaveAttribute('aria-expanded', 'false')
+  await expect(note(page)).toBeHidden()
+}
+
+// The list never opens by itself, and a press anywhere else closes it: open it to look. The
+// bell can be pressed only with the note shut, so the note is put away first.
 export async function inbox_open(page: Page) {
+  await composer_close(page)
   const trigger = bell(page)
 
   if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.tap()
@@ -144,6 +192,7 @@ export async function inbox_open(page: Page) {
 }
 
 export async function inbox_close(page: Page) {
+  await composer_close(page)
   const trigger = bell(page)
 
   if ((await trigger.getAttribute('aria-expanded')) === 'true') await trigger.tap()
@@ -151,7 +200,7 @@ export async function inbox_close(page: Page) {
   await expect(inbox(page)).toBeHidden()
 }
 
-// The one row that says `text`, with the list opened to read it.
+// The one row that says `text`, with the note put away and the list opened to read it.
 export async function row_with(page: Page, text: string | RegExp): Promise<Locator> {
   await inbox_open(page)
   const row = rows(page).filter({ hasText: text })
@@ -378,13 +427,18 @@ export function marks(page: Page): Promise<Mark[]> {
   })
 }
 
-// Every notice on screen is visible, reachable and clear of this app's chrome, and the one in
-// the sketch rests wholly outside the drawing surface. The branding is tldraw's: these
-// journeys only ever look at it and press it, as a person would.
+// The notice with everything about it but whether a press reaches it: while the note is
+// open, the browser keeps every press from the page behind it.
+export const mark_placed = ({ own: _own, ...rest }: Mark) => rest
+
+// Every notice on screen is whole, reachable and clear of this app's chrome. Where it rests
+// is tldraw's choice: the sketch is tldraw's canvas as it comes, so its notice lies over the
+// drawing surface, in the corner tldraw keeps it in. The branding is tldraw's: these journeys
+// only ever look at it and press it, as a person would. Asked with the note shut, when a
+// press can reach the page.
 export async function expect_marks_clear(page: Page, count: number): Promise<Mark[]> {
   const wrong = (mark: Mark) =>
-    !mark.own || mark.covered > 0 || mark.width <= 0 || mark.height <= 0 ||
-    (mark.sketch && mark.drawn_over)
+    !mark.own || mark.covered > 0 || mark.width <= 0 || mark.height <= 0
 
   // Polled: tldraw chooses the notice's form from a width it measures a moment after a resize.
   await expect
@@ -461,6 +515,9 @@ export async function stroke(
 
 // Link a board as a pih host does, then pair the iPad by scanning the stage QR. Before the
 // scan the note can be written but not sent, and says why where the note would be typed.
+// The scan is read while the note is open, and a reload shuts the note. Pairing ends with
+// the note put away and its button holding the focus, so no journey starts behind a modal
+// dialog, where a pen stroke would only put the note away and draw nothing.
 export async function pair(root: string, file: string, stage: Page, ipad: Page) {
   const link = () =>
     command(root, 'whiteboard-link', '--protocol', '2', '--owner', 'e2e', '--out', file)
@@ -492,6 +549,9 @@ export async function pair(root: string, file: string, stage: Page, ipad: Page) 
   await composer_open(ipad)
   await expect(notify(ipad)).toBeEnabled()
   expect(new URL(ipad.url()).hash.length).toBe(0)
+  await composer_close(ipad)
+  await expect(chat(ipad)).toHaveAttribute('aria-expanded', 'false')
+  await expect(chat(ipad)).toBeFocused()
   return linked
 }
 

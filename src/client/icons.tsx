@@ -15,6 +15,7 @@ import { PencilSimpleLine } from '@phosphor-icons/react/dist/csr/PencilSimpleLin
 import { Pen } from '@phosphor-icons/react/dist/csr/Pen'
 import { Plus } from '@phosphor-icons/react/dist/csr/Plus'
 import { PushPin } from '@phosphor-icons/react/dist/csr/PushPin'
+import { QrCode } from '@phosphor-icons/react/dist/csr/QrCode'
 import { SidebarSimple } from '@phosphor-icons/react/dist/csr/SidebarSimple'
 import { Trash } from '@phosphor-icons/react/dist/csr/Trash'
 import { X } from '@phosphor-icons/react/dist/csr/X'
@@ -39,8 +40,9 @@ export const icon_pin = glyph(PushPin)
 export const icon_rename = glyph(PencilSimpleLine, 20)
 export const icon_chat = glyph(ChatCircle)
 export const icon_bell = glyph(Bell)
+export const icon_pair = glyph(QrCode)
 
-// The two glyphs in the note capsule keep one small size whatever the note grows to. The arrow
+// The two glyphs on the note's paper keep one small size whatever the note grows to. The arrow
 // is set on solid ink, where a light stroke would thin out, so it alone is drawn bold.
 export const icon_interpret = glyph(Broom, 20)
 export const icon_send = <ArrowUp size={18} weight="bold" aria-hidden="true" focusable="false" />

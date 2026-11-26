@@ -2,7 +2,8 @@
 // While the sketch is on screen they are fixed to its drawing tools, the note button first.
 // With only the Agent canvas showing there are no tools, and they wait in the band above it.
 // Each carries a dot when there is something to come back to: a note not yet sent, or news
-// not yet read. The list opens only when the bell is pressed.
+// not yet read. The list opens only when the bell is pressed. While the note is open it is
+// the only thing that can be pressed: a press on either button then only puts the note away.
 
 import { useEffect, useRef, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
@@ -37,7 +38,7 @@ type DockProps = {
 
 export function AgentDock(props: DockProps) {
   const { home, composing, draft, entries, listing, onList } = props
-  const unread = entries.filter((entry) => entry.unread)
+  const unread = inbox_unread(entries)
   const bell_label = unread.length > 0 ? `Notifications, ${unread.length} unread` : 'Notifications'
   const dock = (
     <div className="dockside" data-place={home === 'band' ? 'band' : 'tools'}>
@@ -79,7 +80,7 @@ export function AgentDock(props: DockProps) {
     <>
       {home === null ? null : home === 'band' ? dock : createPortal(dock, home)}
       <p className="visually-hidden" role="status">
-        {news_text(unread)}
+        {inbox_news(entries)}
       </p>
     </>
   )
@@ -104,6 +105,7 @@ function DockButton(props: DockButtonProps) {
       className="dock__button"
       aria-label={props.label}
       title={props.title}
+      aria-haspopup="dialog"
       aria-expanded={props.expanded}
       aria-controls={props.controls}
       onClick={props.onPress}
@@ -114,11 +116,13 @@ function DockButton(props: DockButtonProps) {
   )
 }
 
+const inbox_unread = (entries: readonly InboxEntry[]) => entries.filter((entry) => entry.unread)
+
 // Read out to a screen reader while the list stays closed: the newest change not yet seen.
-function news_text(unread: readonly InboxEntry[]): string {
+export function inbox_news(entries: readonly InboxEntry[]): string {
   let newest: InboxEntry | null = null
 
-  for (const entry of unread) {
+  for (const entry of inbox_unread(entries)) {
     if (newest === null || entry.changed_at_ms >= newest.changed_at_ms) newest = entry
   }
 

@@ -22,6 +22,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   board_linked,
+  composer_close,
   composer_open,
   interpret,
   note,
@@ -452,7 +453,10 @@ async function capture(page: Page, info: TestInfo, name: string) {
   await info.attach(name, { path: file, contentType: 'image/png' })
 }
 
-// One Interpret request from the iPad, received by the agent. Returns its event id.
+// One Interpret request from the iPad, received by the agent. Returns its event id. The note
+// is a modal dialog: while it is open nothing behind it, the view tabs included, can be
+// pressed. So the note is put away once the Mac has the request, as a person would before
+// turning to the Agent canvas, and every step after starts on a board that can be pressed.
 async function interpret_request(board: Linked): Promise<string> {
   const { ipad, bound } = board
   const before = bound('poll').events.length as number
@@ -462,6 +466,7 @@ async function interpret_request(board: Linked): Promise<string> {
   await expect(toggle).toHaveAttribute('aria-checked', 'true')
   await notify(ipad).tap()
   await expect.poll(() => bound('poll').events.length).toBe(before + 1)
+  await composer_close(ipad)
   const event = bound('poll').events.at(-1) as { id: string; kind: string }
   expect(event.kind).toBe('interpret_request')
 
@@ -663,6 +668,7 @@ test('a picture alone stays a picture, and an erased sketch empties the canvas',
       await note(ipad).fill('What is this?')
       await notify(ipad).tap()
       await expect.poll(() => bound('poll').events.length).toBe(1)
+      await composer_close(ipad)
       const [event] = bound('poll').events as [{ id: string; kind: string; text: string }]
       expect(event).toMatchObject({ kind: 'sketch_notify', text: 'What is this?' })
       const read = reading(board, 'noted')
