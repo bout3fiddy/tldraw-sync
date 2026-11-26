@@ -9,7 +9,7 @@ import diagram_fixture from '../../tests/fixtures/nested_groups.diagram.json'
 import { diagram_format } from '../shared/cleanup_types'
 import { proposal_size_bytes_max } from '../shared/constants'
 import { test_pen_draw } from '../simulation/test_pen'
-import { proposal_example } from '../simulation/test_sketch'
+import { proposal_example, sketch_stroke } from '../simulation/test_sketch'
 import { port_any, port_free } from './board_process'
 import { port_pick } from './commands'
 
@@ -406,6 +406,74 @@ test('a semantic diagram publishes through the board and returns in a snapshot',
   const stale = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
   expect(stale.exit_code).toBe(5)
   expect(stale.json).toMatchObject({ code: 'sketch_changed' })
+  expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1 })
+}, 60_000)
+
+// The cleanup that escaped, through the real commands: a sketch with a picture in it. The
+// agent says which strokes are the picture; the tool sizes the drawing from the snapshot's own
+// sketch records, and the board publishes the person's strokes as they were drawn.
+test('a picture is kept as drawn: snapshot, compose and publish its own strokes', async () => {
+  const directory = directory_create()
+  const port = port_any()
+  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
+  const shapes_count = (count: number) => async () => {
+    return (await status_json(directory)).shapes_count === count
+  }
+  const sun = sketch_stroke('shape:sun', 420, 20, [[0, 0], [30, 0], [30, 30]], 'red')
+  const hill = sketch_stroke('shape:hill', 300, 200, [[0, 0], [60, -40], [140, 0]])
+  await test_pen_draw(port, 'shape:sun', shapes_count(1), 'default', sun)
+  await test_pen_draw(port, 'shape:hill', shapes_count(2), 'default', hill)
+  const hash = await stage_upload(directory, port)
+  const out = path.join(directory, 'cleanup')
+  const snapshot = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
+  expect(String(snapshot.json.prompt)).toContain('A picture is kept exactly as it was drawn')
+  const sketch = JSON.parse(fs.readFileSync(String(snapshot.json.records_path), 'utf8'))
+  expect(sketch.canvas_previous).toEqual({ graph: '', drawings: [] })
+
+  const diagram_path = String(snapshot.json.diagram_path)
+  const scene = { id: 'scene', kind: 'drawing', at: [300, 20, 150, 185] }
+  const title = { id: 'title', kind: 'text', label: 'Hill', at: [300, 0, 60, 16] }
+  const diagram = (strokes: string[]) => JSON.stringify({
+    format: diagram_format, snapshot: hash, base_revision: 0, edges: [],
+    nodes: [title, { ...scene, strokes }],
+  })
+  fs.writeFileSync(diagram_path, diagram(['shape:sun', 'shape:hill']))
+  const composed_path = path.join(directory, 'composed.json')
+  const composed = await cli(
+    directory, 'cleanup-compose', '--file', diagram_path, '--out', composed_path, '--json',
+  )
+  expect(composed.json).toMatchObject({ code: 'composed', shapes_count: 2 })
+  const published = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
+  expect(published.json).toMatchObject({ code: 'published', revision: 1, shapes_count: 2 })
+
+  // What the pages are served: the two strokes themselves, as far apart as they were drawn.
+  const cleaned = await (await fetch(`http://127.0.0.1:${port}/api/cleaned.json`)).json() as {
+    records: Array<{ id: string; type: string; x: number; y: number; props: unknown }>
+  }
+  const kept = cleaned.records.filter((record) => record.type === 'draw')
+  const ids = ['shape:cleaned-scene.0', 'shape:cleaned-scene.1']
+  expect(kept.map((record) => record.id)).toEqual(ids)
+  const drawn = [sun, hill] as unknown as Array<{ props: unknown }>
+  expect(kept.map((record) => record.props)).toEqual(drawn.map((stroke) => stroke.props))
+  expect([kept[1]!.x - kept[0]!.x, kept[1]!.y - kept[0]!.y]).toEqual([300 - 420, 200 - 20])
+  expect(await status_json(directory)).toMatchObject({
+    shapes_count: 2, document_hash: hash, cleaned_revision: 1, cleaned_stale: false,
+  })
+
+  // A stroke the sketch does not have is named, and a diagram away from its snapshot's sketch
+  // records cannot size its drawing. Neither publishes anything.
+  fs.writeFileSync(diagram_path, diagram(['shape:sun', 'shape:moon']))
+  const missing = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
+  expect(missing.json).toMatchObject({ code: 'invalid_diagram', exit_code: 1 })
+  expect(String(missing.json.message)).toContain('diagram.nodes[1].strokes[1]')
+  const stray = path.join(directory, 'elsewhere', 'diagram.json')
+  fs.mkdirSync(path.dirname(stray))
+  fs.writeFileSync(stray, diagram(['shape:sun', 'shape:hill']))
+  const lost = await cli(
+    directory, 'cleanup-compose', '--file', stray, '--out', composed_path, '--json',
+  )
+  expect(lost.json).toMatchObject({ code: 'invalid_diagram', exit_code: 1 })
+  expect(String(lost.json.message)).toContain('sketch.json')
   expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1 })
 }, 60_000)
 

@@ -3,6 +3,10 @@
 // limit. Containment must form a forest of groups at most `diagram_depth_max` deep; connections
 // may form any cycles. Nothing is dropped or corrected: the first problem is reported, with the
 // path to it, and the agent fixes it.
+//
+// A diagram may have no nodes at all: a sketch with nothing left on it cleans up to an empty
+// canvas. A drawing node keeps part of the sketch as the person's own pen strokes, so it names
+// those strokes, has no label, takes no connections and is never the agent's own.
 
 import { assert } from './assert'
 import {
@@ -50,7 +54,7 @@ export function diagram_proposal_parse(input: unknown): DiagramParsed {
 
   if (reader.problem !== null) return { ok: false, ...reader.problem }
 
-  assert(diagram.nodes.length > 0, 'a valid diagram has nodes')
+  assert(diagram.nodes.length > 0 || diagram.edges.length === 0, 'connections join nodes')
   assert(diagram.nodes.length <= diagram_nodes_count_max, 'a valid diagram is bounded')
   return { ok: true, proposal: { ...header, diagram } }
 }
@@ -67,7 +71,7 @@ export function diagram_read(reader: JsonReader, value: unknown, path: string): 
 function diagram_body_read(reader: JsonReader, source: Json, path: string): Diagram {
   assert(path.length > 0, 'a diagram body has a path')
   const flow = reader.choice(source, 'flow', path, diagram_flows, false)
-  const nodes_input = reader.list(source.nodes, `${path}.nodes`, 1, diagram_nodes_count_max)
+  const nodes_input = reader.list(source.nodes, `${path}.nodes`, 0, diagram_nodes_count_max)
   const edges_input = reader.list(source.edges, `${path}.edges`, 0, diagram_edges_count_max)
   const nodes = nodes_input.map((item, index) => node_read(reader, item, `${path}.nodes[${index}]`))
   const edges = edges_input.map((item, index) => edge_read(reader, item, `${path}.edges[${index}]`))
@@ -108,7 +112,29 @@ function node_read(reader: JsonReader, value: unknown, path: string): DiagramNod
 
   // Left out when absent, so a diagram without places is stored as it always was.
   const node = { id, kind, label, parent, strokes, ...origin_read(reader, source, path) }
+
+  if (kind === 'drawing') drawing_check(reader, node, path)
+
   return at === null ? node : { ...node, at }
+}
+
+// A drawing is the person's own ink and nothing else: the strokes it keeps, without words of
+// its own. A caption is a text node beside it.
+function drawing_check(reader: JsonReader, node: DiagramNode, path: string): void {
+  assert(node.kind === 'drawing', 'only a drawing keeps strokes as they were drawn')
+  assert(path.length > 0, 'a drawing has a path')
+
+  if (node.label !== '') {
+    reader.fail(`${path}.label`, 'A drawing has no label: write a caption as a text node.')
+  }
+
+  if (node.strokes.length === 0) {
+    reader.fail(`${path}.strokes`, 'A drawing lists the ids of the pen strokes it keeps.')
+  }
+
+  if (node.origin === 'agent') {
+    reader.fail(`${path}.origin`, 'A drawing keeps strokes of the sketch: its origin is sketch.')
+  }
 }
 
 // An item's box in the sketch: [left, top, width, height], every number finite and bounded.
@@ -284,6 +310,13 @@ function edges_check(
 
     if (from === undefined || to === undefined) return
 
+    for (const [end, node] of [['from', from], ['to', to]] as const) {
+      if (node.kind !== 'drawing') continue
+
+      const advice = 'Keep a drawn arrow among the strokes of a drawing.'
+      reader.fail(`${where}.${end}`, `A connection cannot join a drawing. ${advice}`)
+    }
+
     if (from === to) {
       reader.fail(`${where}.to`, 'A connection joins two different nodes.')
     } else if (ancestor_is(by_id, from, to) || ancestor_is(by_id, to, from)) {
@@ -323,6 +356,22 @@ function strokes_check(
   let count = 0
 
   for (const item of [...nodes, ...edges]) count += item.strokes.length
+
+  // A stroke is drawn once: in one drawing, and once in its list.
+  const kept = new Set<string>()
+
+  for (const [index, node] of nodes.entries()) {
+    if (node.kind !== 'drawing') continue
+
+    for (const [place, id] of node.strokes.entries()) {
+      if (kept.has(id)) {
+        const where = `${path}.nodes[${index}].strokes[${place}]`
+        reader.fail(where, 'A stroke is kept by one drawing, once.')
+      }
+
+      kept.add(id)
+    }
+  }
 
   if (count > diagram_stroke_ids_count_max) {
     reader.fail(

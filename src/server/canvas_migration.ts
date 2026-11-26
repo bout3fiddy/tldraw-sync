@@ -148,7 +148,8 @@ function bounds(shapes: ProposalShape[]) {
     bottom = -Infinity
 
   for (const s of shapes) {
-    if (s.kind === 'arrow') continue
+    // Legacy documents hold no drawings: those came with the unified canvas.
+    if (s.kind === 'arrow' || s.kind === 'ink') continue
 
     x = Math.min(x, s.x)
     y = Math.min(y, s.y)

@@ -3,9 +3,10 @@
 // every styled proposal that carries a diagram, so a hand-edited or buggy composition is refused.
 //
 // Meaning: one shape per node and per connection, with the same id, the exact label, the
-// matching kind, the same endpoints and the same arrowheads. Layout: every item sits inside its
-// group, below the group's heading; items in the same group keep apart; every label fits its
-// shape by the conservative text measure. Coordinates themselves are free.
+// matching kind, the same endpoints and the same arrowheads. A drawing's shape keeps exactly the
+// strokes its node names. Layout: every item sits inside its group, below the group's heading;
+// items in the same group keep apart; every label fits its shape by the conservative text
+// measure. Coordinates themselves are free.
 
 import { assert } from './assert'
 import {
@@ -16,6 +17,7 @@ import {
   type ProposalArrowheads,
   type ProposalShape,
 } from './cleanup_types'
+import { strokes_equal } from './ink'
 import { type Problem } from './json_reader'
 import { label_padding_units, text_block, type LabelFont } from './text_measure'
 
@@ -62,6 +64,7 @@ const shape_kind_by_node_kind: Record<DiagramNodeKind, ProposalShape['kind']> = 
   ellipse: 'ellipse',
   text: 'text',
   group: 'rectangle',
+  drawing: 'ink',
 }
 
 const arrowheads_by_direction: Record<DiagramEdgeDirection, ProposalArrowheads> = {
@@ -90,8 +93,8 @@ export function composition_check(
   shapes: readonly ProposalShape[],
   font: LabelFont,
 ): Problem | null {
-  assert(diagram.nodes.length > 0, 'a diagram has nodes')
-  assert(shapes.length > 0, 'a composition has shapes')
+  assert(diagram.nodes.length > 0 || diagram.edges.length === 0, 'connections join nodes')
+  assert(shapes.length >= 0, 'a composition lists its shapes')
 
   if (shapes.length !== diagram.nodes.length + diagram.edges.length) {
     return { path: 'shapes', message: 'Expected exactly one shape per diagram node and edge.' }
@@ -132,6 +135,12 @@ function meaning_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShap
 
     if (shape.kind !== node_shape_kind(node.kind)) return problem(path, 'Its shape kind differs.')
 
+    if (shape.kind === 'ink') {
+      if (strokes_equal(shape.strokes, node.strokes)) continue
+
+      return problem(path, 'Its shape does not keep its exact strokes.')
+    }
+
     if (shape.text !== node.label) return problem(path, 'Its shape does not show its exact label.')
 
     if (node.kind === 'group' && (shape.kind !== 'rectangle' || shape.label_valign !== 'start')) {
@@ -171,6 +180,9 @@ function sizes_check(diagram: Diagram, by_id: ReadonlyMap<string, ProposalShape>
     const shape = by_id.get(node.id) as ProposalShape
     const path = `diagram.nodes[${index}]`
     assert(shape.kind !== 'arrow', 'meaning was checked: a node is never an arrow')
+
+    // A drawing has no label to size: its box is the box of its strokes.
+    if (shape.kind === 'ink') continue
 
     if (shape.size !== composed_label_size) {
       return problem(path, `Its shape uses size "${shape.size}"; composed labels use "s".`)
@@ -227,6 +239,8 @@ function labels_check(
 
     if (node.kind === 'text' || node.kind === 'group' || node.label === '') continue
 
+    if (node.kind === 'drawing') continue
+
     const geo = shape as GeoShape
     const inner_w = geo.w - label_padding_units * 2
     const inner_h = geo.h - label_padding_units * 2
@@ -246,7 +260,7 @@ function labels_check(
     }
   }
 
-  assert(diagram.nodes.length > 0, 'a diagram has nodes')
+  assert(by_id.size >= diagram.nodes.length, 'every node was looked at')
   return null
 }
 
@@ -331,6 +345,22 @@ function overlap_find(group: readonly DiagramNode[], boxes: ReadonlyMap<string, 
 
   assert(gap > 0, 'neighbours keep a gap')
   return null
+}
+
+// What a diagram says the sketch shows, without what the agent added to it: the flow and every
+// sketch-origin item, in id order. Two diagrams with the same text interpret the sketch alike,
+// so publishing one over the other changes only the agent's own items. Empty when there is
+// nothing of the sketch in the diagram.
+export function sketch_graph(diagram: Diagram | null | undefined): string {
+  if (!diagram) return ''
+
+  const items = [...diagram.nodes, ...diagram.edges].filter((item) => item.origin !== 'agent')
+
+  if (!items.length) return ''
+
+  items.sort((a, b) => (a.id < b.id ? -1 : Number(a.id !== b.id)))
+  assert(items.length <= diagram.nodes.length + diagram.edges.length, 'items are a subset')
+  return JSON.stringify([diagram.flow, items.map(({ origin: _, ...item }) => item)])
 }
 
 function problem(path: string, message: string): Problem {

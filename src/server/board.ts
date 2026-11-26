@@ -296,6 +296,7 @@ export class Board {
       agent_source_hash: canvas.current?.source_hash ?? null,
       ...(layer === 'canvas' ? { legacy_diagrams: this.cleaned.legacy_diagrams() } : {}),
       diagram_previous: this.cleaned.diagram_current(),
+      drawings_previous: this.cleaned.drawings_current(),
     }
   }
 
@@ -328,7 +329,9 @@ export class Board {
     assert(!this.closed, 'board is open')
     const before = this.document_state()
     const now_ms = this.environment.time.now_ms()
-    const result = this.cleaned.publish(input, before.hash, this.session, now_ms, layer)
+    // A drawing on the canvas copies its strokes from the sketch as it is at this moment.
+    const sketch = () => this.document_records()
+    const result = this.cleaned.publish(input, before.hash, this.session, now_ms, layer, sketch)
     // Pair assertion: publishing a cleanup leaves the human ink exactly as it was.
     const after = this.document_state()
     assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')

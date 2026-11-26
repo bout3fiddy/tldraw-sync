@@ -12,8 +12,9 @@ it a week later.
 tldraw-sync keeps the two apart:
 
 - **Sketch** is your ink, drawn with the Apple Pencil. Nothing but you ever changes it.
-- **Cleaned** is a tidy diagram of the sketch, made by your agent. It sits on a separate canvas, so
-  you can look at either one, or both side by side.
+- **Cleaned** is a tidy copy of the sketch, made by your agent. Diagrams and writing are typeset; a
+  picture stays the strokes you drew. It sits on a separate canvas, so you can look at either one,
+  or both side by side.
 
 The Mac shows the whole drawing at all times, even while you zoom in on a detail on the iPad. That
 makes it easy to share the Mac screen on a call while you draw.
@@ -38,7 +39,13 @@ Earlier cleanups are kept, and your agent can bring one back.
 
 It works for notes as well as diagrams. The cleanup keeps your arrangement: what you wrote side by
 side stays side by side, a heading keeps its list under it, and adding a line to one section leaves
-the others where they were. It is always drawn in black ink, like a whiteboard.
+the others where they were. Typeset parts are always drawn in black ink, like a whiteboard.
+
+Not everything on a board is a diagram. Draw a landscape next to your boxes and arrows, and the
+cleanup typesets the boxes and arrows and leaves the landscape alone: the same pen strokes, in your
+colours, at the size and in the places you drew them. A picture is never redrawn as boxes and ovals
+or swapped for a symbol. Anything the agent cannot read as a diagram or as writing is kept the same
+way.
 
 ## Quickstart
 
@@ -90,8 +97,12 @@ Keep the stage open so it can render the PNG your agent reads.
 
 - **Notify agent** shares the current sketch with your agent. Add an optional note of up to 4000
   characters. Enter adds a line; Cmd/Ctrl+Enter sends. An unconfirmed note stays in this tab.
-- Turn on **Interpret** before sending for a faithful, typeset copy. The **Agent canvas** holds both
-  that interpretation and the agent’s own explanations, questions and connections.
+- Turn on **Interpret** before sending for a faithful copy of the sketch as it is now: diagrams and
+  writing typeset, pictures kept as you drew them. Each Interpret starts again from your sketch.
+  What you erased is gone from the copy, and so are notes the agent added earlier, unless your note
+  asks for them. Clear the board and Interpret, and the **Agent canvas** is empty.
+- The **Agent canvas** also holds the agent’s own explanations, questions and connections. Ask for
+  them in a note; a plain Notify can add or change them without redoing the copy.
 - **Replace sketchboard** copies the entire Agent canvas into the sketch as editable shapes and
   removes the current ink. **Undo** restores the ink in one step. Use **Select shapes** to move or
   edit items. Sketch edits never change the Agent canvas.
@@ -106,6 +117,8 @@ binding. Pass `--binding <file>` to `whiteboard-poll --protocol 2`, `whiteboard-
 `whiteboard-snapshot` and `whiteboard-publish`. Snapshot and publish default to `--layer canvas`.
 Publish the whole graph against its exact `base_revision`. Changes to sketch-origin elements also
 require the current sketch hash. Agent-only edits leave the last interpretation’s source unchanged.
+A `drawing` node names pen strokes to keep; keep `diagram.json` beside the snapshot’s `sketch.json`,
+which sizes it. An empty sketch still gives a snapshot, and `"nodes": []` publishes an empty canvas.
 Snapshot files are private workspaces; remove them when done. Pre-upgrade Interpretation and Ideas
 are archived with their histories. After backing up, stop the old daemon before upgrading.
 
@@ -133,8 +146,9 @@ unless you set `BOARD_DATA_DIR`. Each extra board gets its own folder in `data/s
 
 The cleanup is done by your agent, not by the board. The agent reads an image of your sketch, writes
 the tidy diagram as plain data, and hands it back to the board, which checks it before showing it.
-If your agent uses a hosted model, the image of your sketch, handwriting included, goes to that
-model's provider like anything else you show the agent. Use an agent you are comfortable sharing the
-drawing with.
+For a picture the agent only says which strokes belong to it. The board copies those strokes from
+your sketch itself, so nothing an agent sends can pass for your ink. If your agent uses a hosted
+model, the image of your sketch, handwriting included, goes to that model's provider like anything
+else you show the agent. Use an agent you are comfortable sharing the drawing with.
 
 The board has no password. Use a network you trust. For more commands, run `tldraw-sync --help`.

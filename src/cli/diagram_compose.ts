@@ -8,9 +8,14 @@
 // with tldraw's deterministic hand-drawn outlines and open arrows and its upright handwritten
 // face. No colour, tint or decoration. Every label is measured in the face it is drawn in.
 //
-// No network, no files, no model, no board: a pure function of the diagram, deterministic for
-// the same diagram whatever order its items were listed in. The input limits bound the work:
-// at most 160 nodes and 320 edges, laid out once, with no retries.
+// A drawing node is not typeset at all. It keeps part of the sketch as the person's own pen
+// strokes, so it is placed like any other item but takes the box of those strokes, never scaled:
+// the caller measures them (`diagram_ink.ts`) and the board fills the strokes in when it accepts
+// the publish. A diagram with no nodes composes to an empty canvas.
+//
+// No network, no files, no model, no board: a pure function of the diagram and its drawings'
+// boxes, deterministic for the same diagram whatever order its items were listed in. The input
+// limits bound the work: at most 160 nodes and 320 edges, laid out once, with no retries.
 
 import ELK, { type ElkExtendedEdge, type ElkNode } from 'elkjs/lib/elk.bundled.js'
 import { assert, AssertionError } from '../shared/assert'
@@ -83,17 +88,29 @@ const leg_room_units = 16
 
 type Planned = { layout: Layout; plans: Map<string, RoutePlan>; conflicts_count: number }
 
-export async function diagram_compose(input: DiagramProposal): Promise<ComposeResult> {
+// `drawings` gives the box of each drawing node's strokes, by node id.
+export async function diagram_compose(
+  input: DiagramProposal,
+  drawings: ReadonlyMap<string, Size> = new Map(),
+): Promise<ComposeResult> {
   const diagram = diagram_canonical(input.diagram)
   assert(diagram.nodes.length <= diagram_nodes_count_max, 'a composed diagram is bounded')
   assert(diagram.edges.length <= diagram_edges_count_max, 'a composed diagram is bounded')
-  const sizes = sizes_measure(diagram)
+  const unsized = diagram.nodes.find((node) => node.kind === 'drawing' && !drawings.has(node.id))
 
-  const chosen = await layouts_choose(diagram, sizes)
+  if (unsized !== undefined) {
+    return { ok: false, message: `The drawing "${unsized.id}" has no strokes to size it by.` }
+  }
+
+  const sizes = sizes_measure(diagram, drawings)
+
+  // An empty diagram has nothing to lay out: it composes to an empty canvas.
+  const chosen = diagram.nodes.length === 0 ? plan_empty() : await layouts_choose(diagram, sizes)
 
   if (typeof chosen === 'string') return { ok: false, message: chosen }
 
   const { layout, plans, conflicts_count } = chosen
+  drawings_exact(diagram, layout, drawings)
   const shapes = shapes_build(diagram, layout, plans)
   const proposal = {
     format: proposal_format_styled,
@@ -134,6 +151,31 @@ export async function diagram_compose(input: DiagramProposal): Promise<ComposeRe
       route_conflicts_count: conflicts_count,
     },
   }
+}
+
+// A layout engine may round a box out by a unit. A drawing's box is the box of its strokes
+// exactly, because the board measures the strokes again and refuses any other size.
+function drawings_exact(
+  diagram: Diagram,
+  layout: Layout,
+  drawings: ReadonlyMap<string, Size>,
+): void {
+  for (const node of diagram.nodes) {
+    if (node.kind !== 'drawing') continue
+
+    const box = layout.boxes.get(node.id)
+    const size = drawings.get(node.id)
+    assert(box !== undefined && size !== undefined, 'every drawing was placed and measured')
+    assert(Math.abs(box.w - size.w) <= 1 && Math.abs(box.h - size.h) <= 1, 'only rounding differs')
+    box.w = size.w
+    box.h = size.h
+  }
+}
+
+function plan_empty(): Planned {
+  const planned = { layout: { boxes: new Map(), routes: new Map() }, plans: new Map() }
+  assert(planned.plans.size === 0, 'nothing is routed on an empty canvas')
+  return { ...planned, conflicts_count: 0 }
 }
 
 // A label needs a wide gap only where its connector runs between layers; one that ends up as
@@ -272,7 +314,8 @@ function grid_ceil(units: number): number {
 
 // Boxes and ovals in the same group share one width, so each group reads as a set; heights
 // follow their words. Text keeps its own width. Groups are sized by the layout around them.
-function sizes_measure(diagram: Diagram): Map<string, Size> {
+// A drawing is exactly as large as its strokes: it keeps the size it was drawn at.
+function sizes_measure(diagram: Diagram, drawings: ReadonlyMap<string, Size>): Map<string, Size> {
   const padding = label_padding_units * 2 + label_slack_units
   const widths = new Map<string | null, number>()
 
@@ -288,6 +331,13 @@ function sizes_measure(diagram: Diagram): Map<string, Size> {
 
   for (const node of diagram.nodes) {
     if (node.kind === 'group') continue
+
+    if (node.kind === 'drawing') {
+      const size = drawings.get(node.id)
+      assert(size !== undefined && size.w > 0 && size.h > 0, 'every drawing was measured')
+      sizes.set(node.id, size)
+      continue
+    }
 
     if (node.kind === 'text') {
       const wrap = node.at === undefined ? leaf_wrap_units : note_wrap_units
@@ -628,6 +678,9 @@ function item_shape(node: DiagramNode, box: Box): ProposalShape {
   assert(node.kind !== 'group', 'groups are drawn apart')
   const kind = node_shape_kind(node.kind)
 
+  // A drawing names its strokes. The board copies them from the sketch when it publishes.
+  if (kind === 'ink') return { kind, id: node.id, ...box, strokes: node.strokes, ink: null }
+
   if (kind === 'text') {
     return {
       kind,
@@ -693,7 +746,7 @@ function ports_find(layout: Layout): Map<string, Ports> {
 }
 
 function extent_measure(boxes: ReadonlyMap<string, Box>): Size {
-  assert(boxes.size > 0, 'a diagram has boxes')
+  assert(boxes.size <= diagram_nodes_count_max, 'a diagram has a box for each node')
   let w = 0
   let h = 0
 
@@ -702,6 +755,7 @@ function extent_measure(boxes: ReadonlyMap<string, Box>): Size {
     h = Math.max(h, box.y + box.h)
   }
 
-  assert(w > 0 && h > 0, 'a diagram has an extent')
+  // Only an empty canvas has no extent.
+  assert(boxes.size === 0 || (w > 0 && h > 0), 'a diagram with items has an extent')
   return { w, h }
 }

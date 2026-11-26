@@ -87,7 +87,60 @@ const mistakes: Array<[string, (input: Input) => void, string]> = [
   ['malformed snapshot', (d) => (d.snapshot = 'ABC'), 'diagram.snapshot'],
   ['unknown top field', (d) => (d.coordinates = true), 'diagram.coordinates'],
   ['unknown flow', (d) => (d.flow = 'left'), 'diagram.flow'],
-  ['no nodes', (d) => (d.nodes = []), 'diagram.nodes'],
+  ['nodes not a list', (d) => (d.nodes = {} as never), 'diagram.nodes'],
+  ['connections without nodes', (d) => (d.nodes = []), 'diagram.edges[0].from'],
+  [
+    'drawing with a label',
+    (d) => d.nodes.push({ id: 'art', kind: 'drawing', label: 'Sun', strokes: ['shape:s1'] }),
+    'diagram.nodes[10].label',
+  ],
+  [
+    'drawing without strokes',
+    (d) => d.nodes.push({ id: 'art', kind: 'drawing' }),
+    'diagram.nodes[10].strokes',
+  ],
+  [
+    'drawing of the agent',
+    (d) => d.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1'], origin: 'agent' }),
+    'diagram.nodes[10].origin',
+  ],
+  [
+    'drawing with a stroke twice',
+    (d) => d.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1', 'shape:s1'] }),
+    'diagram.nodes[10].strokes[1]',
+  ],
+  [
+    'two drawings with one stroke',
+    (d) => {
+      d.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1', 'shape:s2'] })
+      d.nodes.push({ id: 'more', kind: 'drawing', strokes: ['shape:s3', 'shape:s2'] })
+    },
+    'diagram.nodes[11].strokes[1]',
+  ],
+  [
+    'connection into a drawing',
+    (d) => {
+      d.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1'] })
+      d.edges.push({ id: 'to-art', from: 'a', to: 'art', direction: 'forward' })
+    },
+    'diagram.edges[10].to',
+  ],
+  [
+    'connection out of a drawing',
+    (d) => {
+      d.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1'] })
+      d.edges.push({ id: 'from-art', from: 'art', to: 'a', direction: 'none' })
+    },
+    'diagram.edges[10].from',
+  ],
+  [
+    'drawing as a parent',
+    (d) => {
+      d.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1'] })
+      d.nodes.push({ id: 'inside', kind: 'box', label: 'In', parent: 'art' })
+    },
+    'diagram.nodes[11].parent',
+  ],
   ['edges not a list', (d) => (d.edges = {} as never), 'diagram.edges'],
   ['node coordinates', (d) => (d.nodes[1]!.x = 3), 'diagram.nodes[1].x'],
   ['missing kind', (d) => delete d.nodes[1]!.kind, 'diagram.nodes[1].kind'],
@@ -145,6 +198,37 @@ for (const [name, damage, path] of mistakes) {
     }
   })
 }
+
+// The escaped cleanup had no way to say "this part is a picture": every node was a box, an
+// oval, words or a group, so a landscape came back as scattered glyphs. A drawing node names
+// the pen strokes to keep instead, alone, beside a diagram or inside a group.
+test('a drawing keeps strokes of the sketch, beside typeset items and inside a group', () => {
+  const input = base()
+  input.nodes.push({ id: 'art', kind: 'drawing', strokes: ['shape:s1', 'shape:s2'] })
+  input.nodes.push({
+    id: 'doodle',
+    kind: 'drawing',
+    label: '',
+    parent: 'environments',
+    strokes: ['shape:s3'],
+    origin: 'sketch',
+  })
+  const { diagram } = parse_ok(input)
+  const art = diagram.nodes.find((node) => node.id === 'art')
+  expect(art).toMatchObject({ kind: 'drawing', label: '', parent: null })
+  expect(art?.strokes).toEqual(['shape:s1', 'shape:s2'])
+  expect(diagram.nodes.find((node) => node.id === 'doodle')?.parent).toBe('environments')
+
+  const alone = { ...base(), nodes: [{ id: 'art', kind: 'drawing', strokes: ['shape:s1'] }] }
+  alone.edges = []
+  expect(parse_ok(alone).diagram.nodes.map((node) => node.kind)).toEqual(['drawing'])
+})
+
+// A sketch with nothing left on it cleans up to an empty canvas, so an empty diagram is valid.
+test('a diagram with no nodes and no connections is valid', () => {
+  const { diagram } = parse_ok({ ...base(), nodes: [], edges: [] })
+  expect(diagram).toEqual({ flow: 'right', nodes: [], edges: [] })
+})
 
 test('node, edge and stroke limits are exact on both sides', () => {
   const nodes = (count: number) =>

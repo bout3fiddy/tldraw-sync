@@ -11,14 +11,16 @@ const applied_checks_count_max = 300
 const applied_check_interval_ms = 10
 
 // Draws a square with the given id on the given board session, and returns once `applied` says
-// the server has it.
+// the server has it. `shape` draws that shape instead, such as a pen stroke.
 export async function test_pen_draw(
   port: number,
   shape_id: string,
   applied: () => boolean | Promise<boolean>,
   session = 'default',
+  shape: TLRecord = square(shape_id),
 ): Promise<void> {
   assert(shape_id.startsWith('shape:'), 'a shape id has the shape prefix')
+  assert(shape.id === shape_id, 'the drawn shape has the id asked for')
   assert(/^[0-9a-z]{1,16}$/.test(session), 'a board session is an id')
   const store = createTLStore({ schema: createTLSchema() })
   const query = `role=draw&sessionId=test-pen&session=${session}`
@@ -37,7 +39,7 @@ export async function test_pen_draw(
   })
   await loaded.promise
 
-  store.put([square(shape_id)])
+  store.put([shape])
   let checks_count = 0
   while (!(await applied())) {
     checks_count += 1

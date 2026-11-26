@@ -6,12 +6,19 @@
 // from a semantic diagram: the same shapes with a few bounded styling and routing controls, and
 // the diagram itself, which must agree with the shapes exactly (see `diagram_check.ts`).
 //
+// A v2 proposal may also keep parts of the sketch as they were drawn. On its way to the board
+// such a drawing only names its strokes: the board copies them from the sketch (`cleaned_ink.ts`)
+// and saves them with the version. A saved version is read back with its strokes, each checked
+// against tldraw's own schema. A v2 proposal composed from an empty diagram has no shapes.
+//
 // Reading never throws on bad input. The reader keeps the first problem it meets, with the path
 // to it, and the caller reports that problem as an ordinary error.
 
 import { createTLSchema, toRichText, type TLRecord } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
 import {
+  diagram_stroke_ids_count_max,
+  ink_points_count_max,
   proposal_coordinate_units_max,
   proposal_extent_units_max,
   proposal_shapes_count_max,
@@ -20,6 +27,7 @@ import {
 import {
   cleaned_page_id,
   diagram_format,
+  ink_stroke_types,
   proposal_arrowheads,
   proposal_colors,
   proposal_fills,
@@ -27,13 +35,16 @@ import {
   proposal_format_styled,
   proposal_formats,
   proposal_kinds,
+  proposal_kinds_styled,
   proposal_label_aligns,
   proposal_routes,
   proposal_sizes,
   proposal_styles,
   proposal_text_aligns,
+  type InkStroke,
   type ProposalAnchor,
   type ProposalFill,
+  type ProposalKind,
   type Proposal,
   type ProposalShape,
   type ProposalStyle,
@@ -46,11 +57,18 @@ import { style_font } from '../shared/text_measure'
 export type ProposalParsed =
   { ok: true; proposal: Proposal } | { ok: false; path: string; message: string }
 
+// Whether a drawing's strokes are only named, as on the way to the board, or held in full, as
+// in a saved version.
+export type InkMode = 'named' | 'held'
+
+type InkShape = Extract<ProposalShape, { kind: 'ink' }>
+
 const schema = createTLSchema()
 const shape_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
+const stroke_id_pattern = /^shape:[A-Za-z0-9_-]{1,64}$/
 const keys_root_v1 = [...header_keys, 'shapes'] as const
 const keys_root_v2 = [...keys_root_v1, 'style', 'diagram'] as const
-const keys_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
+const keys_by_kind: Record<ProposalKind, readonly string[]> = {
   text: ['kind', 'id', 'x', 'y', 'text', 'w', 'color', 'size'],
   rectangle: ['kind', 'id', 'x', 'y', 'w', 'h', 'text', 'color', 'size'],
   ellipse: ['kind', 'id', 'x', 'y', 'w', 'h', 'text', 'color', 'size'],
@@ -60,6 +78,7 @@ const keys_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
 // The styling and routing controls v2 adds to each kind. A v1 shape gets their defaults.
 const keys_geo_style = ['fill', 'label_color', 'label_align', 'label_valign', 'label_bold']
 const keys_styled_by_kind: Record<ProposalShape['kind'], readonly string[]> = {
+  ink: ['kind', 'id', 'x', 'y', 'w', 'h', 'strokes', 'ink'],
   text: [...keys_by_kind.text, 'align'],
   rectangle: [...keys_by_kind.rectangle, ...keys_geo_style],
   ellipse: [...keys_by_kind.ellipse, ...keys_geo_style],
@@ -69,7 +88,7 @@ const keys_by_kind_any = [...new Set(Object.values(keys_by_kind).flat())]
 const keys_any = [...new Set(Object.values(keys_styled_by_kind).flat())]
 const index_digits = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
-export function proposal_parse(input: unknown): ProposalParsed {
+export function proposal_parse(input: unknown, ink: InkMode = 'named'): ProposalParsed {
   const reader = new JsonReader()
   const format = proposal_formats.find((candidate) => candidate === object_format(input))
   const styled = format === proposal_format_styled
@@ -80,7 +99,7 @@ export function proposal_parse(input: unknown): ProposalParsed {
   const root = reader.object(input, 'proposal', styled ? keys_root_v2 : keys_root_v1)
 
   const header = header_read(reader, root, 'proposal')
-  const shapes = shapes_read(reader, root.shapes, styled)
+  const shapes = shapes_read(reader, root.shapes, styled, ink)
 
   // A v1 proposal, and a v2 one that names no style, is plain: as published before styles.
   const style: ProposalStyle = styled
@@ -90,6 +109,9 @@ export function proposal_parse(input: unknown): ProposalParsed {
     styled && root.diagram !== undefined ? diagram_read(reader, root.diagram, 'diagram') : null
 
   if (style === 'markerboard') markerboard_ink_check(reader, shapes)
+
+  // Without a diagram there is nothing an empty proposal could mean, or a drawing belong to.
+  if (diagram === null) undiagrammed_check(reader, shapes)
 
   if (reader.problem === null && diagram !== null) {
     const problem = composition_check(diagram, shapes, style_font(style))
@@ -123,15 +145,47 @@ function object_format(input: unknown): unknown {
   return (input as Json).format
 }
 
-function shapes_read(reader: JsonReader, value: unknown, styled: boolean): ProposalShape[] {
+// Without a diagram, a proposal is the shapes an agent chose by hand: at least one, and none
+// of them a drawing, which only a diagram's drawing node can name.
+function undiagrammed_check(reader: JsonReader, shapes: readonly ProposalShape[]): void {
+  const count_max = proposal_shapes_count_max
+  assert(shapes.length <= count_max, 'shapes are bounded')
+
+  if (shapes.length === 0) {
+    reader.fail('proposal.shapes', `Expected a list of 1 to ${count_max} shapes.`)
+  }
+
+  const index = shapes.findIndex((shape) => shape.kind === 'ink')
+
+  if (index >= 0) {
+    reader.fail(`shapes[${index}].kind`, 'A drawing is published with its semantic diagram.')
+  }
+
+  assert(index < shapes.length, 'a found shape is one of the shapes')
+}
+
+function shapes_read(
+  reader: JsonReader,
+  value: unknown,
+  styled: boolean,
+  ink: InkMode,
+): ProposalShape[] {
   const count_max = proposal_shapes_count_max
 
-  if (!Array.isArray(value) || value.length === 0 || value.length > count_max) {
+  // Only a styled proposal can have no shapes: the composition of an empty diagram.
+  if (!Array.isArray(value) || value.length > count_max || (value.length === 0 && !styled)) {
     reader.fail('proposal.shapes', `Expected a list of 1 to ${count_max} shapes.`)
     return []
   }
 
-  const shapes = value.map((item, index) => shape_read(reader, item, `shapes[${index}]`, styled))
+  const shapes = value.map((item, index) =>
+    shape_read(reader, item, `shapes[${index}]`, styled, ink),
+  )
+
+  if (ink_points_count(shapes) > ink_points_count_max) {
+    reader.fail('proposal.shapes', `Drawings keep at most ${ink_points_count_max} pen samples.`)
+  }
+
   const kinds = new Map<string, ProposalShape['kind']>()
   shapes.forEach((shape, index) => {
     if (kinds.has(shape.id)) reader.fail(`shapes[${index}].id`, 'Shape ids must be unique.')
@@ -144,7 +198,7 @@ function shapes_read(reader: JsonReader, value: unknown, styled: boolean): Propo
     for (const end of ['from', 'to'] as const) {
       const kind = kinds.get(shape[end])
 
-      if (kind === undefined || kind === 'arrow') {
+      if (kind === undefined || kind === 'arrow' || kind === 'ink') {
         reader.fail(`shapes[${index}].${end}`, 'An arrow binds to a text, rectangle or ellipse.')
       }
     }
@@ -161,15 +215,20 @@ function shape_read(
   value: unknown,
   path: string,
   styled: boolean,
+  ink: InkMode,
 ): ProposalShape {
   const kind_source = reader.object(value, path, styled ? keys_any : keys_by_kind_any)
-  const kind = reader.choice(kind_source, 'kind', path, proposal_kinds, true)
-  const source = reader.object(value, path, (styled ? keys_styled_by_kind : keys_by_kind)[kind])
+  const kinds: readonly ProposalShape['kind'][] = styled ? proposal_kinds_styled : proposal_kinds
+  const kind = reader.choice(kind_source, 'kind', path, kinds, true)
+  const keys = styled || kind === 'ink' ? keys_styled_by_kind[kind] : keys_by_kind[kind]
+  const source = reader.object(value, path, keys)
   const id = reader.text(source, 'id', path, 40, null)
 
   if (!shape_id_pattern.test(id)) {
     reader.fail(`${path}.id`, 'Expected an id of letters, digits, _ or -.')
   }
+
+  if (kind === 'ink') return ink_shape_read(reader, source, path, id, ink)
 
   const color = reader.choice(source, 'color', path, proposal_colors, false)
   const size = reader.choice(source, 'size', path, proposal_sizes, false)
@@ -203,6 +262,117 @@ function shape_read(
   const h = reader.number(source, 'h', path, 1, proposal_extent_units_max)
   assert(kind === 'rectangle' || kind === 'ellipse', 'every kind is read')
   return { kind, id, x, y, w, h, text, color, size, ...geo_style_read(reader, source, path) }
+}
+
+// A drawing: the box its strokes fill and the ids of those strokes. Only a saved version holds
+// the strokes themselves. A proposal on its way to the board must not carry any: the board takes
+// them from the sketch and from nowhere else.
+function ink_shape_read(
+  reader: JsonReader,
+  source: Json,
+  path: string,
+  id: string,
+  mode: InkMode,
+): InkShape {
+  const coordinate_max = proposal_coordinate_units_max
+  const x = reader.number(source, 'x', path, -coordinate_max, coordinate_max)
+  const y = reader.number(source, 'y', path, -coordinate_max, coordinate_max)
+  const w = reader.number(source, 'w', path, 1, proposal_extent_units_max)
+  const h = reader.number(source, 'h', path, 1, proposal_extent_units_max)
+  const items = reader.list(source.strokes, `${path}.strokes`, 1, diagram_stroke_ids_count_max)
+  const strokes = items.filter(
+    (item): item is string => typeof item === 'string' && stroke_id_pattern.test(item),
+  )
+
+  if (strokes.length !== items.length || new Set(strokes).size !== strokes.length) {
+    reader.fail(`${path}.strokes`, 'Expected different stroke ids such as "shape:abc".')
+  }
+
+  assert(strokes.length <= diagram_stroke_ids_count_max, 'stroke ids are bounded')
+
+  if (mode === 'named') {
+    if (source.ink !== undefined && source.ink !== null) {
+      reader.fail(`${path}.ink`, 'The board copies the strokes from the sketch: send only ids.')
+    }
+
+    return { kind: 'ink', id, x, y, w, h, strokes, ink: null }
+  }
+
+  const ink = ink_strokes_read(reader, source.ink, `${path}.ink`, strokes.length)
+  assert(ink.length <= strokes.length, 'at most one held stroke for each id')
+  return { kind: 'ink', id, x, y, w, h, strokes, ink }
+}
+
+// The strokes a drawing holds, one for each id it names, each a stroke tldraw can draw. The
+// board checks the strokes it copies from the sketch with this too, before it saves them, so
+// whatever is saved reads back.
+export function ink_strokes_read(
+  reader: JsonReader,
+  value: unknown,
+  path: string,
+  count: number,
+): InkStroke[] {
+  assert(count >= 0 && count <= diagram_stroke_ids_count_max, 'held strokes are bounded')
+
+  if (!Array.isArray(value) || value.length !== count) {
+    reader.fail(path, `Expected the ${count} strokes this drawing names.`)
+    return []
+  }
+
+  const strokes = value.map((item, index) => ink_stroke_read(reader, item, `${path}[${index}]`))
+  assert(strokes.length === count, 'every held stroke was read')
+  return strokes
+}
+
+// Rotation is in radians. A stroke turned by hand stays within a few turns.
+const ink_rotation_max = 1000
+
+function ink_stroke_read(reader: JsonReader, value: unknown, path: string): InkStroke {
+  const source = reader.object(value, path, ['type', 'x', 'y', 'rotation', 'opacity', 'props'])
+  const type = reader.choice(source, 'type', path, ink_stroke_types, true)
+  const offset_max = proposal_coordinate_units_max
+  const x = reader.number(source, 'x', path, -offset_max, offset_max)
+  const y = reader.number(source, 'y', path, -offset_max, offset_max)
+  const rotation = reader.number(source, 'rotation', path, -ink_rotation_max, ink_rotation_max)
+  const opacity = reader.number(source, 'opacity', path, 0, 1)
+  const props = source.props
+
+  if (typeof props !== 'object' || props === null || Array.isArray(props)) {
+    reader.fail(`${path}.props`, 'Expected the props of a tldraw pen stroke.')
+    return { type, x, y, rotation, opacity, props: {} }
+  }
+
+  const stroke: InkStroke = { type, x, y, rotation, opacity, props: props as Json }
+
+  // tldraw's own schema decides what a pen stroke is: its samples, colour, size and the rest.
+  if (reader.problem === null && !record_valid(ink_record('check', stroke, 0, 'a0', 0, 0), true)) {
+    reader.fail(`${path}.props`, 'Expected the props of a tldraw pen stroke.')
+  }
+
+  assert(ink_stroke_types.includes(type), 'a held stroke is a pen stroke')
+  assert(opacity >= 0 && opacity <= 1, 'a read opacity is a fraction')
+  return stroke
+}
+
+// How many pen samples the drawings of these shapes hold. Zero while strokes are only named.
+export function ink_points_count(shapes: readonly ProposalShape[]): number {
+  let count = 0
+
+  for (const shape of shapes) {
+    if (shape.kind !== 'ink' || shape.ink === null) continue
+
+    for (const stroke of shape.ink) {
+      const segments = Array.isArray(stroke.props.segments) ? stroke.props.segments : []
+
+      for (const segment of segments as Array<Json | null>) {
+        if (Array.isArray(segment?.points)) count += segment.points.length
+      }
+    }
+  }
+
+  assert(Number.isSafeInteger(count) && count >= 0, 'a count is a whole number')
+  assert(shapes.length <= proposal_shapes_count_max, 'shapes are bounded')
+  return count
 }
 
 // Absent in a v1 shape, so each control reads as its default there.
@@ -266,6 +436,9 @@ function markerboard_ink_check(reader: JsonReader, shapes: readonly ProposalShap
   for (const [index, shape] of shapes.entries()) {
     const path = `shapes[${index}]`
 
+    // A drawing is the person's own ink, in the colours they drew it in. Nothing is painted.
+    if (shape.kind === 'ink') continue
+
     if (shape.color !== 'black') {
       reader.fail(`${path}.color`, 'A markerboard is drawn in black ink only.')
     }
@@ -286,18 +459,28 @@ function markerboard_ink_check(reader: JsonReader, shapes: readonly ProposalShap
 export type Drawing = Pick<Proposal, 'shapes' | 'style'> & { agent_style?: ProposalStyle }
 
 // Native tldraw records for a valid proposal: one shape per proposal shape and two bindings per
-// arrow, nothing else. Every record is checked against tldraw's own schema; a failure is a bug
-// here. A plain drawing gets exactly the records it always did, so earlier revisions render
-// unchanged; a markerboard differs only in its dash and lettering face.
+// arrow, nothing else, except that a drawing gives one native pen stroke for each stroke it
+// holds. Every record is checked against tldraw's own schema; a failure is a bug here. A plain
+// drawing gets exactly the records it always did, so earlier revisions render unchanged; a
+// markerboard differs only in its dash and lettering face.
 export function proposal_records(drawing: Drawing): TLRecord[] {
   const { shapes } = drawing
-  assert(shapes.length > 0, 'a proposal has shapes')
   assert(shapes.length <= proposal_shapes_count_max, 'a proposal is bounded')
   const centers = shape_centers(shapes)
   const records: TLRecord[] = []
+  let strokes_count = 0
 
   shapes.forEach((shape, index) => {
     const style = shape.id.startsWith('a_') ? (drawing.agent_style ?? drawing.style) : drawing.style
+
+    if (shape.kind === 'ink') {
+      assert(shape.ink !== null, 'a published drawing holds its strokes')
+      const { id, x, y } = shape
+      const key = index_key(index)
+      shape.ink.forEach((stroke, place) => records.push(ink_record(id, stroke, place, key, x, y)))
+      strokes_count += shape.ink.length
+      return
+    }
 
     if (shape.kind !== 'arrow') return records.push(shape_record(shape, index_key(index), style))
 
@@ -312,12 +495,43 @@ export function proposal_records(drawing: Drawing): TLRecord[] {
   for (const record of records) assert(record_valid(record), `record ${record.id} is valid`)
 
   const arrows_count = shapes.filter((shape) => shape.kind === 'arrow').length
-  assert(records.length === shapes.length + arrows_count * 2, 'a shape each, two bindings an arrow')
+  const drawings_count = shapes.filter((shape) => shape.kind === 'ink').length
+  assert(
+    records.length === shapes.length - drawings_count + strokes_count + arrows_count * 2,
+    'a shape each, two bindings an arrow, and a stroke for each a drawing holds',
+  )
   return records
 }
 
+// One kept stroke as a native tldraw shape: the stroke as it was drawn, moved with its drawing.
+// Its id joins the drawing's id and the stroke's place with a dot, which no proposal id holds,
+// so it meets no other shape's. Its index sorts it after the drawing's earlier strokes and
+// before the next shape: an index key followed by two digits and a closing letter is a valid
+// fractional index between that key and the next.
+function ink_record(
+  drawing_id: string,
+  stroke: InkStroke,
+  place: number,
+  index: string,
+  x: number,
+  y: number,
+): TLRecord {
+  const base = index_digits.length
+  assert(Number.isInteger(place) && place >= 0 && place < base * base, 'a place fits two digits')
+  assert(Number.isFinite(x) && Number.isFinite(y), 'a drawing has a position')
+  const order = `${index}${index_digits[Math.floor(place / base)]}${index_digits[place % base]}V`
+  return {
+    ...record_base(drawing_id, order, x + stroke.x, y + stroke.y),
+    id: `shape:cleaned-${drawing_id}.${place}`,
+    rotation: stroke.rotation,
+    opacity: stroke.opacity,
+    type: stroke.type,
+    props: stroke.props,
+  } as unknown as TLRecord
+}
+
 function shape_centers(shapes: readonly ProposalShape[]): Map<string, { x: number; y: number }> {
-  assert(shapes.length > 0, 'a proposal has shapes')
+  assert(shapes.length <= proposal_shapes_count_max, 'a proposal is bounded')
   const centers = new Map<string, { x: number; y: number }>()
 
   for (const shape of shapes) {
@@ -349,8 +563,12 @@ function style_dash(style: ProposalStyle): 'solid' | 'draw' {
   return dash
 }
 
-function shape_record(shape: ProposalShape, index: string, style: ProposalStyle): TLRecord {
-  assert(shape.kind !== 'arrow', 'arrows have their own records')
+function shape_record(
+  shape: Exclude<ProposalShape, { kind: 'arrow' | 'ink' }>,
+  index: string,
+  style: ProposalStyle,
+): TLRecord {
+  assert(proposal_kinds.includes(shape.kind), 'arrows and drawings have their own records')
   assert(index.length >= 2, 'an index key has a head and a digit')
   const base = record_base(shape.id, index, shape.x, shape.y)
   const rich_text = toRichText(shape.text)
@@ -502,7 +720,9 @@ export function index_key(index: number): string {
   return `b${index_digits[Math.floor(index / base)]}${index_digits[index % base]}`
 }
 
-function record_valid(record: TLRecord): boolean {
+// `quiet` is for input that may simply be wrong, such as a held stroke being read: there a
+// failure is an ordinary problem for the caller to report, not a bug to put in the log.
+function record_valid(record: TLRecord, quiet = false): boolean {
   assert(record.typeName === 'shape' || record.typeName === 'binding', 'cleaned records are drawn')
 
   try {
@@ -511,7 +731,8 @@ function record_valid(record: TLRecord): boolean {
 
     return true
   } catch (error) {
-    console.error(error)
+    if (!quiet) console.error(error)
+
     return false
   }
 }
