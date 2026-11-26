@@ -14,7 +14,16 @@ import {
 } from '../shared/whiteboard'
 
 export type Send = { kind: EventKind; sketch_hash: string; request_id: string; text?: string }
-export type Draft = { text: string; pending: Send | null }
+
+// `interpret` is the switch for the next send. Drafts saved before it existed leave it out.
+export type Draft = { text: string; pending: Send | null; interpret?: boolean }
+
+// A failure whose words are written for the person sending. Anything else that is thrown, such
+// as a lost connection, a timeout or an unreadable reply, is reported as a missing confirmation.
+export class SendError extends Error {}
+
+export const draft_length_max = 8192
+export const draft_key = (session: string) => `tldraw-sync.notify.${session}`
 
 export function draft_load(key: string): Draft {
   const raw = sessionStorage.getItem(key)
@@ -26,7 +35,8 @@ export function draft_load(key: string): Draft {
 
   if (
     typeof draft.text !== 'string' ||
-    draft.text.length > 8192 ||
+    draft.text.length > draft_length_max ||
+    (draft.interpret !== undefined && typeof draft.interpret !== 'boolean') ||
     (p !== null &&
       (!event_kinds.includes(p.kind) ||
         !document_hash_pattern.test(p.sketch_hash) ||
@@ -36,6 +46,15 @@ export function draft_load(key: string): Draft {
     throw Error('Cannot read this tab’s pending request. Check status before sending.')
 
   return draft
+}
+
+// The replay key of this tab's unconfirmed request on a board, if it has one that can be read.
+export function draft_pending_key(session: string): string | null {
+  try {
+    return draft_load(draft_key(session)).pending?.request_id ?? null
+  } catch {
+    return null
+  }
 }
 
 function request_id(): string {
@@ -59,7 +78,9 @@ function request_id(): string {
 }
 
 export function send_prepare(editor: Editor, kind: EventKind, text: string): Send {
-  if (!request_text_valid(text)) throw Error('Use up to 4000 characters without control marks.')
+  if (!request_text_valid(text)) {
+    throw new SendError('Use up to 4000 characters without control marks.')
+  }
 
   const types = editor.store.scopedTypes.document
   const records = editor.store.allRecords().filter((r) => types.has(r.typeName))
@@ -71,7 +92,7 @@ export function send_prepare(editor: Editor, kind: EventKind, text: string): Sen
   }
 
   if (new TextEncoder().encode(JSON.stringify(body)).length > request_size_bytes_max) {
-    throw Error('The encoded request exceeds 16 KiB. Shorten the note.')
+    throw new SendError('The encoded request exceeds 16 KiB. Shorten the note.')
   }
 
   return body
@@ -82,12 +103,12 @@ export async function send_event(session: string, token: string, send: Send) {
   const opts = { redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(5000) } as const
   const status = await fetch(path_status + query, opts)
 
-  if (!status.ok) throw Error('Cannot confirm the board version. Reconnect and retry.')
+  if (!status.ok) throw new SendError('Cannot confirm the board version. Reconnect and retry.')
 
   const capability = await status.json()
 
   if (capability.protocol !== 2 || capability.session !== session) {
-    throw Error('Upgrade and restart the Mac board before sending. Your note is kept.')
+    throw new SendError('Upgrade and restart the Mac board before sending. Your note is kept.')
   }
 
   // Fence the POST as well: an older daemon replacing the one just checked must not strip text.
@@ -102,7 +123,7 @@ export async function send_event(session: string, token: string, send: Send) {
   if (!response.ok) {
     if (response.status < 500) return { ok: false as const, message: String(body.message) }
 
-    throw Error('No durable confirmation. Retry the same request.')
+    throw new SendError('No durable confirmation. Retry the same request.')
   }
 
   const e = body as BoardEvent
@@ -115,7 +136,7 @@ export async function send_event(session: string, token: string, send: Send) {
     typeof e.id !== 'string' ||
     !event_states.includes(e.state)
   ) {
-    throw Error('No exact confirmation. Upgrade the Mac board before retrying.')
+    throw new SendError('No exact confirmation. Upgrade the Mac board before retrying.')
   }
 
   return { ok: true as const, event: e }

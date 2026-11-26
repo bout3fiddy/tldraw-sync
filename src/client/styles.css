@@ -20,6 +20,8 @@
   --wash: rgb(29 29 29 / 0.06);
   --ink-quiet: rgb(29 29 29 / 0.28);
   --paper-quiet: rgb(246 247 244 / 0.72);
+  /* Paper a shade under the vellum, for the note capsule. Lead reads 5.4:1 on it. */
+  --blotter: #ecede9;
   --type: 'Atkinson Hyperlegible Next Variable', 'Avenir Next', system-ui, sans-serif;
   /* Every floating instrument is one module tall or wide: a 44px control in a 3px frame. */
   --control: 44px;
@@ -64,7 +66,10 @@ body {
 .notice,
 .cleaned__empty,
 .caption,
-.rail {
+.rail,
+.dock,
+.inbox,
+.composer {
   font-family: var(--type);
 }
 
@@ -157,6 +162,7 @@ button {
 
 .tabs,
 .strip,
+.dock,
 .rail-toggle {
   box-sizing: border-box;
   border: 1px solid var(--ink);
@@ -316,18 +322,51 @@ button {
   transform: translateX(-50%);
 }
 
-/* The tool strip, under the hand that is not holding the Pencil. */
+/* The tool column, under the hand that is not holding the Pencil. Its rail runs the height of
+   the pane and lets the pen through: only the strip and the agent's buttons take a touch.
+   The strip rests at the middle of the pane as it is with the note closed, and stays there
+   when the note opens and the pane shortens, so that no button moves from under a finger.
+   It gives way only when the pane is too short to hold it. */
 
-.strip {
+.toolside {
   position: absolute;
-  top: 50%;
+  top: 0;
+  bottom: 8px;
   left: calc(env(safe-area-inset-left) + var(--edge));
   z-index: 400;
   display: flex;
   flex-direction: column;
+  pointer-events: none;
+}
+
+.toolside::before,
+.toolside::after {
+  content: '';
+  flex: 1 1 0;
+}
+
+/* The board is as tall as the pane with the note closed, less the rule over the views. The
+   pane is shorter by what an open note takes; the space above the strip is longer by as
+   much, and is the first to give. Without container units the strip is simply centred. */
+.toolside::before {
+  flex-basis: calc(100cqh - 1px - 100%);
+}
+
+.toolside__set {
+  position: relative;
+  flex: none;
+}
+
+.strip,
+.toolside__slot {
+  pointer-events: auto;
+}
+
+.strip {
+  display: flex;
+  flex-direction: column;
   gap: 2px;
   padding: var(--frame);
-  transform: translateY(-50%);
 }
 
 .strip__rule {
@@ -432,36 +471,486 @@ button {
   cursor: pointer;
 }
 
-.composer { transform: translateY(calc(0px - var(--keyboard, 0px))); }
-.composer textarea {
-  box-sizing: border-box;
-  flex: 1 1 16rem;
-  min-width: 8rem;
-  min-height: 44px;
-  max-height: 110px;
-  padding: 10px 4px;
-  border: 0;
-  border-bottom: 1px solid var(--ink);
-  border-radius: 0;
-  background: transparent;
-  font: 1rem/22px var(--type);
-  color: var(--ink);
-  overflow-y: auto;
-  resize: none;
-  user-select: text;
-  -webkit-user-select: text;
-  touch-action: pan-y;
-}
-.composer textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-.composer button[aria-pressed='true'] { background: var(--ink); color: var(--vellum); }
 .agent-rail button:disabled { color: var(--lead); border-color: var(--rule); cursor: default; }
 
-.agent-rail [role='status'] {
-  margin-left: auto;
-  max-width: 40ch;
+/* The sketch as a sheet with a lower margin. The drawing surface, tldraw's own canvas, ends
+   above the bottom of its pane. The margin under it is paper a shade deeper, with no grid:
+   it takes no ink, and a hand resting there presses nothing of the canvas. tldraw anchors
+   its notice to the bottom of the editor, so the notice rests in the margin, clear of the
+   drawing surface: four pixels or the home-indicator inset from the bottom, as tldraw sets
+   it, then the taller of its two forms, 52px, then eight pixels of air. Nothing here styles
+   or moves the notice itself. */
+
+.board--draw {
+  --sheet-margin: calc(max(4px, env(safe-area-inset-bottom)) + 60px);
+  /* The board is the measure for its instruments: its content box is the views' full size. */
+  container: board / size;
+}
+
+.sheet {
+  position: absolute;
+  inset: 0 0 var(--sheet-margin) 0;
+}
+
+.sheet__margin {
+  position: absolute;
+  inset: auto 0 0 0;
+  box-sizing: border-box;
+  height: var(--sheet-margin);
+  border-top: 1px solid var(--rule);
+  background: var(--blotter);
+}
+
+/* The agent's two instruments on the iPad: one opens the note, one lists what became of each
+   request. While the sketch is on screen they are fixed to its drawing tools, eight pixels
+   off the strip, wherever the strip is. A dot says there is something to come back to: a
+   note not yet sent, or news not yet read. */
+
+/* Beside the head of the strip: the placing that fits a pane of any height. */
+.toolside__slot {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px);
+}
+
+.dockside {
+  position: relative;
+}
+
+.dock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--frame);
+}
+
+/* A board tall enough carries them at the head of the column, over the strip. Tall enough
+   means that the tallest note, 148px of band, can push the 499px strip up from the middle
+   and still leave the 98px of the two buttons, the gap and eight pixels of air above it.
+   The board's height does not change when the note opens, so neither does the placing. */
+@container board (min-height: 770px) {
+  .toolside__slot {
+    top: auto;
+    bottom: calc(100% + 8px);
+    left: 0;
+  }
+
+  .toolside__slot .inbox {
+    top: 0;
+    left: calc(100% + 8px);
+  }
+}
+
+/* With only the Agent canvas on screen there are no drawing tools. The two buttons wait in
+   the band above the views, beside the list of boards, where they cover no diagram. */
+
+.board {
+  --dock-top: calc(env(safe-area-inset-top) + var(--edge));
+  --dock-left: calc(env(safe-area-inset-left) + var(--edge) + var(--module) + 8px);
+}
+
+/* Pinned open, the list of boards has no button in the corner: the dock takes its place. */
+.shell[data-rail='docked'] .board {
+  --dock-left: calc(env(safe-area-inset-left) + var(--edge));
+}
+
+/* A window too narrow for the dock beside the view tabs: it drops to just under the band. */
+@media (max-width: 640px) {
+  .board {
+    --dock-top: calc(env(safe-area-inset-top) + var(--module) + 3 * var(--edge));
+    --dock-left: calc(env(safe-area-inset-left) + var(--edge));
+  }
+}
+
+.dockside[data-place='band'] {
+  position: absolute;
+  top: var(--dock-top);
+  left: var(--dock-left);
+  z-index: 450;
+}
+
+.dockside[data-place='band'] .dock {
+  flex-direction: row;
+}
+
+.dock__button {
+  /* What the button is drawn on, so its dot can be cut clear of the glyph beneath it. */
+  --ground: var(--vellum);
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--control);
+  height: var(--control);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* A press lands on the button whichever part of it is touched: tldraw, inside whose frame
+   the buttons sit, passes on an edge-of-screen touch only when it lands on a button. */
+.dock__button > * {
+  pointer-events: none;
+}
+
+.dock__button[aria-expanded='true'] {
+  --ground: var(--ink);
+  background: var(--ink);
+  color: var(--vellum);
+}
+
+.dock__dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px var(--ground);
+}
+
+/* What became of each request: a sheet let out from the two buttons, one row to a request,
+   kept up to date in place. It opens only when the bell is pressed. Its left edge is never
+   further in than a strip and a gap from the screen's, and it is sized to fit from there:
+   by the window where container units are missing, by the board where they are not. */
+
+.inbox {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(22rem, calc(100vw - 2 * var(--edge) - var(--module) - 8px));
+  width: min(22rem, calc(100cqw - 2 * var(--edge) - var(--module) - 8px));
+  max-height: min(27rem, 45vh);
+  max-height: min(27rem, 45cqh);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  /* Beside the tools the sheet sits in tldraw's frame, which sets type small and unaligned. */
+  color: var(--ink);
+  font-size: 0.9375rem;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+.inbox:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.inbox__title {
+  margin: 0;
+  padding: 12px 16px 11px;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.inbox__hint,
+.inbox__empty {
+  margin: 0;
+  padding: 11px 16px 12px;
+  border-top: 1px solid var(--rule);
+}
+
+/* Why nothing can be sent yet: set apart by a square of ink, like every other caution. */
+.inbox__hint {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.inbox__hint::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--ink);
+  transform: translateY(-2px);
+}
+
+.inbox__empty {
+  color: var(--lead);
+}
+
+.inbox__list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.inbox__row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0 12px;
+  padding: 10px 16px 11px;
+}
+
+.inbox__row + .inbox__row {
+  border-top: 1px solid var(--rule);
+}
+
+/* An open square is a request still on its way; a square of ink is one that has ended. */
+.inbox__mark {
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--ink);
+}
+
+.inbox__row:is([data-state='updated'], [data-state='failed'], [data-state='refused'])
+  .inbox__mark {
+  background: var(--ink);
+}
+
+.inbox__subject,
+.inbox__state,
+.inbox__detail {
+  margin: 0;
   overflow-wrap: anywhere;
+}
+
+.inbox__subject {
+  font-weight: 500;
+}
+
+.inbox__state {
   color: var(--lead);
   font-size: 0.875rem;
+}
+
+/* Trouble is said in words, in the weight of ink, never in red. */
+.inbox__row:is([data-state='failed'], [data-state='refused'], [data-state='unconfirmed'])
+  .inbox__state {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.inbox__detail {
+  margin-top: 2px;
+  font-size: 0.875rem;
+}
+
+.inbox__time {
+  color: var(--lead);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The note. Closed, it takes no room. Open, it is a band under the views, so it never lies
+   over the drawing, the Agent canvas, or the notice tldraw keeps in the corner of a canvas.
+   The keyboard lifts the band and leaves every canvas the size it was. */
+
+.composer {
+  --note-line: 22px;
+  --note-pad: 11px;
+  position: relative;
+  z-index: 440;
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px 12px;
+  /* As deep as the action rail it replaces, so the views above it keep their old height. */
+  padding: 5px max(var(--edge), env(safe-area-inset-right))
+    max(5px, env(safe-area-inset-bottom)) max(var(--edge), env(safe-area-inset-left));
+  border-top: 1px solid var(--rule);
+  background: var(--vellum);
+  touch-action: manipulation;
+  transform: translateY(calc(0px - var(--keyboard, 0px)));
+}
+
+.composer[hidden],
+.composer__capsule[hidden] {
+  display: none;
+}
+
+/* The capsule is the one soft shape on the board: paper a shade deeper than the vellum, with
+   no ink edge. Its two controls keep their size and stay on its bottom line while the note
+   grows upward, from one line to five. */
+.composer__capsule {
+  display: flex;
+  flex: 0 1 34rem;
+  align-items: flex-end;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--frame) var(--frame) var(--frame) 18px;
+  border-radius: calc(var(--control) / 2 + var(--frame));
+  background: var(--blotter);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+
+/* Being typed in, the capsule's edge firms up from a rule to pencil lead. */
+.composer__capsule:focus-within {
+  box-shadow: inset 0 0 0 1px var(--lead);
+}
+
+.composer__field {
+  display: grid;
+  /* One column, exactly as wide as the room left by the controls, whatever the words are. */
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The note is as tall as its words. An unseen copy of the text shares the field's cell and
+   sets its height, so the browser lays the field out afresh after every edit, paste, undo,
+   rotation and reopening. No height is measured and stored, so none can go stale. */
+.composer__mirror,
+.composer__input {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-height: calc(5 * var(--note-line) + 2 * var(--note-pad));
+  margin: 0;
+  padding: var(--note-pad) 6px var(--note-pad) 0;
+  border: 0;
+  /* Sixteen pixels: Safari on the iPad zooms the page into any smaller field it focuses. */
+  font: 400 16px / var(--note-line) var(--type);
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.composer__mirror {
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Safari on the iPad insets a field's own text by three pixels a side. The copy is inset to
+   match, so that it wraps where the field does and never comes up a line short. */
+@supports (-webkit-touch-callout: none) {
+  .composer__mirror {
+    padding-right: 9px;
+    padding-left: 3px;
+  }
+}
+
+.composer__input {
+  display: block;
+  /* The cell is as tall as the copy made it; the field fills the cell. */
+  height: 100%;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  resize: none;
+  -webkit-appearance: none;
+  appearance: none;
+  /* A note is typed and selected like any text, unlike the drawing surface around it. */
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: pan-y;
+}
+
+/* Empty is always one line: a long hint is cut short, never wrapped. */
+.composer__input::placeholder {
+  overflow: hidden;
+  color: var(--lead);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A 44px target around a small plate. The glyphs never scale with the note. */
+.composer__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--control);
+  height: var(--control);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.composer__icon:disabled {
+  cursor: default;
+}
+
+.composer__plate {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+}
+
+/* Interpret is a switch for the next send: off, a quiet glyph; on, solid ink, like every
+   chosen thing on the board. */
+.composer__interpret {
+  color: var(--lead);
+}
+
+.composer__interpret[aria-checked='true'] .composer__plate {
+  background: var(--ink);
+  color: var(--vellum);
+}
+
+.composer__interpret:disabled[aria-checked='false'] {
+  color: var(--ink-quiet);
+}
+
+/* Send is the one round plate: an action, not a state. */
+.composer__send .composer__plate {
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--vellum);
+}
+
+.composer__send:disabled .composer__plate {
+  background: var(--ink-quiet);
+}
+
+/* A send that did not go through: the capsule shakes its head once. The reason is under the
+   bell. Two names for one motion, so that a second refusal plays it again. */
+.composer__capsule[data-nudge='a'] {
+  animation: note-refused-a 260ms ease-out;
+}
+
+.composer__capsule[data-nudge='b'] {
+  animation: note-refused-b 260ms ease-out;
+}
+
+.composer__replace {
+  min-height: var(--control);
+  padding: 0 12px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  cursor: pointer;
+}
+
+.composer__replace:disabled {
+  border-color: var(--rule);
+  color: var(--lead);
+  cursor: default;
 }
 
 .pair-inset {
@@ -476,17 +965,89 @@ button {
 .pair-inset svg { width: 12rem; }
 .pair-inset p { margin: 4px 0; }
 
+/* Stacked views. The sketch is the upper half, too short for a column: the two buttons stay
+   beside the head of the strip. On a linked board the strip lies along the bottom of the
+   sketch, in the sheet's margin, and the two buttons lie with it: at its left end where the
+   pane is wide enough for both, over its left end where it is not. */
 @media (max-aspect-ratio: 1/1) {
-  .board[data-linked='true'] .views[data-view='side'] .strip {
+  .views[data-view='side'] .toolside::before {
+    flex-basis: calc(50cqh - 1px - 100%);
+  }
+
+  .views[data-view='side'] .toolside__slot {
+    top: 0;
+    bottom: auto;
+    left: calc(100% + 8px);
+  }
+
+  .views[data-view='side'] .toolside__slot .inbox {
+    top: calc(100% + 8px);
+    left: 0;
+  }
+
+  .board[data-linked='true'] .views[data-view='side'] .toolside {
     top: auto;
+    right: 0;
     bottom: 4px;
-    left: 50%;
-    max-width: 96%;
+    left: 0;
+    flex-direction: row;
+    justify-content: center;
+  }
+
+  .board[data-linked='true'] .views[data-view='side'] .toolside::before,
+  .board[data-linked='true'] .views[data-view='side'] .toolside::after {
+    content: none;
+  }
+
+  /* The strip keeps clear of the corner tldraw's notice rests in, in either of its forms. */
+  .board[data-linked='true'] .views[data-view='side'] .toolside__set {
+    min-width: 0;
+    max-width: calc(100% - 2 * var(--edge));
+  }
+
+  .board[data-linked='true'] .views[data-view='side'] .strip {
+    max-width: 100%;
     flex-direction: row;
     overflow-x: auto;
-    transform: translateX(-50%);
   }
+
   .board[data-linked='true'] .strip > * { flex-shrink: 0; }
+
+  .board[data-linked='true'] .views[data-view='side'] .toolside__slot {
+    top: auto;
+    right: calc(100% + 8px);
+    bottom: 0;
+    left: auto;
+  }
+
+  .board[data-linked='true'] .views[data-view='side'] .dock {
+    flex-direction: row;
+  }
+
+  .board[data-linked='true'] .views[data-view='side'] .toolside__slot .inbox {
+    top: auto;
+    bottom: calc(100% + 8px);
+    left: 0;
+    max-height: min(27rem, 30vh);
+    max-height: min(27rem, 30cqh);
+  }
+
+  /* 508px of strip, and on each side of it the 98px of the two buttons, a gap and air. */
+  @container board (max-width: 735px) {
+    .board[data-linked='true'] .views[data-view='side'] .toolside__slot {
+      right: auto;
+      bottom: calc(100% + 8px);
+      left: 0;
+    }
+  }
+
+  /* Just wide enough for tldraw's notice at full width, and too narrow for the strip to
+     pass it: the strip is cut short of the notice, and slides. */
+  @container board (min-width: 690px) and (max-width: 735px) {
+    .board[data-linked='true'] .views[data-view='side'] .toolside__set {
+      max-width: calc(100% - 224px);
+    }
+  }
 }
 
 /* The stage guide: how to connect an iPad, shown only until one is connected. */
@@ -809,6 +1370,8 @@ button {
   .tabs__tab:not([aria-selected='true']):hover,
   .strip__button:not([aria-pressed='true'], [data-armed='true'], :disabled):hover,
   .strip__ink:hover,
+  .dock__button:not([aria-expanded='true']):hover,
+  .composer__interpret:not([aria-checked='true'], :disabled):hover .composer__plate,
   .rail__icon:not([aria-pressed='true']):hover,
   .rail__rename:hover,
   .rail__item:not([data-active='true']):hover {
@@ -816,7 +1379,8 @@ button {
   }
 
   .rail-toggle:hover,
-  .rail__new:not(:disabled):hover {
+  .rail__new:not(:disabled):hover,
+  .composer__replace:not(:disabled):hover {
     background: #ecede9;
   }
 
@@ -842,9 +1406,30 @@ button {
   }
 }
 
+@keyframes note-refused-a {
+  30% {
+    transform: translateX(-5px);
+  }
+
+  70% {
+    transform: translateX(4px);
+  }
+}
+
+@keyframes note-refused-b {
+  30% {
+    transform: translateX(-5px);
+  }
+
+  70% {
+    transform: translateX(4px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .guide--card,
-  .shell[data-rail='open'] .rail {
+  .shell[data-rail='open'] .rail,
+  .composer__capsule[data-nudge] {
     animation: none;
   }
 }
@@ -853,8 +1438,15 @@ button {
 @media (forced-colors: active) {
   .tabs__tab[aria-selected='true'],
   .strip__button[aria-pressed='true'],
+  .dock__button[aria-expanded='true'],
+  .composer__interpret[aria-checked='true'] .composer__plate,
   .rail__item[data-active='true'] {
     outline: 2px solid CanvasText;
     outline-offset: -2px;
+  }
+
+  .composer__capsule,
+  .composer__send .composer__plate {
+    outline: 1px solid CanvasText;
   }
 }

@@ -1,105 +1,71 @@
+// A linked board end to end: an iPad paired by the stage QR sends its sketch with and without
+// a note, the agent's replies arrive as rows under the bell, the Agent canvas is published
+// and shown on both screens, and the person copies it into the sketch and takes that back.
+//
+// Run: bun run build && npx playwright test tests/whiteboard.e2e.ts
+
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
-import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import jsQR from 'jsqr'
+import {
+  bell,
+  board_linked,
+  chat,
+  composer_open,
+  draw,
+  expect_marks_clear,
+  inbox,
+  inbox_open,
+  interpret,
+  ipad_landscape,
+  note,
+  notify,
+  row_with,
+  rows,
+  rows_about,
+  step,
+  step_long_ms,
+  type Cli,
+} from './whiteboard_board'
 
 // Disposable pairing material belongs neither in traces nor in screenshots. Capture the agent
 // surface only after the paired iPad has removed the QR fragment from its history.
 test.use({ trace: 'off' })
 
-function command(root: string, ...args: string[]) {
-  const result = spawnSync(process.env.BUN ?? 'bun', ['src/cli/main.ts', ...args, '--json'], {
-    env: { ...process.env, BOARD_DATA_DIR: root, PATH: `${root}:${process.env.PATH}` },
-    timeout: 30_000,
-    encoding: 'utf8',
-    maxBuffer: 1024 * 1024,
-  })
-  return JSON.parse(result.stdout)
-}
-
-async function scan(stage: Page) {
-  const qr = stage.locator('.guide--card .guide__code')
-  await expect(qr).toBeVisible()
-  const pixels = await qr.evaluate(async (svg) => {
-    const blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' })
-    const url = URL.createObjectURL(blob)
-
-    try {
-      const image = new Image()
-      image.src = url
-      await image.decode()
-      const canvas = document.createElement('canvas')
-      canvas.width = canvas.height = 480
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = 'white'
-      ctx.fillRect(0, 0, 480, 480)
-      ctx.drawImage(image, 0, 0, 480, 480)
-      return Array.from(ctx.getImageData(0, 0, 480, 480).data)
-    } finally {
-      URL.revokeObjectURL(url)
-    }
-  })
-  const decoded = jsQR(new Uint8ClampedArray(pixels), 480, 480)
-
-  if (!decoded) throw Error('The stage QR is unreadable.')
-
-  return new URL(decoded.data)
-}
-
-async function draw(ipad: Page) {
-  const cdp = await ipad.context().newCDPSession(ipad)
-
-  try {
-    for (const [n, type] of [
-      'mousePressed',
-      'mouseMoved',
-      'mouseMoved',
-      'mouseReleased',
-    ].entries()) {
-      await cdp.send('Input.dispatchMouseEvent', {
-        type: type as 'mousePressed' | 'mouseMoved' | 'mouseReleased',
-        x: 280 + n * 20,
-        y: 290 + n * 15,
-        button: 'left',
-        buttons: n < 3 ? 1 : 0,
-        pointerType: 'pen',
-        force: 0.5,
-        clickCount: 1,
-      })
-    }
-  } finally {
-    await cdp.detach()
-  }
-}
-
-async function geometry(page: Page, info: TestInfo, name: string) {
-  const controls = page.locator('.agent-rail button')
-  const bounds = await controls.evaluateAll((buttons) =>
-    buttons.map((button) => {
-      const r = button.getBoundingClientRect()
-      return {
-        width: r.width,
-        height: r.height,
-        x: r.x,
-        right: r.right,
-        top: r.top,
-        bottom: r.bottom,
-      }
-    }),
-  )
+// Every control is at least a 44px target and on the screen. On the iPad the note's controls
+// and Replace sit in the band under the views, never over the Agent canvas.
+async function geometry(page: Page, info: TestInfo, name: string, ipad: boolean) {
+  const band = ipad ? '.composer button' : '.agent-rail button'
+  const measure = (selector: string) =>
+    page.locator(selector).evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const r = button.getBoundingClientRect()
+        return {
+          width: r.width,
+          height: r.height,
+          x: r.x,
+          right: r.right,
+          top: r.top,
+          bottom: r.bottom,
+        }
+      }),
+    )
+  const below = await measure(band)
+  const beside = ipad ? await measure('.dock button') : []
   const pane = await page.locator('.views__pane--cleaned').boundingBox()
   expect(pane).not.toBeNull()
+  expect(below.length).toBeGreaterThanOrEqual(ipad ? 3 : 1)
+  expect(beside).toHaveLength(ipad ? 2 : 0)
 
-  for (const b of bounds) {
+  for (const b of [...below, ...beside]) {
     expect(b.width).toBeGreaterThanOrEqual(44)
     expect(b.height).toBeGreaterThanOrEqual(44)
-    expect(b.top + 1).toBeGreaterThanOrEqual(pane!.y + pane!.height)
     expect(b.x).toBeGreaterThanOrEqual(0)
     expect(b.right).toBeLessThanOrEqual(page.viewportSize()!.width)
     expect(b.bottom).toBeLessThanOrEqual(page.viewportSize()!.height)
   }
+
+  for (const b of below) expect(b.top + 1).toBeGreaterThanOrEqual(pane!.y + pane!.height)
 
   const file = info.outputPath(`${name}.png`)
   await page.screenshot({ path: file })
@@ -109,36 +75,33 @@ async function geometry(page: Page, info: TestInfo, name: string) {
 test('paired notes and interpretation share one canvas, copied in one undo', async ({
   browser,
 }, info) => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'linked-e2e-')))
-  const file = path.join(root, 'binding.json')
-  const cli = (...args: string[]) => command(root, ...args)
-  const bound = (action: string, ...args: string[]) =>
-    cli(
-      `whiteboard-${action}`,
-      '--binding',
-      file,
-      ...(action === 'poll' ? ['--protocol', '2'] : []),
-      ...args,
+  await board_linked(browser, async ({ root, file, cli, bound, stage, ipad, session, linked }) => {
+    const status = () => cli('status', '--session', session)
+    const ink_hash = await step('one pen stroke reaches the Mac', async () => {
+      await draw(ipad)
+      await expect.poll(() => status().shapes_count).toBe(1)
+      return status().document_hash as string
+    })
+    await step(
+      'refused, lost and inexact sends keep the draft',
+      () => delivery(ipad, bound, ink_hash),
+      step_long_ms,
     )
-  const stage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-  const ipad = await browser.newPage({ viewport: { width: 820, height: 1180 }, hasTouch: true })
-
-  try {
-    const linked = await pair(root, file, stage, ipad)
-    await draw(ipad)
-    const status = () => cli('status', '--session', linked.session)
-    await expect.poll(() => status().shapes_count).toBe(1)
-    const ink_hash = status().document_hash
-    await delivery(ipad, bound, ink_hash)
-
-    publish_canvas(root, bound, linked.session, ink_hash)
-
-    await agent_views(ipad, stage, info)
+    await step('the agent publishes its canvas', async () =>
+      publish_canvas(root, bound, session, ink_hash),
+    )
+    await step(
+      'the Agent canvas shows on both screens',
+      () => agent_views(ipad, stage, info),
+      step_long_ms,
+    )
+    console.log('  step: replace the sketch, then undo')
     await ipad.getByRole('button', { name: 'Replace sketchboard' }).tap()
     await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
+    await expect(ipad.getByText('Sketch replaced. Undo restores your ink.')).toBeVisible()
     await expect.poll(() => status().shapes_count).toBe(3)
     const snap = bound('snapshot', '--layer', 'canvas', '--out', path.join(root, 'after'))
     expect(snap.status).toBe('success')
@@ -157,49 +120,10 @@ test('paired notes and interpretation share one canvas, copied in one undo', asy
     expect(status()).toMatchObject({ protocol: 2, agent_revision: 1 })
     const token = JSON.parse(fs.readFileSync(file, 'utf8')).token
     expect(JSON.stringify({ linked, snap }).includes(token)).toBe(false)
-  } finally {
-    await Promise.all([stage.close(), ipad.close()])
-    const stopped = cli('stop')
-    expect(stopped.status).toBe('success')
-
-    if (fs.existsSync(file)) expect(bound('poll').code).toBe('not_running')
-
-    fs.rmSync(root, { recursive: true, force: true })
-  }
+  })
 })
 
-async function pair(root: string, file: string, stage: Page, ipad: Page) {
-  const link = () =>
-    command(root, 'whiteboard-link', '--protocol', '2', '--owner', 'e2e', '--out', file)
-  const opener = path.join(root, process.platform === 'darwin' ? 'open' : 'xdg-open')
-  fs.writeFileSync(opener, '#!/bin/sh\nexit 1\n', { mode: 0o700 })
-  expect(link().code).toBe('stage_closed')
-  fs.writeFileSync(opener, '#!/bin/sh\nprintf "%s" "$1" > "$BOARD_DATA_DIR/opened"\n')
-  const linked = link()
-  expect(linked.status).toBe('success')
-  expect(link().session).toBe(linked.session)
-  expect(fs.readFileSync(path.join(root, 'opened'), 'utf8')).toBe(linked.stage_url)
-  await stage.goto(linked.stage_url)
-  const paired = await scan(stage)
-  expect(paired.hash.startsWith('#pair=')).toBe(true)
-  await ipad.goto(new URL(linked.stage_url).origin + paired.pathname)
-  await expect(ipad.getByRole('button', { name: 'Notify agent' })).toBeDisabled()
-  await ipad.evaluate((hash) => {
-    location.hash = hash
-  }, paired.hash)
-  await expect(ipad.getByRole('button', { name: 'Notify agent' })).toBeEnabled()
-  await ipad.reload()
-  await expect(ipad.getByRole('button', { name: 'Notify agent' })).toBeEnabled()
-  expect(new URL(ipad.url()).hash.length).toBe(0)
-  return linked
-}
-
-function publish_canvas(
-  root: string,
-  bound: (action: string, ...args: string[]) => any,
-  session: string,
-  hash: string,
-) {
+function publish_canvas(root: string, bound: Cli, session: string, hash: string) {
   const snap = bound('snapshot', '--out', path.join(root, 'out'))
   expect(snap).toMatchObject({ status: 'success', base_revision: 0, snapshot: hash })
   expect(snap.publish_command).toContain('whiteboard-publish --binding')
@@ -224,11 +148,8 @@ function publish_canvas(
   })
 }
 
-async function delivery(
-  ipad: Page,
-  bound: (action: string, ...args: string[]) => any,
-  hash: string,
-) {
+async function delivery(ipad: Page, bound: Cli, hash: string) {
+  await composer_open(ipad)
 
   // Exercise the real server rejection by substituting an unconfirmed document hash in transit.
   await ipad.route(
@@ -242,18 +163,31 @@ async function delivery(
       }),
     { times: 1 },
   )
-  await ipad.getByRole('button', { name: 'Notify agent' }).tap()
-  await expect(ipad.getByText('Ink is syncing. Tap again to send.')).toBeVisible()
+  await notify(ipad).tap()
+
+  // The refusal is news on the bell. The list stays closed, and the band says nothing.
+  await expect(bell(ipad)).toHaveAccessibleName('Notifications, 1 unread')
+  await expect(inbox(ipad)).toBeHidden()
+  await expect(ipad.locator('.composer')).not.toContainText('Ink is syncing')
+  const refused = await row_with(ipad, 'Ink is syncing. Tap again to send.')
+  await expect(refused).toHaveAttribute('data-state', 'refused')
+  await expect(bell(ipad)).toHaveAccessibleName('Notifications')
   expect(bound('poll').events).toEqual([])
-  await ipad.getByRole('button', { name: 'Notify agent' }).tap()
-  await expect(ipad.getByText('Notification: queued')).toBeVisible()
-  const toggle = ipad.getByRole('button', { name: 'Interpret', exact: true })
-  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  await notify(ipad).tap()
+  await inbox_open(ipad)
+  await expect(rows(ipad)).toHaveCount(2)
+  await expect(rows_about(ipad, 'sketch_notify', 'queued')).toHaveCount(1)
+  const toggle = interpret(ipad)
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
   await toggle.tap()
-  const note = '  筆 📝\nr and d?  '
-  await composer_recovery(ipad, note, bound)
-  await expect(ipad.getByRole('textbox')).toHaveValue('')
-  await expect(ipad.getByText('Interpretation: queued')).toBeVisible()
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  const text = '  筆 📝\nr and d?  '
+  await composer_recovery(ipad, text, bound)
+  await expect(note(ipad)).toHaveValue('')
+
+  // Interpret was for that one send.
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await expect(toggle).toBeEnabled()
   const poll = bound('poll')
   expect(poll.events.map((e: { kind: string }) => e.kind)).toEqual([
     'sketch_notify',
@@ -261,7 +195,7 @@ async function delivery(
   ])
 
   expect(poll.events[0].text).toBeUndefined()
-  expect(poll.events[1].text).toBe(note)
+  expect(poll.events[1].text).toBe(text)
 
   for (const event of poll.events) {
     expect(event.sketch_hash).toBe(hash)
@@ -271,19 +205,26 @@ async function delivery(
     }
   }
 
-  await expect(ipad.getByText('Interpretation: updated')).toBeVisible()
+  // The newest request is followed to its end in its own row. The Mac publishes only that
+  // one, so the earlier row keeps the last state this tab saw, and says so.
+  await inbox_open(ipad)
+  await expect(rows_about(ipad, 'interpret_request', 'updated')).toHaveCount(1)
+  await expect(rows_about(ipad, 'interpret_request', 'updated')).toContainText('Done')
+  await expect(rows_about(ipad, 'sketch_notify', 'queued')).toContainText('last known')
+  await expect(rows(ipad)).toHaveCount(3)
   expect(bound('poll').events).toEqual([])
   await empty_interpret_and_edited_notify(ipad, bound)
 }
 
-async function empty_interpret_and_edited_notify(ipad: Page, bound: (action: string) => any) {
-  const field = ipad.getByRole('textbox', { name: 'Note to agent' })
-  const notify = ipad.getByRole('button', { name: 'Notify agent' })
-  const toggle = ipad.getByRole('button', { name: 'Interpret', exact: true })
-  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
-  await notify.tap()
-  await expect.poll(() => bound('poll').events.length).toBe(1)
+async function empty_interpret_and_edited_notify(ipad: Page, bound: Cli) {
+  const field = note(ipad)
+  const send = notify(ipad)
+  const toggle = interpret(ipad)
   await toggle.tap()
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  await send.tap()
+  await expect.poll(() => bound('poll').events.length).toBe(1)
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
   await field.fill('First note')
   let release!: () => void
   const hold = new Promise<void>((resolve) => {
@@ -303,18 +244,18 @@ async function empty_interpret_and_edited_notify(ipad: Page, bound: (action: str
     },
     { times: 1 },
   )
-  await notify.tap()
+  await send.tap()
 
   try {
     await committed
-    await expect(notify).toBeDisabled()
+    await expect(send).toBeDisabled()
     await field.fill('Newer note')
     await field.press('Control+Enter')
   } finally {
     release()
   }
 
-  await expect(notify).toBeEnabled()
+  await expect(send).toBeEnabled()
   await expect(field).toHaveValue('Newer note')
   const events = bound('poll').events
   expect(events).toHaveLength(2)
@@ -324,24 +265,24 @@ async function empty_interpret_and_edited_notify(ipad: Page, bound: (action: str
   await field.fill('')
 }
 
-async function composer_recovery(ipad: Page, note: string, bound: (action: string) => any) {
-  const field = ipad.getByRole('textbox', { name: 'Note to agent' })
-  const notify = ipad.getByRole('button', { name: 'Notify agent' })
+async function composer_recovery(ipad: Page, text: string, bound: Cli) {
+  const field = note(ipad)
   await field.fill('d')
   await field.press('r')
   await field.press('Backspace')
   await field.press('Enter')
   await expect(field).toHaveValue('d\n')
-  await field.fill(note)
+  await field.fill(text)
   await field.dispatchEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true })
   expect(bound('poll').events).toHaveLength(1)
 
   // Simulate an old daemon before submitting any bytes. Then lose the successful response.
   await ipad.route('**/api/status?*', (r) => r.fulfill({ json: { protocol: 1 } }), { times: 1 })
   await field.press('Control+Enter')
-  await expect(ipad.getByText(/Upgrade and restart/)).toBeVisible()
+  const upgrade = await row_with(ipad, /Upgrade and restart/)
+  await expect(upgrade).toHaveAttribute('data-state', 'unconfirmed')
   expect(bound('poll').events).toHaveLength(1)
-  await expect(field).toHaveValue(note)
+  await expect(field).toHaveValue(text)
   await ipad.route(
     '**/api/whiteboard/event/v2?*',
     async (route) => {
@@ -350,8 +291,9 @@ async function composer_recovery(ipad: Page, note: string, bound: (action: strin
     },
     { times: 1 },
   )
-  await notify.tap()
-  await expect(ipad.getByText(/No confirmation/)).toBeVisible()
+  await notify(ipad).tap()
+  const lost = await row_with(ipad, /No confirmation/)
+  await expect(lost).toHaveAttribute('data-state', 'unconfirmed')
   const polled = bound('poll')
   const before = polled.events
   expect(before).toHaveLength(2)
@@ -362,19 +304,37 @@ async function composer_recovery(ipad: Page, note: string, bound: (action: strin
   expect(status.last_event.text).toBeUndefined()
   expect(status.last_event.request_id).toBeUndefined()
   await ipad.reload()
-  await expect(field).toHaveValue(note)
-  await ipad.route('**/api/whiteboard/event/v2?*', async (route) => {
-    const reply = await route.fetch()
-    const body = await reply.json()
-    delete body.text
-    await route.fulfill({ response: reply, json: body })
-  }, { times: 1 })
-  await notify.tap()
-  await expect(ipad.getByText(/No exact confirmation/)).toBeVisible()
-  await expect(field).toHaveValue(note)
-  await notify.tap()
+
+  // After a reload the note is closed again. Its button says a draft is waiting, and the
+  // unconfirmed request still decides what the next send is.
+  await expect(chat(ipad)).toHaveAccessibleName('Agent note, draft saved')
+  await expect(field).toBeHidden()
+  await composer_open(ipad)
+  await expect(field).toHaveValue(text)
+  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'true')
+  await expect(interpret(ipad)).toBeDisabled()
+  await ipad.route(
+    '**/api/whiteboard/event/v2?*',
+    async (route) => {
+      const reply = await route.fetch()
+      const body = await reply.json()
+      delete body.text
+      await route.fulfill({ response: reply, json: body })
+    },
+    { times: 1 },
+  )
+  await notify(ipad).tap()
+  const inexact = await row_with(ipad, /No exact confirmation/)
+  await expect(inexact).toHaveAttribute('data-state', 'unconfirmed')
+  await expect(field).toHaveValue(text)
+  await notify(ipad).tap()
   await expect(field).toHaveValue('')
   expect(bound('poll').events).toEqual(before)
+
+  // Three tries and the Mac's own report of the request are one row, not four.
+  await inbox_open(ipad)
+  await expect(rows_about(ipad, 'interpret_request')).toHaveCount(1)
+  await expect(rows_about(ipad, 'interpret_request', 'queued')).toHaveCount(1)
 }
 
 type Box = { x: number; y: number; width: number; height: number }
@@ -434,11 +394,11 @@ async function expect_layer_label(page: Page, text: string, id = 'a') {
 }
 
 // Chromium on a desktop runner has no software keyboard. Drive its visualViewport contract while
-// keeping the layout viewport fixed, and check that only the action rail follows the inset.
+// keeping the layout viewport fixed, and check that only the note's band follows the inset.
 async function keyboard_geometry(page: Page, info: TestInfo) {
-  const field = page.getByRole('textbox', { name: 'Note to agent' })
+  const field = note(page)
   const sketch = page.locator('.views__pane--sketch')
-  await field.fill('One\nTwo\nThree\nFour\nFive')
+  await field.fill('One\nTwo\nThree\nFour\nFive\nSix')
   const before = await sketch.boundingBox()
   const zoom = () =>
     sketch
@@ -454,7 +414,9 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
   })
   const rail = await field.boundingBox()
   expect(rail!.y + rail!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 245 + 0.5)
-  expect(rail!.height).toBeLessThanOrEqual(110.5)
+
+  // Five lines of 22px and the field's own padding; the sixth line scrolls.
+  expect(rail!.height).toBeLessThanOrEqual(132.5)
   expect(await field.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)
   expect(await sketch.boundingBox()).toEqual(before)
   expect(await zoom()).toBe(initial)
@@ -472,15 +434,21 @@ async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
     await expect_layer_label(page, 'Request')
     await expect(page.getByRole('group', { name: 'Agent layer' })).toHaveCount(0)
     await expect_layer_label(page, 'What about retries?', 'b')
-    await expect(page.getByRole('textbox', { name: 'Note to agent' })).toHaveCount(
-      page === ipad ? 1 : 0,
-    )
-    await geometry(page, info, page === ipad ? 'ipad-portrait' : 'mac-stage')
+
+    // The note and its bell are the iPad's. The stage only presents.
+    await expect(note(page)).toHaveCount(page === ipad ? 1 : 0)
+    await expect(chat(page)).toHaveCount(page === ipad ? 1 : 0)
+    await expect(bell(page)).toHaveCount(page === ipad ? 1 : 0)
+    await geometry(page, info, page === ipad ? 'ipad-portrait' : 'mac-stage', page === ipad)
   }
 
-  await ipad.setViewportSize({ width: 1180, height: 820 })
+  // With the note open under the Agent canvas, tldraw's notice in that canvas is untouched;
+  // with both canvases on screen, so is each one's.
+  await expect_marks_clear(ipad, 1)
+  await ipad.setViewportSize(ipad_landscape)
   await ipad.getByRole('tab', { name: 'Side by side' }).tap()
   await expect_layer_label(ipad, 'What about retries?', 'b')
-  await geometry(ipad, info, 'ipad-landscape-side-by-side')
+  await expect_marks_clear(ipad, 2)
+  await geometry(ipad, info, 'ipad-landscape-side-by-side', true)
   await keyboard_geometry(ipad, info)
 }

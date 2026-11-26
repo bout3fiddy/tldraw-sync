@@ -4,11 +4,12 @@
 import { useCallback, useState } from 'react'
 import { AgentActions } from './agent_actions'
 import { DefaultSizeStyle, Tldraw, type Editor } from 'tldraw'
-import { asset_urls, components_quiet, use_board_store } from './board_store'
+import { asset_urls, use_board_store } from './board_store'
 import { CleanedPane } from './cleaned_pane'
 import { use_cleaned } from './cleaned_state'
 import { Notice } from './notice'
-import { ToolStrip } from './tool_strip'
+import { components_sketch } from './sketch_canvas'
+import { ToolSide } from './tool_side'
 import { use_view, ViewPanes, ViewTabs } from './views'
 
 export function DrawPage({ session }: { session: string }) {
@@ -17,6 +18,9 @@ export function DrawPage({ session }: { session: string }) {
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const [editor, setEditor] = useState<Editor | null>(null)
+
+  // Where the agent's two buttons go while the sketch is on screen: beside its tools.
+  const [tools, tools_set] = useState<HTMLElement | null>(null)
   const mount = useCallback((value: Editor) => {
     draw_mount(value)
     setEditor(value)
@@ -36,10 +40,10 @@ export function DrawPage({ session }: { session: string }) {
             store={board.store}
             hideUi
             assetUrls={asset_urls}
-            components={components_quiet}
+            components={components_sketch}
             onMount={mount}
           >
-            <ToolStrip editable={linked} />
+            <ToolSide editable={linked} onSlot={tools_set} />
           </Tldraw>
         }
         cleaned={<CleanedPane cleaned={cleaned} />}
@@ -48,7 +52,7 @@ export function DrawPage({ session }: { session: string }) {
         onChoose={view_choose} />
       <AgentActions editor={editor} session={session}
         cleaned={cleaned} view={view} online={board.connectionStatus !== 'offline'}
-        showSketch={() => view_choose('sketch')} />
+        tools={tools} showSketch={() => view_choose('sketch')} />
       {!linked && board.connectionStatus === 'offline' && (
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}

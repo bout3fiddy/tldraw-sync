@@ -3,8 +3,12 @@
 // tldraw's icon font is not loaded, because its interface is hidden.
 
 import type { Icon } from '@phosphor-icons/react'
+import { ArrowUp } from '@phosphor-icons/react/dist/csr/ArrowUp'
 import { ArrowUUpLeft } from '@phosphor-icons/react/dist/csr/ArrowUUpLeft'
 import { ArrowUUpRight } from '@phosphor-icons/react/dist/csr/ArrowUUpRight'
+import { Bell } from '@phosphor-icons/react/dist/csr/Bell'
+import { Broom } from '@phosphor-icons/react/dist/csr/Broom'
+import { ChatCircle } from '@phosphor-icons/react/dist/csr/ChatCircle'
 import { Cursor } from '@phosphor-icons/react/dist/csr/Cursor'
 import { Eraser } from '@phosphor-icons/react/dist/csr/Eraser'
 import { PencilSimpleLine } from '@phosphor-icons/react/dist/csr/PencilSimpleLine'
@@ -33,3 +37,10 @@ export const icon_plus = glyph(Plus, 20)
 export const icon_close = glyph(X)
 export const icon_pin = glyph(PushPin)
 export const icon_rename = glyph(PencilSimpleLine, 20)
+export const icon_chat = glyph(ChatCircle)
+export const icon_bell = glyph(Bell)
+
+// The two glyphs in the note capsule keep one small size whatever the note grows to. The arrow
+// is set on solid ink, where a light stroke would thin out, so it alone is drawn bold.
+export const icon_interpret = glyph(Broom, 20)
+export const icon_send = <ArrowUp size={18} weight="bold" aria-hidden="true" focusable="false" />
