@@ -34,10 +34,9 @@ goes to that provider.
 
 ## iPad Sketchboard
 
-This screenshot shows the app in an emulated 820 × 1180 iPad portrait viewport.
+On an iPad in landscape, use the pen palette to annotate a diagram on the Sketchboard.
 
 <img
   src="docs/images/ipad-sketchboard.png"
-  alt="Sketchboard tab with a pen palette, a small landscape sketch and a note field."
-  width="360"
+  alt="Sketchboard with an annotated architecture diagram, pen palette and optional note field."
 />
