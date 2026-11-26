@@ -54,21 +54,26 @@ import { ink_in, inset, pixels_read, type Box, type Pixels } from './screen_pixe
 import {
   action_ms,
   bell,
+  bell_behind,
   board_linked,
   chat,
+  chat_behind,
   dock_problems,
   inbox,
+  inbox_behind,
   interpret,
   ipad_landscape,
   ipad_narrow,
   ipad_portrait,
   layout as layout_read,
+  mark_placed as placed,
   marks as marks_read,
   navigation_ms,
   note,
   notify,
   rows,
   rows_about,
+  soon,
   stroke as stroke_pen,
   type DockSide,
   type Layout,
@@ -97,18 +102,9 @@ const step_long_ms = 60_000
 // Every assertion in this file waits five seconds at most, unless it names a longer wait.
 const expect = expect_patient.configure({ timeout: assertion_ms })
 
-// Playwright times what is done to a locator and what is expected of one. It does not time a
-// bare key, a touch, a pointer move or a script in the page: with no answer from the browser
-// those wait for as long as the test lasts. Each is given a few seconds here, and the error
-// is made at the call, so that it names the line that got no answer.
-function soon<T>(work: Promise<T>, wait_ms = action_ms): Promise<T> {
-  const late = new Error(`No answer from the browser within ${wait_ms}ms.`)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const overdue = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(late), wait_ms)
-  })
-  return Promise.race([work, overdue]).finally(() => clearTimeout(timer))
-}
+// Playwright does not time a bare key, a touch, a pointer move, a window that opens or shuts
+// or a script in the page. Each is given a few seconds through `soon`, which the journeys
+// share, and the error is made at the call, so that it names the line that got no answer.
 
 type Point = { x: number; y: number }
 
@@ -121,6 +117,18 @@ const insert = (page: Page, text: string) => soon(page.keyboard.insertText(text)
 const touch = (page: Page, at: Point) => soon(page.touchscreen.tap(at.x, at.y))
 const resize = (page: Page, size: { width: number; height: number }) =>
   soon(page.setViewportSize(size))
+
+// Two frames painted. What the browser tells the page with a frame has then been heard: that
+// the note has shut, which is when the page hands the focus to the note button.
+const frames_pass = (page: Page) =>
+  soon(
+    page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        }),
+    ),
+  )
 
 const said_lines_max = 6
 const said_length_max = 600
@@ -241,11 +249,8 @@ async function phases(page: Page, list: readonly Phase[]) {
 
 // While the note is open the page behind it is inert: no press reaches it, and it is out of
 // the accessibility tree, where a role would look for it. What its two buttons and its list
-// say is then read from the page itself. `chat` and `bell`, which find them by role, are for
-// when the note is shut.
-const chat_behind = (page: Page) => page.locator('.dock__button[aria-controls="agent-composer"]')
-const bell_behind = (page: Page) => page.locator('.dock__button[aria-controls="agent-inbox"]')
-const inbox_behind = (page: Page) => page.locator('.inbox')
+// say is then read from the page itself, through `chat_behind`, `bell_behind` and
+// `inbox_behind`. `chat` and `bell`, which find them by role, are for when the note is shut.
 
 // The note is closed until asked for. Opening it is a tap on the button by the tools, which
 // is found by role: it can be, with the note shut.
@@ -261,6 +266,10 @@ async function note_open(page: Page) {
 
 // The note is put away with Escape, which is heard wherever the focus is. While the note is
 // open nothing else on the page can be pressed, so every step outside it starts here.
+//
+// The browser tells the page that the note has shut with the next frame it paints, and only
+// then does the page hand the focus to the note button. A focus put elsewhere before that
+// frame is taken back by it, so the step that follows starts once it has passed.
 async function note_close(page: Page) {
   const state = chat_behind(page)
 
@@ -268,6 +277,7 @@ async function note_close(page: Page) {
 
   await expect(state).toHaveAttribute('aria-expanded', 'false')
   await expect(note(page)).toBeHidden()
+  await frames_pass(page)
 }
 
 // The list never opens by itself, and a press anywhere else closes it: open it to look. The
@@ -549,6 +559,22 @@ async function expect_note_placed(page: Page, seen?: Box) {
     .toEqual([])
 }
 
+// A new window size with the note open, once the note has heard of it. The note is laid out
+// against the part of the screen in sight, which the browser tells the page a frame or so
+// after the window changes. Until then the field keeps the last window's width, and its
+// lines fit that width exactly: read then, the height looks right and is the old one. The
+// window is the size asked for and the note is in its place in it before anything is read.
+async function resize_note(page: Page, size: { width: number; height: number }) {
+  await resize(page, size)
+  await expect
+    .poll(async () => {
+      const now = await layout(page)
+      const window = { width: now.screen.right, height: now.screen.bottom }
+      return { window, note: note_problems(now.band, now.screen) }
+    })
+    .toEqual({ window: size, note: [] })
+}
+
 // tldraw's notice in every canvas on screen is whole, can be pressed, and has none of this
 // app's chrome over it. Where it rests is tldraw's choice: on the sketch it lies over the
 // drawing surface, as it does on tldraw's canvas as it comes.
@@ -586,25 +612,22 @@ test('the note opens over the board and closes without a mark; the pen draws to 
 }, info) => {
   await board_linked(browser, async (board) => {
     const { ipad } = board
-    await phases(
-      ipad,
-      [
-        ['the note starts hidden and opens over the board', () => opens_quietly(ipad, info)],
-        ['a finger tap starts typing and keeps the focus', () => typed_by_touch(ipad, info)],
-        ['a press beside the note puts it away and draws nothing', () => press_beside(board)],
-        ['Escape closes the note wherever the focus is', () => escape_closes(ipad)],
-        ['the buttons stay by the tools; Replace is on the canvas', () => by_the_tools(ipad, info)],
-        ['the height follows typing, deleting and undo', () => height_follows_the_text(ipad, info)],
-        ['the height follows cut and paste', () => height_follows_cut_and_paste(ipad, info)],
-        ['the height follows the width', () => height_follows_the_width(ipad, info)],
-        ['the keyboard moves only the note', () => keyboard_moves_only_the_note(ipad, info)],
-        ['closing keeps the draft and the caret', () => closing_keeps_the_draft_and_caret(ipad)],
-        ['Return adds a line and Command-Return sends', () => return_and_send(board)],
-        ['the pen draws to the bottom of the screen', () => draws_to_the_bottom(board, info)],
-        ['the link is untouched in every arrangement', () => link_in_every_arrangement(ipad, info)],
-        ['a deliberate press opens the link', () => link_opens_when_pressed(board)],
-      ],
-    )
+    await phases(ipad, [
+      ['the note starts hidden and opens over the board', () => opens_quietly(ipad, info)],
+      ['a finger tap starts typing and keeps the focus', () => typed_by_touch(ipad, info)],
+      ['a press beside the note puts it away and draws nothing', () => press_beside(board)],
+      ['Escape closes the note wherever the focus is', () => escape_closes(ipad)],
+      ['the buttons stay by the tools; Replace is on the canvas', () => by_the_tools(ipad, info)],
+      ['the height follows typing, deleting and undo', () => height_follows_the_text(ipad, info)],
+      ['the height follows cut and paste', () => height_follows_cut_and_paste(ipad, info)],
+      ['the height follows the width', () => height_follows_the_width(ipad, info)],
+      ['the keyboard moves only the note', () => keyboard_moves_only_the_note(ipad, info)],
+      ['closing keeps the draft and the caret', () => closing_keeps_the_draft_and_caret(ipad)],
+      ['Return adds a line and Command-Return sends', () => return_and_send(board)],
+      ['the pen draws to the bottom of the screen', () => draws_to_the_bottom(board, info)],
+      ['the link is untouched in every arrangement', () => link_in_every_arrangement(ipad, info)],
+      ['a deliberate press opens the link', () => link_opens_when_pressed(board)],
+    ])
   })
 })
 
@@ -958,11 +981,8 @@ async function press_beside({ ipad, cli, session }: Linked) {
   await stroke(ipad, clear, { x: 20, y: 15 })
   await expect.poll(count, { timeout: mac_ms }).toBe(before + 1)
   await expect.poll(async () => (await sketch_ids(ipad)).length).toBe(known.length + 1)
-  const windows = ipad.context().pages().filter((page) => page !== ipad)
-
-  for (const page of windows) await page.close()
-
-  expect(windows, 'no window was opened by a press beside the note').toHaveLength(0)
+  const windows_count = await windows_close(ipad.context(), ipad)
+  expect(windows_count, 'no window was opened by a press beside the note').toBe(0)
 }
 
 // Escape closes the note with the focus in the field, on the paper where opening left it,
@@ -978,9 +998,15 @@ async function escape_closes(ipad: Page) {
     await expect(field).toBeVisible()
     await expect(field).not.toBeFocused()
   }
+
+  // The browser's own closing gives the focus back to what held it before the note opened,
+  // which here is the note button already. The page hands it the focus a frame later, when
+  // it hears that the note has shut, and it is asked after again then.
   const expect_closed = async () => {
     await expect(field).toBeHidden()
     await expect(chat(ipad)).toHaveAttribute('aria-expanded', 'false')
+    await expect(chat(ipad)).toBeFocused()
+    await frames_pass(ipad)
     await expect(chat(ipad)).toBeFocused()
     await expect(pen).toHaveAttribute('aria-pressed', 'true')
   }
@@ -1022,7 +1048,11 @@ async function escape_closes(ipad: Page) {
 
   // Control. With nothing of the agent's open the key on the canvas is tldraw's again, and
   // tldraw puts the pen down: what the checks above would have seen had it heard the key.
+  // The key is the canvas's only while the canvas holds the focus. The note's closing was
+  // heard above, so nothing is left to take the focus back to the note button, whose keys
+  // are the agent's and never reach tldraw.
   await frame.focus()
+  await expect(frame).toBeFocused()
   await press(ipad, 'Escape')
   await expect(pen).toHaveAttribute('aria-pressed', 'false')
   await pen.tap()
@@ -1363,11 +1393,10 @@ async function height_follows_the_width(ipad: Page, info: TestInfo) {
   const still = await expect_controls_fixed(ipad)
   await field.fill(sentence)
   const wide = await expect_fitted(field)
-  await resize(ipad, ipad_narrow)
+  await resize_note(ipad, ipad_narrow)
   const narrow = await expect_fitted(field)
   expect(narrow).toBeGreaterThan(wide)
   expect(await controls(ipad)).toEqual(still)
-  await expect_note_placed(ipad)
   await shot(ipad, info, 'note-narrow')
 
   await note_close(ipad)
@@ -1383,14 +1412,12 @@ async function height_follows_the_width(ipad: Page, info: TestInfo) {
   await note_open(ipad)
   await expect(field).toHaveValue(sentence)
 
-  await resize(ipad, ipad_landscape)
+  await resize_note(ipad, ipad_landscape)
   expect(await expect_fitted(field)).toBe(wide)
   expect(await controls(ipad)).toEqual(still)
-  await expect_note_placed(ipad)
   await shot(ipad, info, 'note-landscape')
-  await resize(ipad, ipad_portrait)
+  await resize_note(ipad, ipad_portrait)
   expect(await expect_fitted(field)).toBe(wide)
-  await expect_note_placed(ipad)
   await field.fill('')
 }
 
@@ -1536,10 +1563,6 @@ async function draws_to_the_bottom({ ipad, cli, session }: Linked, info: TestInf
   await expect_marks_untouched(ipad, 1)
 }
 
-// The notice with everything about it but whether a press reaches it: while the note is
-// open, the browser keeps every press from the page behind it.
-const placed = ({ own: _own, ...rest }: Mark) => rest
-
 // tldraw's notice is whole, pressable and uncovered where tldraw folds it into a tab in a
 // narrow canvas, where the strip lies along the bottom of a stacked sketch, and in the few
 // widths where a full-width notice and the strip would otherwise meet. With the note open
@@ -1589,9 +1612,20 @@ const link_of = (page: Page) =>
 
 // tldraw's page is answered here, so nothing leaves this machine.
 const answered_here = (context: BrowserContext) =>
-  context.route('https://tldraw.dev/**', (route) =>
-    route.fulfill({ contentType: 'text/html', body: '<title>tldraw</title>' }),
+  soon(
+    context.route('https://tldraw.dev/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<title>tldraw</title>' }),
+    ),
   )
+
+// Every window but the journey's own is shut, each within its few seconds. Returns how many.
+async function windows_close(context: BrowserContext, own: Page): Promise<number> {
+  const others = context.pages().filter((page) => page !== own)
+
+  for (const page of others) await soon(page.close())
+
+  return others.length
+}
 
 // The middle of tldraw's link, once a press there lands on the link's own button. Where a
 // mouse is the main pointer, tldraw arms the button only after the pointer rests on it, so
@@ -1602,7 +1636,9 @@ async function link_middle(page: Page): Promise<{ x: number; y: number }> {
   const box = (await button.boundingBox())!
   const middle = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
   const hit = () =>
-    button.evaluate((element, at) => document.elementFromPoint(at.x, at.y) === element, middle)
+    soon(
+      button.evaluate((element, at) => document.elementFromPoint(at.x, at.y) === element, middle),
+    )
 
   if (!(await hit())) await soon(page.mouse.move(middle.x, middle.y))
 
@@ -1619,7 +1655,7 @@ type Watch = { seen: Event[]; stop: AbortController }
 async function link_tapped(page: Page, name: string): Promise<Tap> {
   const middle = await link_middle(page)
   const mark = link_of(page)
-  await mark.evaluate(
+  const watching = mark.evaluate(
     (element, [types, max]) => {
       const watch: Watch = { seen: [], stop: new AbortController() }
       const keep = (event: Event) => {
@@ -1636,18 +1672,22 @@ async function link_tapped(page: Page, name: string): Promise<Tap> {
     },
     [['touchend', 'click'], link_events_max] as const,
   )
+  await soon(watching)
   const popup = page
     .context()
     .waitForEvent('page', { timeout: link_tap_wait_ms })
     .catch(() => null)
   await touch(page, middle)
   const opened = await popup
-  await opened?.close()
-  const seen = await mark.evaluate((element) => {
+
+  if (opened !== null) await soon(opened.close())
+
+  const watched = mark.evaluate((element) => {
     const watch = (element as unknown as { link_watch: Watch }).link_watch
     watch.stop.abort()
     return watch.seen.map((event) => ({ type: event.type, cancelled: event.defaultPrevented }))
   })
+  const seen = await soon(watched)
   const ends = seen.filter((event) => event.type === 'touchend')
   const tap = {
     touchends: ends.length,
@@ -1664,25 +1704,27 @@ async function link_tapped(page: Page, name: string): Promise<Tap> {
 
 // The same tap on the stage of the same board, in its own touch context of the iPad's size.
 // Both are now tldraw's canvas as it comes. Null if no baseline was had.
+//
+// The stock window is this journey's own to open and to shut. Opening it, loading the stage
+// in it and shutting it are each given their few seconds, like every other wait here: a
+// window that will not open or shut is a failure named at its line, never a silent wait.
 async function link_tapped_stock(stage: Page): Promise<Tap | null> {
-  const context = await stage.context().browser()!.newContext({
-    viewport: ipad_portrait,
-    hasTouch: true,
-  })
+  const browser = stage.context().browser()!
+  const context = await soon(browser.newContext({ viewport: ipad_portrait, hasTouch: true }))
   context.setDefaultTimeout(action_ms)
   context.setDefaultNavigationTimeout(navigation_ms)
 
   try {
     await answered_here(context)
-    const page = await context.newPage()
+    const page = await soon(context.newPage())
     const address = new URL(stage.url())
     await page.goto(address.origin + address.pathname + address.search)
     return await link_tapped(page, 'stock')
   } catch (error) {
-    console.log(`  link, finger tap, stock: no baseline (${(error as Error).name})`)
+    console.log(`  link, finger tap, stock: no baseline (${brief(error)})`)
     return null
   } finally {
-    await context.close()
+    await soon(context.close(), navigation_ms)
   }
 }
 
@@ -1728,7 +1770,7 @@ async function link_opens_when_pressed({ ipad, stage }: Linked) {
     expect(new URL(visit!.url()).pathname).toBe('/pricing')
     expect(context.pages()).toHaveLength(2)
   } finally {
-    for (const page of context.pages()) if (page !== ipad) await page.close()
+    await windows_close(context, ipad)
   }
 
   await expect.poll(() => marks(ipad)).toEqual([resting])
