@@ -1,1 +1,348 @@
-{"format":"tldraw-sync.canvas.v2","revision":5,"current":{"migrated":true,"revision":5,"published_at_ms":5000,"restored_from":3},"history":[{"revision":1,"source_hash":"1111111111111111","agent":"test-agent","summary":"Two services and a title.","published_at_ms":1000,"restored_from":null,"shapes":[{"kind":"text","id":"title","x":0,"y":-80,"text":"Checkout","w":null,"color":"black","size":"l","align":"start"},{"kind":"rectangle","id":"api","x":0,"y":0,"w":160,"h":80,"text":"API","color":"black","size":"m","fill":"none","label_color":null,"label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"ellipse","id":"db","x":300,"y":0,"w":120,"h":80,"text":"DB","color":"blue","size":"m","fill":"none","label_color":null,"label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"arrow","id":"writes","from":"api","to":"db","text":"writes","color":"black","size":"m","arrowheads":"end","route":"arc","bend":0,"from_anchor":null,"to_anchor":null}],"format":"tldraw-sync.cleanup.v2"},{"revision":2,"source_hash":"1111111111111111","agent":"old-agent","summary":"An API group.","published_at_ms":2000,"restored_from":null,"shapes":[{"kind":"rectangle","id":"api","x":296,"y":0,"w":224,"h":272,"text":"API","color":"black","size":"s","fill":"none","label_color":"black","label_align":"start","label_valign":"start","label_bold":true},{"kind":"rectangle","id":"get","x":344,"y":64,"w":128,"h":96,"text":"fetch\nstatus","color":"black","size":"s","fill":"semi","label_color":"black","label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"text","id":"put","x":320,"y":192,"text":"/put/payment_intent","w":176,"color":"black","size":"s","align":"middle"},{"kind":"ellipse","id":"user","x":0,"y":172,"w":192,"h":96,"text":"Merchant","color":"black","size":"s","fill":"semi","label_color":"black","label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"arrow","id":"calls","from":"user","to":"put","text":"calls","color":"black","size":"s","arrowheads":"end","route":"elbow","bend":0,"from_anchor":{"x":1,"y":0.5},"to_anchor":{"x":0,"y":0.5}}],"format":"tldraw-sync.cleanup.v2","style":"markerboard","diagram":{"flow":"right","nodes":[{"id":"api","kind":"group","label":"API","parent":null,"strokes":[]},{"id":"put","kind":"text","label":"/put/payment_intent","parent":"api","strokes":[]},{"id":"get","kind":"box","label":"fetch\nstatus","parent":"api","strokes":[]},{"id":"user","kind":"ellipse","label":"Merchant","parent":null,"strokes":[]}],"edges":[{"id":"calls","from":"user","to":"put","label":"calls","direction":"forward","strokes":[]}]}},{"migrated":true,"revision":3,"published_at_ms":3000,"restored_from":null},{"revision":4,"source_hash":"2222222222222222","agent":"external agent","summary":"","published_at_ms":4000,"restored_from":null,"shapes":[{"kind":"text","id":"cap","x":244,"y":8,"text":"A hill under the sun","w":176,"color":"black","size":"s","align":"middle"},{"kind":"rectangle","id":"note","x":4,"y":0,"w":176,"h":72,"text":"Why orange?","color":"black","size":"s","fill":"semi","label_color":"black","label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"ink","id":"pic","x":0,"y":104,"w":180,"h":130,"strokes":["shape:hill","shape:sun"],"ink":[{"type":"draw","x":5,"y":125,"rotation":0,"opacity":1,"props":{"color":"green","fill":"none","dash":"draw","size":"m","isComplete":true,"isClosed":false,"isPen":true,"scale":1,"segments":[{"type":"free","points":[{"x":0,"y":0,"z":0.5},{"x":60,"y":-40,"z":0.5},{"x":120,"y":0,"z":0.5}]}]}},{"type":"draw","x":165,"y":5,"rotation":0,"opacity":1,"props":{"color":"orange","fill":"none","dash":"draw","size":"m","isComplete":true,"isClosed":false,"isPen":true,"scale":1,"segments":[{"type":"free","points":[{"x":0,"y":0,"z":0.5},{"x":10,"y":10,"z":0.5},{"x":0,"y":20,"z":0.5},{"x":-10,"y":10,"z":0.5},{"x":0,"y":0,"z":0.5}]}]}}]},{"kind":"arrow","id":"asks","from":"note","to":"cap","text":"","color":"black","size":"s","arrowheads":"end","route":"elbow","bend":0,"from_anchor":{"x":1,"y":0.5},"to_anchor":{"x":0,"y":0.5}}],"format":"tldraw-sync.cleanup.v2","style":"markerboard","diagram":{"flow":"right","nodes":[{"id":"pic","kind":"drawing","label":"","parent":null,"strokes":["shape:hill","shape:sun"]},{"id":"cap","kind":"text","label":"A hill under the sun","parent":null,"strokes":[]},{"id":"note","kind":"box","label":"Why orange?","parent":null,"strokes":[],"origin":"agent"}],"edges":[{"id":"asks","from":"note","to":"cap","label":"","direction":"forward","strokes":[],"origin":"agent"}]}}],"archives":["f12284159fbdae20ac6e4ab6e295365e764dc9872bca33195a10450141cb4995","953b23ccb670a15269d5aae9f105c7f147e8880e7db3eaa54a07e756e9492403"]}
+{
+  "format": "tldraw-sync.canvas.v2",
+  "revision": 5,
+  "current": { "migrated": true, "revision": 5, "published_at_ms": 5000, "restored_from": 3 },
+  "history": [
+    {
+      "revision": 1,
+      "source_hash": "1111111111111111",
+      "agent": "test-agent",
+      "summary": "Two services and a title.",
+      "published_at_ms": 1000,
+      "restored_from": null,
+      "shapes": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0,
+          "y": -80,
+          "text": "Checkout",
+          "w": null,
+          "color": "black",
+          "size": "l",
+          "align": "start"
+        },
+        {
+          "kind": "rectangle",
+          "id": "api",
+          "x": 0,
+          "y": 0,
+          "w": 160,
+          "h": 80,
+          "text": "API",
+          "color": "black",
+          "size": "m",
+          "fill": "none",
+          "label_color": null,
+          "label_align": "middle",
+          "label_valign": "middle",
+          "label_bold": false
+        },
+        {
+          "kind": "ellipse",
+          "id": "db",
+          "x": 300,
+          "y": 0,
+          "w": 120,
+          "h": 80,
+          "text": "DB",
+          "color": "blue",
+          "size": "m",
+          "fill": "none",
+          "label_color": null,
+          "label_align": "middle",
+          "label_valign": "middle",
+          "label_bold": false
+        },
+        {
+          "kind": "arrow",
+          "id": "writes",
+          "from": "api",
+          "to": "db",
+          "text": "writes",
+          "color": "black",
+          "size": "m",
+          "arrowheads": "end",
+          "route": "arc",
+          "bend": 0,
+          "from_anchor": null,
+          "to_anchor": null
+        }
+      ],
+      "format": "tldraw-sync.cleanup.v2"
+    },
+    {
+      "revision": 2,
+      "source_hash": "1111111111111111",
+      "agent": "old-agent",
+      "summary": "An API group.",
+      "published_at_ms": 2000,
+      "restored_from": null,
+      "shapes": [
+        {
+          "kind": "rectangle",
+          "id": "api",
+          "x": 296,
+          "y": 0,
+          "w": 224,
+          "h": 272,
+          "text": "API",
+          "color": "black",
+          "size": "s",
+          "fill": "none",
+          "label_color": "black",
+          "label_align": "start",
+          "label_valign": "start",
+          "label_bold": true
+        },
+        {
+          "kind": "rectangle",
+          "id": "get",
+          "x": 344,
+          "y": 64,
+          "w": 128,
+          "h": 96,
+          "text": "fetch\nstatus",
+          "color": "black",
+          "size": "s",
+          "fill": "semi",
+          "label_color": "black",
+          "label_align": "middle",
+          "label_valign": "middle",
+          "label_bold": false
+        },
+        {
+          "kind": "text",
+          "id": "put",
+          "x": 320,
+          "y": 192,
+          "text": "/put/payment_intent",
+          "w": 176,
+          "color": "black",
+          "size": "s",
+          "align": "middle"
+        },
+        {
+          "kind": "ellipse",
+          "id": "user",
+          "x": 0,
+          "y": 172,
+          "w": 192,
+          "h": 96,
+          "text": "Merchant",
+          "color": "black",
+          "size": "s",
+          "fill": "semi",
+          "label_color": "black",
+          "label_align": "middle",
+          "label_valign": "middle",
+          "label_bold": false
+        },
+        {
+          "kind": "arrow",
+          "id": "calls",
+          "from": "user",
+          "to": "put",
+          "text": "calls",
+          "color": "black",
+          "size": "s",
+          "arrowheads": "end",
+          "route": "elbow",
+          "bend": 0,
+          "from_anchor": { "x": 1, "y": 0.5 },
+          "to_anchor": { "x": 0, "y": 0.5 }
+        }
+      ],
+      "format": "tldraw-sync.cleanup.v2",
+      "style": "markerboard",
+      "diagram": {
+        "flow": "right",
+        "nodes": [
+          { "id": "api", "kind": "group", "label": "API", "parent": null, "strokes": [] },
+          {
+            "id": "put",
+            "kind": "text",
+            "label": "/put/payment_intent",
+            "parent": "api",
+            "strokes": []
+          },
+          { "id": "get", "kind": "box", "label": "fetch\nstatus", "parent": "api", "strokes": [] },
+          { "id": "user", "kind": "ellipse", "label": "Merchant", "parent": null, "strokes": [] }
+        ],
+        "edges": [
+          {
+            "id": "calls",
+            "from": "user",
+            "to": "put",
+            "label": "calls",
+            "direction": "forward",
+            "strokes": []
+          }
+        ]
+      }
+    },
+    { "migrated": true, "revision": 3, "published_at_ms": 3000, "restored_from": null },
+    {
+      "revision": 4,
+      "source_hash": "2222222222222222",
+      "agent": "external agent",
+      "summary": "",
+      "published_at_ms": 4000,
+      "restored_from": null,
+      "shapes": [
+        {
+          "kind": "text",
+          "id": "cap",
+          "x": 244,
+          "y": 8,
+          "text": "A hill under the sun",
+          "w": 176,
+          "color": "black",
+          "size": "s",
+          "align": "middle"
+        },
+        {
+          "kind": "rectangle",
+          "id": "note",
+          "x": 4,
+          "y": 0,
+          "w": 176,
+          "h": 72,
+          "text": "Why orange?",
+          "color": "black",
+          "size": "s",
+          "fill": "semi",
+          "label_color": "black",
+          "label_align": "middle",
+          "label_valign": "middle",
+          "label_bold": false
+        },
+        {
+          "kind": "ink",
+          "id": "pic",
+          "x": 0,
+          "y": 104,
+          "w": 180,
+          "h": 130,
+          "strokes": ["shape:hill", "shape:sun"],
+          "ink": [
+            {
+              "type": "draw",
+              "x": 5,
+              "y": 125,
+              "rotation": 0,
+              "opacity": 1,
+              "props": {
+                "color": "green",
+                "fill": "none",
+                "dash": "draw",
+                "size": "m",
+                "isComplete": true,
+                "isClosed": false,
+                "isPen": true,
+                "scale": 1,
+                "segments": [
+                  {
+                    "type": "free",
+                    "points": [
+                      { "x": 0, "y": 0, "z": 0.5 },
+                      { "x": 60, "y": -40, "z": 0.5 },
+                      { "x": 120, "y": 0, "z": 0.5 }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "draw",
+              "x": 165,
+              "y": 5,
+              "rotation": 0,
+              "opacity": 1,
+              "props": {
+                "color": "orange",
+                "fill": "none",
+                "dash": "draw",
+                "size": "m",
+                "isComplete": true,
+                "isClosed": false,
+                "isPen": true,
+                "scale": 1,
+                "segments": [
+                  {
+                    "type": "free",
+                    "points": [
+                      { "x": 0, "y": 0, "z": 0.5 },
+                      { "x": 10, "y": 10, "z": 0.5 },
+                      { "x": 0, "y": 20, "z": 0.5 },
+                      { "x": -10, "y": 10, "z": 0.5 },
+                      { "x": 0, "y": 0, "z": 0.5 }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "kind": "arrow",
+          "id": "asks",
+          "from": "note",
+          "to": "cap",
+          "text": "",
+          "color": "black",
+          "size": "s",
+          "arrowheads": "end",
+          "route": "elbow",
+          "bend": 0,
+          "from_anchor": { "x": 1, "y": 0.5 },
+          "to_anchor": { "x": 0, "y": 0.5 }
+        }
+      ],
+      "format": "tldraw-sync.cleanup.v2",
+      "style": "markerboard",
+      "diagram": {
+        "flow": "right",
+        "nodes": [
+          {
+            "id": "pic",
+            "kind": "drawing",
+            "label": "",
+            "parent": null,
+            "strokes": ["shape:hill", "shape:sun"]
+          },
+          {
+            "id": "cap",
+            "kind": "text",
+            "label": "A hill under the sun",
+            "parent": null,
+            "strokes": []
+          },
+          {
+            "id": "note",
+            "kind": "box",
+            "label": "Why orange?",
+            "parent": null,
+            "strokes": [],
+            "origin": "agent"
+          }
+        ],
+        "edges": [
+          {
+            "id": "asks",
+            "from": "note",
+            "to": "cap",
+            "label": "",
+            "direction": "forward",
+            "strokes": [],
+            "origin": "agent"
+          }
+        ]
+      }
+    }
+  ],
+  "archives": [
+    "f12284159fbdae20ac6e4ab6e295365e764dc9872bca33195a10450141cb4995",
+    "953b23ccb670a15269d5aae9f105c7f147e8880e7db3eaa54a07e756e9492403"
+  ]
+}

@@ -57,8 +57,10 @@ export async function whiteboard(command: string, options: Options): Promise<Out
     const binding = binding_read(options.binding)
 
     if (canvas_commands.includes(command)) {
+      const layer = options.layer ?? 'canvas'
+
       // There is one Agent canvas. The name is accepted where an earlier host still gives it.
-      if ((options.layer ?? 'canvas') !== 'canvas') {
+      if (layer !== 'canvas') {
         return usage(command, 'There is one Agent canvas: leave --layer out.')
       }
 

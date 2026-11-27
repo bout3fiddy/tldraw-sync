@@ -13,7 +13,8 @@
 // - A request for the retired Interpret, left unconfirmed in a tab from before the upgrade,
 //   is never sent again. Its words stay, and the next Send sends them as a note.
 //
-// The pictures of the drafts and the screens are attached to the test results for review.
+// The pictures of the drafts and the screens are attached to the test results for review. A
+// picture of the Agent canvas is taken only once the whole scene is in view and at rest.
 //
 // Run: bun run build && npx playwright test tests/scenes.e2e.ts
 
@@ -55,6 +56,10 @@ const night_city = JSON.parse(
   fs.readFileSync(path.join(fixtures, 'night_city.scene.json'), 'utf8'),
 ) as Json[]
 
+// The shapes of that scene which reach past the middle of a landscape screen it is fitted to:
+// what a pane of half the screen cuts until its camera follows. In order of their ids.
+const cut_at_half = ['boat', 'cloud', 'ground', 'hall', 'moon', 'river', 'star', 'to-moon']
+
 const png_signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
 // A pixel this dark is ink: lettering or a pen stroke, never the page or a pale fill.
@@ -62,10 +67,12 @@ const ink_light_max = 96
 
 // A shape on the Agent canvas, by the id its element was given: the shape itself, never the
 // layer tldraw draws behind some shapes.
+const canvas_region = (page: Page) => page.getByRole('region', { name: 'Agent canvas' })
+
 const canvas_shape = (page: Page, id: string) =>
-  page
-    .getByRole('region', { name: 'Agent canvas' })
-    .locator(`.tl-shape[data-shape-id="shape:scene-${id}"]:not(.tl-shape-background)`)
+  canvas_region(page).locator(
+    `.tl-shape[data-shape-id="shape:scene-${id}"]:not(.tl-shape-background)`,
+  )
 
 const canvas_words = (page: Page, id: string, text: string) =>
   canvas_shape(page, id).getByText(text, { exact: true }).first()
@@ -74,6 +81,110 @@ async function capture(page: Page, info: TestInfo, name: string) {
   const file = info.outputPath(`${name}.png`)
   await page.screenshot({ path: file })
   await info.attach(name, { path: file, contentType: 'image/png' })
+}
+
+// How a scene sits in its pane: how many shapes it has, which of them are not wholly in view,
+// and where each is drawn, which tells a camera at rest from one still moving.
+type Framing = { shapes: number; cut: string[]; boxes: string }
+
+// Runs in the page, so it uses nothing from this file. A shape is measured as it is drawn: by
+// its strokes where it has any, because tldraw boxes a shape from its first point and not
+// from its extent, and by its box where it is lettering. A group draws nothing of its own.
+// What can be seen of the canvas is its box, less whatever an ancestor or the window clips.
+//
+// The measure is taken on the next animation frame, so two measures are a frame or more
+// apart. Given a tab to press, it is taken instead at the instant the views change: before
+// the browser has told the canvas its new size, so before the camera can have followed.
+async function framing_read(region: Element, press: Element | null): Promise<Framing> {
+  if (press === null) {
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  } else {
+    await new Promise<void>((resolve) => {
+      const changed = new MutationObserver(() => {
+        changed.disconnect()
+        resolve()
+      })
+      changed.observe(region.closest('.views')!, { attributeFilter: ['data-view'] })
+      press.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+  }
+
+  const canvas = region.querySelector('.tl-container')!
+  const seen = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
+
+  for (let node: Element | null = canvas; node !== null; node = node.parentElement) {
+    if (node !== canvas && getComputedStyle(node).overflow === 'visible') continue
+
+    const box = node.getBoundingClientRect()
+    seen.left = Math.max(seen.left, box.left)
+    seen.top = Math.max(seen.top, box.top)
+    seen.right = Math.min(seen.right, box.right)
+    seen.bottom = Math.min(seen.bottom, box.bottom)
+  }
+
+  const prefix = 'shape:scene-'
+  const shapes = region.querySelectorAll(
+    `.tl-shape[data-shape-id^="${prefix}"]:not(.tl-shape-background)`,
+  )
+  const cut: string[] = []
+  const boxes: number[] = []
+
+  for (const shape of shapes) {
+    if (shape.getAttribute('data-shape-type') === 'group') continue
+
+    const strokes = [...shape.querySelectorAll('path')].filter((path) => !path.closest('defs'))
+    const drawn = strokes.length > 0 ? strokes : [shape]
+    const parts = drawn.map((part) => part.getBoundingClientRect())
+    const left = Math.min(...parts.map((part) => part.left))
+    const top = Math.min(...parts.map((part) => part.top))
+    const right = Math.max(...parts.map((part) => part.right))
+    const bottom = Math.max(...parts.map((part) => part.bottom))
+
+    // tldraw stops drawing a shape that is wholly outside its viewport.
+    const culled = getComputedStyle(shape).display === 'none'
+    const within = left >= seen.left && right <= seen.right
+    const between = top >= seen.top && bottom <= seen.bottom
+
+    if (culled || !within || !between) {
+      cut.push(shape.getAttribute('data-shape-id')!.slice(prefix.length))
+    }
+
+    boxes.push(left, top, right, bottom)
+  }
+
+  return { shapes: shapes.length, cut, boxes: boxes.join(' ') }
+}
+
+// Waits for the whole scene to be in view on the Agent canvas, and at rest. A label is
+// visible as soon as any of it is, and the camera follows a pane to its new size only a
+// moment after the pane has it: so neither says that the scene is framed. Every shape has to
+// lie inside what can be seen of the canvas, and be where it was a frame earlier.
+async function scene_framed(page: Page, shapes_count: number) {
+  const region = canvas_region(page)
+  let boxes_last: string | null = null
+  await expect
+    .poll(
+      async () => {
+        const { boxes, ...scene } = await soon(region.evaluate(framing_read, null))
+        const still = boxes === boxes_last
+        boxes_last = boxes
+        return { ...scene, still }
+      },
+      { message: 'The whole scene is in view on the Agent canvas, and at rest.' },
+    )
+    .toEqual({ shapes: shapes_count, cut: [], still: true })
+}
+
+// The only way a picture of the Agent canvas is taken: of a scene that is whole and at rest.
+async function scene_capture(page: Page, info: TestInfo, name: string, shapes_count: number) {
+  await scene_framed(page, shapes_count)
+  await capture(page, info, name)
+}
+
+// Presses a view's tab and says how the scene sat at the instant the views changed.
+async function view_pressed(page: Page, name: string): Promise<Framing> {
+  const tab = await page.getByRole('tab', { name }).elementHandle()
+  return soon(canvas_region(page).evaluate(framing_read, tab))
 }
 
 function scene_edit(file: string, change: (scene: Json) => void): Json {
@@ -286,8 +397,8 @@ async function cleanup(board: Linked, info: TestInfo, hash: string): Promise<str
     await expect(page.getByText('Your stroke, kept as drawn, with a label.')).toBeVisible()
   }
 
-  await capture(ipad, info, 'cleanup-agent-canvas-ipad')
-  await capture(stage, info, 'cleanup-agent-canvas-mac')
+  await scene_capture(ipad, info, 'cleanup-agent-canvas-ipad', published.shapes_count)
+  await scene_capture(stage, info, 'cleanup-agent-canvas-mac', published.shapes_count)
 
   // The canvas is handed back as the scene that was published, with where its ink came from.
   const next = bound('snapshot', '--out', path.join(root, 'tidied'))
@@ -381,11 +492,21 @@ async function creative(board: Linked, info: TestInfo) {
     await expect(canvas_shape(page, 'ink.0')).toHaveCount(0)
   }
 
-  await capture(stage, info, 'creative-agent-canvas-mac')
+  await scene_capture(stage, info, 'creative-agent-canvas-mac', night_city.length)
   await soon(ipad.setViewportSize(ipad_landscape))
-  await ipad.getByRole('tab', { name: 'Side by side' }).tap()
+  await scene_framed(ipad, night_city.length)
+
+  // Side by side, the canvas has half the screen at once and its camera follows a moment
+  // later. At that instant the scene is still framed for the whole screen, so the half of it
+  // past the middle is out of the pane: the Hall is cut by the pane's edge, and the Tower,
+  // the title, the smoke and the bridge are whole. The Hall's label can be seen all the
+  // while, which is all that a picture once waited for, and why one was taken of a cut scene.
+  // The measure has to refuse that picture, and say which shapes are wrong in it.
+  const early = await view_pressed(ipad, 'Side by side')
+  expect(early.shapes).toBe(night_city.length)
+  expect([...early.cut].sort()).toEqual(cut_at_half)
   await expect(canvas_words(ipad, 'hall', 'Hall')).toBeVisible()
-  await capture(ipad, info, 'creative-side-by-side-ipad')
+  await scene_capture(ipad, info, 'creative-side-by-side-ipad', night_city.length)
 
   // Only the person replaces the sketch: one step, shapes of their own, and one Undo back.
   const ink_hash = status().document_hash
@@ -418,10 +539,10 @@ async function retired_request(board: Linked) {
   const pending = { kind: 'interpret_request', sketch_hash, request_id: old_key, text: words }
   const saved = JSON.stringify({ text: words, interpret: true, pending })
   await soon(
-    ipad.evaluate(([key, value]) => sessionStorage.setItem(key!, value!), [
-      `tldraw-sync.notify.${session}`,
-      saved,
-    ]),
+    ipad.evaluate(
+      ([key, value]) => sessionStorage.setItem(key!, value!),
+      [`tldraw-sync.notify.${session}`, saved],
+    ),
   )
   await ipad.reload()
   await expect(chat(ipad)).toHaveAccessibleName('Agent note, draft saved')

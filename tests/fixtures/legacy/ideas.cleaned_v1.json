@@ -1,1 +1,86 @@
-{"format":"tldraw-sync.cleaned.v1","revision":1,"current":{"revision":1,"restored_from":null,"source_hash":"1111111111111111","agent":"old-agent","summary":"A question.","published_at_ms":1500,"format":"tldraw-sync.cleanup.v2","diagram":{"flow":"down","nodes":[{"id":"one","kind":"ellipse","label":"Question","parent":null,"strokes":[]},{"id":"two","kind":"box","label":"What about retries?","parent":null,"strokes":[]}],"edges":[{"id":"arrow","from":"one","to":"two","label":"","direction":"none","strokes":[]}]},"style":"markerboard","shapes":[{"kind":"ellipse","id":"one","x":0,"y":0,"w":208,"h":96,"text":"Question","color":"black","size":"s","fill":"semi","label_color":"black","label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"rectangle","id":"two","x":24,"y":160,"w":160,"h":96,"text":"What about retries?","color":"black","size":"s","fill":"semi","label_color":"black","label_align":"middle","label_valign":"middle","label_bold":false},{"kind":"arrow","id":"arrow","from":"one","to":"two","text":"","color":"black","size":"s","arrowheads":"none","route":"elbow","bend":0,"from_anchor":{"x":0.5,"y":1},"to_anchor":{"x":0.5,"y":0}}]},"history":[]}
+{
+  "format": "tldraw-sync.cleaned.v1",
+  "revision": 1,
+  "current": {
+    "revision": 1,
+    "restored_from": null,
+    "source_hash": "1111111111111111",
+    "agent": "old-agent",
+    "summary": "A question.",
+    "published_at_ms": 1500,
+    "format": "tldraw-sync.cleanup.v2",
+    "diagram": {
+      "flow": "down",
+      "nodes": [
+        { "id": "one", "kind": "ellipse", "label": "Question", "parent": null, "strokes": [] },
+        {
+          "id": "two",
+          "kind": "box",
+          "label": "What about retries?",
+          "parent": null,
+          "strokes": []
+        }
+      ],
+      "edges": [
+        {
+          "id": "arrow",
+          "from": "one",
+          "to": "two",
+          "label": "",
+          "direction": "none",
+          "strokes": []
+        }
+      ]
+    },
+    "style": "markerboard",
+    "shapes": [
+      {
+        "kind": "ellipse",
+        "id": "one",
+        "x": 0,
+        "y": 0,
+        "w": 208,
+        "h": 96,
+        "text": "Question",
+        "color": "black",
+        "size": "s",
+        "fill": "semi",
+        "label_color": "black",
+        "label_align": "middle",
+        "label_valign": "middle",
+        "label_bold": false
+      },
+      {
+        "kind": "rectangle",
+        "id": "two",
+        "x": 24,
+        "y": 160,
+        "w": 160,
+        "h": 96,
+        "text": "What about retries?",
+        "color": "black",
+        "size": "s",
+        "fill": "semi",
+        "label_color": "black",
+        "label_align": "middle",
+        "label_valign": "middle",
+        "label_bold": false
+      },
+      {
+        "kind": "arrow",
+        "id": "arrow",
+        "from": "one",
+        "to": "two",
+        "text": "",
+        "color": "black",
+        "size": "s",
+        "arrowheads": "none",
+        "route": "elbow",
+        "bend": 0,
+        "from_anchor": { "x": 0.5, "y": 1 },
+        "to_anchor": { "x": 0.5, "y": 0 }
+      }
+    ]
+  },
+  "history": []
+}
