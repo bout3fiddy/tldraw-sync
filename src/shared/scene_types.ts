@@ -8,7 +8,10 @@
 // is the only way anything of the sketch reaches the canvas: the agent names the strokes and
 // the board copies them, sample for sample, and records where they came from.
 
-// The version is part of the name, so a future format can be told apart, not misread.
+import type { SceneCondition, SceneControl, SceneTap } from './scene_controls'
+
+// The version is part of the name, so a future format can be told apart, not misread. A scene
+// without controls is the same in this format as before controls existed.
 export const scene_format = 'tldraw-sync.scene.v1'
 
 // What a publish was made from. 'sketch': from the sketch its snapshot names, accepted only
@@ -125,8 +128,17 @@ export type SceneEnd =
 
 // What every element has. `parent` is the group that holds it, or null on the page. Positions
 // are page positions whether or not the element is in a group. `rotation` is in radians about
-// the element's own top left corner, as in tldraw.
-type Common = { id: string; parent: string | null; rotation: number; opacity: number }
+// the element's own top left corner, as in tldraw. `visible_when` and `on_tap` refer to the
+// scene's controls (see `scene_controls.ts`): no conditions means always shown, and null means
+// a tap does nothing.
+type Common = {
+  id: string
+  parent: string | null
+  rotation: number
+  opacity: number
+  visible_when: SceneCondition[]
+  on_tap: SceneTap | null
+}
 
 export type SceneText = Common & {
   type: 'text'
@@ -234,5 +246,8 @@ export type SceneProposal = {
   session: string
   title: string | null
   basis: SceneBasis
+
+  // Empty for a scene with a single view.
+  controls: SceneControl[]
   elements: SceneElement[]
 }

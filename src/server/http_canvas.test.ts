@@ -14,7 +14,7 @@ import { time_real } from '../shared/time'
 import { whiteboard_protocol } from '../shared/whiteboard'
 import { registry_environment_simulated } from '../simulation/simulated_registry'
 import { test_pen_draw } from '../simulation/test_pen'
-import { scene_example } from '../simulation/test_sketch'
+import { scene_controlled, scene_example } from '../simulation/test_sketch'
 import type { Board } from './board'
 import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
@@ -140,6 +140,46 @@ test('a refused body is received before its refusal, so the next request is answ
   expect(await revision_read()).toBe(1)
 })
 
+// A page that shows controls asks for one view at a time; a page that does not reads the view
+// at rest, as it always has. Asking for a view, even a bad one, changes nothing.
+test('a page that shows controls reads one view at a time, and the canvas stays', async () => {
+  const scene = scene_controlled(board.document_state().hash, 0)
+  expect(registry.publish(board_default_id, scene)).toMatchObject({ kind: 'published' })
+  const document = await json(await fetch(`${origin}/api/cleaned.json`))
+  const view_get = (query: string) => fetch(`${origin}/api/cleaned/view.json${query}`)
+  const rest = await json(await view_get(''))
+  expect(rest).toMatchObject({
+    revision: 1,
+    state: { season: 'summer', stage: 'plan', labels: 'off' },
+    states_count: 12,
+  })
+  expect(rest.records).toEqual(document.records)
+
+  const state = encodeURIComponent(JSON.stringify({ season: 'winter', labels: 'on' }))
+  const winter = await json(await view_get(`?state=${state}`))
+  const winter_ids = (winter.records as Array<{ id: string }>).map((record) => record.id)
+  expect(winter_ids).toContain('shape:scene-snow')
+  expect(winter_ids).not.toContain('shape:scene-sun')
+  expect(winter.taps).toEqual([
+    { shape_id: 'shape:scene-snow', control: 'season', value: 'summer' },
+  ])
+
+  const refusals: Array<[string, number, string]> = [
+    ['?state=%7B', 400, 'invalid_state'],
+    [`?state=${encodeURIComponent('{"weather":"rain"}')}`, 400, 'invalid_state'],
+    [`?state=${'7'.repeat(2000)}`, 413, 'too_large'],
+  ]
+
+  for (const [query, status, code] of refusals) {
+    const answer = await view_get(query)
+    expect([query, answer.status, (await json(answer)).code]).toEqual([query, status, code])
+  }
+
+  expect(await status_of(await post('/api/cleaned/view.json', {}))).toBe(405)
+  expect(await revision_read()).toBe(1)
+  expect(await json(await fetch(`${origin}/api/cleaned.json`))).toEqual(document)
+})
+
 test('pages read the canvas and see it go stale when the ink changes', async () => {
   expect(publish()).toMatchObject({ kind: 'published', revision: 1 })
 
@@ -248,8 +288,12 @@ test('the chat is read only with its pairing; public routes never carry a word o
   const polled = await json(await get('poll', `&protocol=${whiteboard_protocol}`))
   expect(JSON.stringify(polled)).not.toContain('Private')
   const status = await json(await fetch(`${origin}/api/cleaned/status?session=${session}`))
-  expect(status.last_event).toEqual({ id, kind: 'sketch_notify', state: 'updated',
-    created_at_ms: expect.any(Number) })
+  expect(status.last_event).toEqual({
+    id,
+    kind: 'sketch_notify',
+    state: 'updated',
+    created_at_ms: expect.any(Number),
+  })
 
   // The pairing reads it all; nobody else reads any of it.
   expect(await status_of(await fetch(`${origin}${route('chat')}`))).toBe(403)

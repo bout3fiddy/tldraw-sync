@@ -25,6 +25,7 @@ import {
   scene_stroke_ids_count_max,
 } from '../shared/constants'
 import { header_keys, header_read, JsonReader, type Json } from '../shared/json_reader'
+import type { SceneControl } from '../shared/scene_controls'
 import {
   scene_arrowheads,
   scene_bases,
@@ -51,6 +52,12 @@ import {
   type SceneStroke,
   type SceneText,
 } from '../shared/scene_types'
+import {
+  conditions_read,
+  references_check,
+  scene_controls_read,
+  tap_read,
+} from './scene_control_reader'
 import { ink_points_count, ink_strokes_read } from './scene_ink'
 
 export type SceneParsed =
@@ -60,15 +67,26 @@ export type SceneParsed =
 // in full, as in a saved revision.
 export type SceneMode = 'named' | 'held'
 
-type Common = Pick<SceneElement, 'id' | 'parent' | 'rotation' | 'opacity'>
+type Common = Pick<
+  SceneElement,
+  'id' | 'parent' | 'rotation' | 'opacity' | 'visible_when' | 'on_tap'
+>
 
 const element_id_pattern = /^[A-Za-z0-9_-]{1,40}$/
 const stroke_id_pattern = /^shape:[A-Za-z0-9_-]{1,64}$/
 
 // Rotation is in radians: a little over one full turn either way.
 const rotation_max = 7
-const keys_root = [...header_keys, 'basis', 'elements'] as const
-const keys_common = ['type', 'id', 'parent', 'rotation', 'opacity'] as const
+const keys_root = [...header_keys, 'basis', 'controls', 'elements'] as const
+const keys_common = [
+  'type',
+  'id',
+  'parent',
+  'rotation',
+  'opacity',
+  'visible_when',
+  'on_tap',
+] as const
 const keys_by_type: Record<SceneElementType, readonly string[]> = {
   text: ['x', 'y', 'text', 'w', 'color', 'size', 'font', 'align'],
   geo: [
@@ -129,13 +147,16 @@ export function scene_parse(input: unknown): SceneParsed {
   }
 
   const basis = reader.choice(root, 'basis', 'proposal', scene_bases, false)
-  const elements = scene_elements_read(reader, root.elements, 'named')
+
+  // Controls first: the elements refer to them.
+  const controls = scene_controls_read(reader, root.controls)
+  const elements = scene_elements_read(reader, root.elements, 'named', controls)
 
   if (reader.problem !== null) return { ok: false, ...reader.problem }
 
   assert(elements.length <= proposal_shapes_count_max, 'a valid scene is bounded')
   assert(board_id_pattern.test(session), 'a valid scene names its board')
-  return { ok: true, proposal: { ...header, session, basis, elements } }
+  return { ok: true, proposal: { ...header, session, basis, controls, elements } }
 }
 
 function object_field(input: unknown, key: string): unknown {
@@ -146,12 +167,13 @@ function object_field(input: unknown, key: string): unknown {
   return (input as Json)[key]
 }
 
-// The elements of a scene, each checked alone and then against the others. An empty list is
-// a valid scene: an empty canvas.
+// The elements of a scene, each checked alone and then against the others and the scene's
+// controls. An empty list is a valid scene: an empty canvas.
 export function scene_elements_read(
   reader: JsonReader,
   value: unknown,
   mode: SceneMode,
+  controls: readonly SceneControl[] = [],
 ): SceneElement[] {
   const count_max = proposal_shapes_count_max
 
@@ -165,6 +187,8 @@ export function scene_elements_read(
   )
 
   if (reader.problem === null) elements_check(reader, elements)
+
+  if (reader.problem === null) references_check(reader, elements, controls)
 
   assert(elements.length === value.length, 'every element was read')
   assert(elements.length <= count_max, 'elements are bounded')
@@ -203,7 +227,15 @@ function element_read(reader: JsonReader, value: unknown, path: string, mode: Sc
 // What stands in for an element that could not be read. The problem is already kept.
 function group_fallback(path: string): SceneElement {
   assert(path.length > 0, 'an element has a path')
-  const fallback: SceneElement = { type: 'group', id: '', parent: null, rotation: 0, opacity: 1 }
+  const fallback: SceneElement = {
+    type: 'group',
+    id: '',
+    parent: null,
+    rotation: 0,
+    opacity: 1,
+    visible_when: [],
+    on_tap: null,
+  }
   assert(!element_id_pattern.test(fallback.id), 'a stand-in is never taken for an element')
   return fallback
 }
@@ -219,9 +251,11 @@ function common_read(reader: JsonReader, source: Json, path: string): Common {
   const parent = absent ? null : reader.text(source, 'parent', path, 40, null)
   const rotation = number_or(reader, source, 'rotation', path, -rotation_max, rotation_max, 0)
   const opacity = number_or(reader, source, 'opacity', path, 0, 1, 1)
+  const visible_when = conditions_read(reader, source, path)
+  const on_tap = tap_read(reader, source, path)
   assert(opacity >= 0 && opacity <= 1, 'a read opacity is a fraction')
   assert(Math.abs(rotation) <= rotation_max, 'a read turn is bounded')
-  return { id, parent, rotation, opacity }
+  return { id, parent, rotation, opacity, visible_when, on_tap }
 }
 
 // A number that may be left out, which then takes its default.
@@ -473,7 +507,7 @@ function sketch_held_read(
   reader: JsonReader,
   source: Json,
   path: string,
-  base: Pick<SceneSketch, 'type' | 'id' | 'parent' | 'rotation' | 'opacity' | 'strokes'>,
+  base: Pick<SceneSketch, 'type' | 'strokes' | keyof Common>,
   position: ScenePoint | null,
 ): SceneSketch {
   if (position === null) reader.fail(`${path}.x`, 'A saved sketch element has its position.')
@@ -654,7 +688,27 @@ function end_write(end: SceneEnd, key: 'from' | 'to'): Json {
   return { [key]: end.id, [`${key}_anchor`]: pair(end.anchor) }
 }
 
+// The fields that refer to controls are written only when set, so a scene without controls is
+// written exactly as it was before controls existed.
 function element_write(element: SceneElement, with_ink: boolean): Json {
+  const written = element_fields_write(element, with_ink)
+  delete written.visible_when
+  delete written.on_tap
+
+  if (element.visible_when.length > 0) {
+    written.visible_when = element.visible_when.map(({ control, values }) => {
+      return { control, values: [...values] }
+    })
+  }
+
+  if (element.on_tap !== null) written.on_tap = { ...element.on_tap }
+
+  assert(written.type === element.type && written.id === element.id, 'the element is written')
+  assert(element.on_tap !== null || written.on_tap === undefined, 'no tap is written as none')
+  return written
+}
+
+function element_fields_write(element: SceneElement, with_ink: boolean): Json {
   const { type, id, parent, rotation, opacity, ...rest } = element
   const common: Json = { type, id }
 

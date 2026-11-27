@@ -39,8 +39,14 @@ export function scene_shape_id(id: string): string {
   return shape_id
 }
 
-export function scene_records(elements: readonly SceneElement[]): TLRecord[] {
+// `places` gives each element's place in the scene it was projected from (see `scene_view.ts`),
+// so a shape has the same index in every view. Null when the elements are the whole scene.
+export function scene_records(
+  elements: readonly SceneElement[],
+  places: readonly number[] | null = null,
+): TLRecord[] {
   assert(elements.length <= proposal_shapes_count_max, 'a scene is bounded')
+  assert(places === null || places.length === elements.length, 'one place for each element')
   const by_id = new Map(elements.map((element) => [element.id, element]))
   assert(by_id.size === elements.length, 'a valid scene has unique ids')
   const origins = origins_place(elements, by_id)
@@ -49,10 +55,12 @@ export function scene_records(elements: readonly SceneElement[]): TLRecord[] {
   for (const [index, element] of elements.entries()) {
     const origin = origins.get(element.id)
     const parent = element.parent === null ? page_origin : origins.get(element.parent)
+    const place = places === null ? index : places[index]
     assert(origin !== undefined && parent !== undefined, 'every element has a place')
+    assert(place !== undefined && place >= index, 'a view keeps the order of the scene')
     const placed: Placed = {
       id: element.id,
-      index: index_key(index),
+      index: index_key(place),
       parent_id: element.parent === null ? cleaned_page_id : scene_shape_id(element.parent),
       x: origin.x - parent.x,
       y: origin.y - parent.y,

@@ -19,6 +19,10 @@ export const path_cleaned_json = '/api/cleaned.json'
 export const path_cleaned_status = '/api/cleaned/status'
 export const path_cleaned_restore = '/api/cleaned/restore'
 
+// The Agent canvas for a page that shows its controls: the records of one view state, the
+// controls, and what a tap on a shape sets. `?state=` is a JSON object of control values.
+export const path_cleaned_view = '/api/cleaned/view.json'
+
 // A draft waiting to be rendered, and its rendering. Only the Mac's own stage uses these.
 export const path_preview_json = '/api/preview.json'
 export const path_preview_png = '/api/preview.png'
@@ -129,6 +133,17 @@ export const scene_depth_max = 8
 // Sketch strokes an agent may name, across the whole scene.
 export const scene_stroke_ids_count_max = 2000
 
+// Controls an agent may give a scene, and the views they choose between. Every view is a part
+// of the one scene: a control hides and shows elements and never adds one, so a view is never
+// larger than the scene. Views are projected one at a time, never enumerated.
+export const scene_controls_count_max = 8
+export const scene_control_options_count_max = 12
+export const scene_control_label_length_max = 60
+export const scene_conditions_count_max = 4
+
+// A view state names one value for each control: a small JSON object in a query parameter.
+export const view_state_size_bytes_max = 1024
+
 // Pen samples one canvas keeps, across the strokes copied from the sketch and the agent's own:
 // about 2 MB of saved strokes a revision, so the retained history, nine revisions at most,
 // still saves in one quick write.
@@ -136,8 +151,7 @@ export const ink_points_count_max = 64_000
 
 // The native records of one canvas: a shape for each element, two bindings for each arrow and
 // a shape for each copied stroke.
-export const canvas_records_count_max =
-  proposal_shapes_count_max * 3 + scene_stroke_ids_count_max
+export const canvas_records_count_max = proposal_shapes_count_max * 3 + scene_stroke_ids_count_max
 
 // One draft at a time waits for the stage to render it. The stage asks this often, and a
 // preview request waits this long for the image before it says the stage is slow.
@@ -175,6 +189,11 @@ assert(canvas_records_count_max <= 8192, 'one canvas stays quick to validate and
 assert(preview_poll_interval_ms < preview_wait_ms_max, 'the stage asks while a preview waits')
 assert(cleaned_poll_interval_ms >= poll_interval_ms, 'pages poll no faster than the command')
 assert(board_title_length_max <= board_name_length_max, 'a title fits a name')
+assert(scene_control_options_count_max >= 2, 'a control chooses between at least two values')
+assert(
+  Number.isSafeInteger(scene_control_options_count_max ** scene_controls_count_max),
+  'the number of views is an exact count',
+)
 assert(boards_open_count_max <= board_sessions_count_max, 'open boards are listed boards')
 assert(
   boards_open_count_max * sessions_count_max <= 256,

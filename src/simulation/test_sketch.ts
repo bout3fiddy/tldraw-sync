@@ -76,6 +76,58 @@ export function sketch_disk(shapes: readonly TLRecord[]): SimulatedDisk {
   return disk
 }
 
+// A scene with one control of each kind. At rest (summer, plan, labels off) it shows the house,
+// the sun, the arrow from the sun, and the caption, lifted out of a group that holds only it.
+// In winter the snow replaces the sun, and the arrow, bound to the sun, goes with it. With the
+// labels on the group holds the note and the caption again. Taps on the sun and the snow swap
+// the season.
+export function scene_controlled(
+  snapshot: string,
+  base_revision: number,
+  session: string = board_default_id,
+) {
+  const option = (value: string) => ({ value, label: value.toUpperCase() })
+  const summer = [{ control: 'season', values: ['summer'] }]
+  const winter = [{ control: 'season', values: ['winter'] }]
+  return {
+    format: scene_format,
+    session,
+    snapshot,
+    base_revision,
+    agent: 'test-agent',
+    summary: 'A house in two seasons.',
+    controls: [
+      { id: 'season', kind: 'choice', label: 'Season', options: ['summer', 'winter'].map(option) },
+      {
+        id: 'stage', kind: 'steps', label: 'Stage', options: ['plan', 'build', 'ship'].map(option),
+      },
+      { id: 'labels', kind: 'toggle', label: 'Labels' },
+    ] as Array<Record<string, any>>,
+    elements: [
+      { type: 'geo', id: 'house', x: 0, y: 0, w: 100, h: 100, text: 'House' },
+      {
+        type: 'geo', id: 'sun', geo: 'ellipse', x: 200, y: -100, w: 40, h: 40,
+        visible_when: summer, on_tap: { control: 'season', value: 'winter' },
+      },
+      {
+        type: 'geo', id: 'snow', geo: 'cloud', x: 200, y: -100, w: 60, h: 40,
+        visible_when: winter, on_tap: { control: 'season', value: 'summer' },
+      },
+      { type: 'arrow', id: 'shine', from: 'sun', to: 'house' },
+      {
+        type: 'text', id: 'note', x: 0, y: 140, text: 'Built 1902', parent: 'tags',
+        visible_when: [{ control: 'labels', values: ['on'] }],
+      },
+      { type: 'text', id: 'caption', x: 0, y: 180, text: 'Home', parent: 'tags' },
+      { type: 'group', id: 'tags' },
+      {
+        type: 'text', id: 'crane', x: 120, y: 0, text: 'Crane',
+        visible_when: [{ control: 'stage', values: ['build', 'ship'] }],
+      },
+    ] as Array<Record<string, any>>,
+  }
+}
+
 // A scene with a title and two shapes joined by a labelled, bound arrow, for one board.
 export function scene_example(
   snapshot: string,

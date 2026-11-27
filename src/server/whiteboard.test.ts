@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { png_blank, png_signed } from '../shared/png'
 import { SimulatedCrash, SimulatedDisk } from '../simulation/simulated_disk'
 import { registry_environment_simulated } from '../simulation/simulated_registry'
-import { scene_example } from '../simulation/test_sketch'
+import { scene_controlled, scene_example } from '../simulation/test_sketch'
 import { VirtualTime } from '../simulation/virtual_time'
 import { Prng } from '../simulation/prng'
 import { events_count_max, retired_message, whiteboard_protocol } from '../shared/whiteboard'
@@ -277,6 +277,48 @@ test('a draft is rendered from the records its publish saves, and publishes noth
   expect(published.records_hash).toBe(drafted.records_hash)
   expect(board.cleaned_document().records).toEqual(job.records!)
   expect(await poll()).toMatchObject({ agent_revision: 1 })
+  registry.close()
+})
+
+// A draft of a scene with controls draws one view: the one its publish saves, or the one the
+// host names. A state the scene does not have is refused, and nothing is drawn or saved.
+test('a draft draws the view its state names, and only the view at rest is published', async () => {
+  const owner = 'viewer'
+  const { registry, session, host, run } = await linked(owner)
+  const poll = await run(request(`poll?protocol=${protocol}`, host, owner))
+  const { sketch_hash } = await poll.json()
+  const scene = scene_controlled(sketch_hash, 0, session)
+  const board = registry.board_open(session)!
+  const state = (value: unknown) => `state=${encodeURIComponent(JSON.stringify(value))}`
+  const winter_query = `preview?${state({ season: 'winter' })}`
+  const winter = await (await run(request(winter_query, host, owner, scene))).json()
+  expect(winter).toMatchObject({
+    session,
+    base_revision: 0,
+    state: { season: 'winter', stage: 'plan', labels: 'off' },
+    states_count: 12,
+  })
+  expect(board.preview_job(null).records!.map((record) => record.id)).toContain('shape:scene-snow')
+  const rest = await (await run(request('preview', host, owner, scene))).json()
+  expect(rest.records_hash).not.toBe(winter.records_hash)
+
+  const refusals: Array<[string, number, string]> = [
+    ['state=%7B', 400, 'invalid_state'],
+    [state({ weather: 'rain' }), 400, 'invalid_state'],
+    [state({ season: 'spring' }), 400, 'invalid_state'],
+    [`state=${'7'.repeat(2000)}`, 413, 'too_large'],
+  ]
+
+  for (const [query, status, code] of refusals) {
+    const answer = await run(request(`preview?${query}`, host, owner, scene))
+    expect([query, answer.status, (await answer.json()).code]).toEqual([query, status, code])
+  }
+
+  expect(board.preview_job(rest.preview)).toEqual({ id: rest.preview })
+  expect(board.cleaned_document()).toMatchObject({ revision: 0, records: [] })
+  const published = await (await run(request('publish', host, owner, scene))).json()
+  expect(published).toMatchObject({ kind: 'published', revision: 1, shapes_count: 4 })
+  expect(published.records_hash).toBe(rest.records_hash)
   registry.close()
 })
 

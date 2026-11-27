@@ -271,6 +271,18 @@ test('a saved shape that cannot be drawn stops the start, and the file stays', (
   }
 })
 
+// A revision from a retired format has no controls: one view, its records as they were.
+test('a migrated revision has one view, and a page asking for another is told so', () => {
+  const canvas = Cleaned.open(disk_unified())
+  const view = canvas.view(null)
+  expect(view).toMatchObject({ kind: 'view', view: { controls: [], states_count: 1, taps: [] } })
+  expect(view.kind === 'view' ? view.view.records : null).toEqual(
+    canvas.document(hash_later).records,
+  )
+  expect(canvas.view({ season: 'winter' })).toMatchObject({ kind: 'invalid', path: 'state.season' })
+  expect(canvas.controls_current()).toEqual([])
+})
+
 test('a scene is published over a migrated canvas, which stays in the history as it was', () => {
   const disk = disk_unified()
   const canvas = Cleaned.open(disk)

@@ -2,6 +2,8 @@
 // lives in the sync room. The canvas is a separate, read-only document that an external agent
 // publishes whole, as native tldraw records. Nothing here runs a model.
 
+import type { SceneControlJson, ViewState, ViewTap } from './scene_controls'
+
 // The page every canvas record belongs to.
 export const cleaned_page_id = 'page:page'
 
@@ -66,7 +68,24 @@ export type SketchSnapshot = {
   // board filled in. Null when nothing is published, or when the current revision is a
   // legacy one, which is shown but has no scene to edit.
   scene: Array<Record<string, unknown>> | null
+
+  // The controls of that scene, as an agent may send them again with it: empty when it has
+  // none. A scene sent back without the controls its elements name is refused, not trimmed.
+  scene_controls: SceneControlJson[]
   canvas_legacy: boolean
+}
+
+// One view of the current revision, for a page that shows the controls (`path_cleaned_view`).
+// The view state belongs to the page: asking for a view changes nothing on the board. Without
+// a state, or for a revision with no controls, it is the view at rest, whose records are those
+// `CleanedDocument` serves to every page. `taps` are what a tap on a shown shape sets.
+export type CanvasView = {
+  revision: number
+  controls: SceneControlJson[]
+  state: ViewState
+  states_count: number
+  records: CanvasRecord[]
+  taps: ViewTap[]
 }
 
 // A draft the stage is asked to render: the records a publish of the same proposal would

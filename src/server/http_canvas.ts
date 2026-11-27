@@ -4,7 +4,12 @@
 // line can tell an agent what to do next.
 
 import { assert } from '../shared/assert'
-import { image_size_bytes_max, restore_request_size_bytes_max } from '../shared/constants'
+import {
+  image_size_bytes_max,
+  restore_request_size_bytes_max,
+  view_state_size_bytes_max,
+} from '../shared/constants'
+import type { Board } from './board'
 import type {
   BoardLookupFailure,
   BoardRegistry,
@@ -41,8 +46,58 @@ export function preview_response(result: RegistryPreview, session: string): Resp
   assert(result.preview.length > 0, 'a draft is named')
   assert(result.base_revision >= 0, 'a draft builds on a revision')
   const { preview, base_revision, snapshot, shapes_count, records_hash } = result
-  const body = { session, preview, base_revision, snapshot, shapes_count, records_hash }
+  const { state, states_count } = result
+  const body = {
+    session,
+    preview,
+    base_revision,
+    snapshot,
+    shapes_count,
+    records_hash,
+    state,
+    states_count,
+  }
   return Response.json(body, no_store)
+}
+
+// A view state from `?state=`: a small JSON object of control values, or null when the query
+// leaves it out. Its controls and values are checked by the board against the revision.
+export function view_state_param(url: URL): Body {
+  const text = url.searchParams.get('state')
+
+  if (text === null) return { ok: true, value: null }
+
+  if (new TextEncoder().encode(text).byteLength > view_state_size_bytes_max) {
+    return { ok: false, response: too_large_error(view_state_size_bytes_max) }
+  }
+
+  try {
+    const value: unknown = JSON.parse(text)
+    assert(text.length <= view_state_size_bytes_max, 'a read state is bounded')
+    return { ok: true, value }
+  } catch {
+    const message = 'The state is not valid JSON: send ?state={"control":"value"}.'
+    return { ok: false, response: json_error(400, 'invalid_state', message) }
+  }
+}
+
+// One view of the Agent canvas, for a page that shows its controls. Readable wherever the
+// canvas itself is; asking for a view changes nothing.
+export function cleaned_view_response(board: Board, url: URL): Response {
+  const state = view_state_param(url)
+
+  if (!state.ok) return state.response
+
+  const result = board.cleaned_view(state.value)
+
+  if (result.kind === 'invalid') {
+    const message = `${result.path}: ${result.message}`
+    return json_error(400, 'invalid_state', message, { path: result.path })
+  }
+
+  assert(result.view.revision >= 0, 'a view names its revision')
+  assert(result.view.states_count >= 1, 'a canvas has at least one view')
+  return Response.json(result.view, no_store)
 }
 
 // Why a scene was not accepted, for a publish and a draft alike. Nothing changed.
@@ -56,10 +111,11 @@ function refusal_response(result: PublishRefusal): Response {
     )
   }
 
+  // A draft may also be refused for the view state it asked for, rather than its scene.
   if (result.kind === 'invalid') {
-    return json_error(400, 'invalid_scene', `${result.path}: ${result.message}`, {
-      path: result.path,
-    })
+    const state = result.path === 'state' || result.path.startsWith('state.')
+    const code = state ? 'invalid_state' : 'invalid_scene'
+    return json_error(400, code, `${result.path}: ${result.message}`, { path: result.path })
   }
 
   if (result.kind === 'sketch_changed') {

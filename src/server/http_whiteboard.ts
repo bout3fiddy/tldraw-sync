@@ -32,6 +32,7 @@ import {
   lookup_error,
   preview_response,
   publish_response,
+  view_state_param,
 } from './http_canvas'
 import { json_no_store } from './http_sessions'
 import { authorized, scoped_key } from './whiteboard_keys'
@@ -179,7 +180,10 @@ function poll_route(url: URL, board: Board, owner: string) {
     events.every((event) => !event_kind_retired(event.kind)),
     'a retired kind never wakes',
   )
-  assert(events.every((event) => !('message' in event)), 'a host is never handed an answer')
+  assert(
+    events.every((event) => !('message' in event)),
+    'a host is never handed an answer',
+  )
   return json_no_store({ protocol, session, owner, sketch_hash, agent_revision, events })
 }
 
@@ -218,14 +222,28 @@ async function canvas_route(
     return preview_image_route(url, registry, session)
   }
 
-  if ((action === 'publish' || action === 'preview') && request.method === 'POST') {
+  if (action === 'publish' && request.method === 'POST') {
     const body = await body_read(request, proposal_size_bytes_max)
 
     if (!body.ok) return body.response
 
-    return action === 'publish'
-      ? publish_response(registry.publish(session, body.value))
-      : preview_response(registry.preview(session, body.value), session)
+    return publish_response(registry.publish(session, body.value))
+  }
+
+  // A draft draws one view: the one a publish saves, or the one `?state=` names.
+  if (action === 'preview' && request.method === 'POST') {
+    const state = view_state_param(url)
+
+    if (!state.ok) {
+      await body_discard(request)
+      return state.response
+    }
+
+    const body = await body_read(request, proposal_size_bytes_max)
+
+    if (!body.ok) return body.response
+
+    return preview_response(registry.preview(session, body.value, state.value), session)
   }
 
   await body_discard(request)

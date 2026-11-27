@@ -37,6 +37,7 @@ import {
 } from '../shared/constants'
 import { document_hash, shapes_count, type DocumentRecord } from '../shared/document_hash'
 import { png_blank, png_signed } from '../shared/png'
+import type { ViewState } from '../shared/scene_controls'
 import type { Time, TimerHandle } from '../shared/time'
 import type { EventRequest, EventState } from '../shared/whiteboard'
 import { BoardEvents } from './board_events'
@@ -45,6 +46,7 @@ import {
   type PublishRefusal,
   type PublishResult,
   type RestoreResult,
+  type ViewResult,
 } from './cleaned'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
@@ -83,6 +85,8 @@ export type PreviewResult =
       snapshot: string
       shapes_count: number
       records_hash: string
+      state: ViewState
+      states_count: number
     }
   | PublishRefusal
 
@@ -325,6 +329,7 @@ export class Board {
       agent_history: canvas.history,
       agent_source_hash: canvas.current?.source_hash ?? null,
       scene: this.cleaned.scene_current(),
+      scene_controls: this.cleaned.controls_current(),
       canvas_legacy: canvas.current?.legacy === true,
     }
   }
@@ -376,6 +381,16 @@ export class Board {
     return document
   }
 
+  // One view of the Agent canvas for a page that shows its controls. It changes nothing.
+  cleaned_view(state: unknown): ViewResult {
+    assert(!this.closed, 'board is open')
+    const revision = this.cleaned_status().revision
+    const result = this.cleaned.view(state)
+    assert(this.cleaned_status().revision === revision, 'a view publishes nothing')
+    assert(result.kind !== 'view' || result.view.revision === revision, 'a view is current')
+    return result
+  }
+
   cleaned_publish(input: unknown): PublishResult {
     assert(!this.closed, 'board is open')
     const before = this.document_state()
@@ -393,12 +408,13 @@ export class Board {
   // stage draws its records and sends back the picture. Nothing of it is saved or shown.
 
   // One draft at a time: a new one replaces the one before it, whose waiters are told.
-  preview_create(input: unknown): PreviewResult {
+  // `state` asks for one view of a scene with controls; null draws the view a publish saves.
+  preview_create(input: unknown, state: unknown = null): PreviewResult {
     assert(!this.closed, 'board is open')
     const before = this.document_state()
     const revision = this.cleaned.status(before.hash).revision
     const sketch = () => this.document_records()
-    const draft = this.cleaned.draft(input, before.hash, this.session, sketch)
+    const draft = this.cleaned.draft(input, before.hash, this.session, sketch, state)
     const after = this.document_state()
     assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')
     assert(this.cleaned.status(before.hash).revision === revision, 'a draft publishes nothing')

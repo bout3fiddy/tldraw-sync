@@ -83,6 +83,8 @@ test('a scene with one of every kind of element is read, with its defaults fille
     parent: null,
     rotation: 0,
     opacity: 1,
+    visible_when: [],
+    on_tap: null,
     x: 0,
     y: -80,
     text: 'Checkout',
@@ -118,7 +120,16 @@ test('a scene with one of every kind of element is read, with its defaults fille
 
   // On the way to the board a sketch element only names its strokes.
   expect(pic).toMatchObject({ x: null, y: null, w: null, h: null, source_hash: null, ink: null })
-  expect(notes).toEqual({ type: 'group', id: 'notes', parent: null, rotation: 0, opacity: 1 })
+  expect(notes).toEqual({
+    type: 'group',
+    id: 'notes',
+    parent: null,
+    rotation: 0,
+    opacity: 1,
+    visible_when: [],
+    on_tap: null,
+  })
+  expect(proposal.controls).toEqual([])
 })
 
 test('an empty scene is a valid scene, and so is one that changes the canvas alone', () => {

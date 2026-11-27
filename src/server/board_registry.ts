@@ -307,13 +307,13 @@ export class BoardRegistry {
   }
 
   // Hands a draft to a board to be rendered. A draft names no board: its title is not read.
-  preview(id: string, input: unknown): RegistryPreview {
+  preview(id: string, input: unknown, state: unknown = null): RegistryPreview {
     const lookup = this.board(id)
 
     if (lookup.kind !== 'board') return lookup
 
     const named = this.find(id)?.name ?? null
-    const result = lookup.board.preview_create(input)
+    const result = lookup.board.preview_create(input, state)
     assert(this.find(id)?.name === named, 'a draft names no board')
     assert(result.kind !== 'preview' || result.preview.length > 0, 'a draft is named')
     return result

@@ -26,6 +26,7 @@ import {
   path_cleaned_json,
   path_cleaned_restore,
   path_cleaned_status,
+  path_cleaned_view,
   path_drawing_json,
   path_drawing_png,
   path_pairing,
@@ -43,7 +44,13 @@ import {
 import { png_signed } from '../shared/png'
 import { bounds_valid, type Board, type ImageResult } from './board'
 import type { BoardRegistry } from './board_registry'
-import { body_discard, cleaned_restore_route, json_error, lookup_error } from './http_canvas'
+import {
+  body_discard,
+  cleaned_restore_route,
+  cleaned_view_response,
+  json_error,
+  lookup_error,
+} from './http_canvas'
 import {
   json_no_store,
   session_create_route,
@@ -288,6 +295,7 @@ function board_route(
       if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document())
       return public_canvas_status(board, owner !== null)
     }
+    if (pathname === path_cleaned_view) return cleaned_view_response(board, url)
     if (pathname === path_status) {
       const home = !url.searchParams.has('session')
       return json_no_store(status_read(options, board, server.port, home))
