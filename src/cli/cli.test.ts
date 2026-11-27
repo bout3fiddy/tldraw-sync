@@ -614,7 +614,8 @@ test('implicit capture follows home but an explicit retired target never does', 
   await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
   const remove = async (session: string) => {
     const answer = await fetch(`http://127.0.0.1:${port}/api/sessions/delete`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ session }),
     })
     expect(answer.status).toBe(200)
@@ -637,8 +638,9 @@ test('implicit capture follows home but an explicit retired target never does', 
   expect((await cli(directory, 'start', '--no-open', '--json')).json.code).toBe('started')
   expect((await cli(directory, 'session-list', '--json')).json.sessions).toEqual([])
   expect((await cli(directory, 'status', '--json')).json.code).toBe('no_boards')
-  expect((await cli(directory, 'status', '--session', 'default', '--json')).json.code)
-    .toBe('unknown_session')
+  expect((await cli(directory, 'status', '--session', 'default', '--json')).json.code).toBe(
+    'unknown_session',
+  )
   const next = await cli(directory, 'session-create', '--json')
   const next_id = String((next.json.session as { id: string }).id)
   expect(next_id).not.toBe(id)
@@ -710,3 +712,178 @@ test('boards: list, create, rename, and --session on every board command', async
   )
   expect(restore.json).toMatchObject({ code: 'nothing_to_restore' })
 }, 60_000)
+
+// A scene with controls, of neutral names: a choice of two values and a toggle, four views.
+const views_controls = [
+  {
+    id: 'mode',
+    kind: 'choice',
+    label: 'Mode',
+    options: [
+      { value: 'first', label: 'First' },
+      { value: 'second', label: 'Second' },
+    ],
+  },
+  { id: 'more', kind: 'toggle', label: 'More' },
+]
+const views_elements = [
+  { type: 'geo', id: 'base', x: 0, y: 0, w: 120, h: 60, text: 'Always' },
+  {
+    type: 'text',
+    id: 'second_only',
+    x: 0,
+    y: 80,
+    text: 'Second',
+    visible_when: [{ control: 'mode', values: ['second'] }],
+  },
+  {
+    type: 'geo',
+    id: 'more_only',
+    x: 160,
+    y: 0,
+    w: 80,
+    h: 40,
+    visible_when: [{ control: 'more', values: ['on'] }],
+    on_tap: { control: 'mode', value: 'first' },
+  },
+]
+
+// What a draft drew: the scene shapes among the records the stage was asked to render.
+const job_shapes = (job: Json) =>
+  (job.records as Json[])
+    .map((record) => String(record.id))
+    .filter((id) => id.startsWith('shape:scene-'))
+    .sort()
+
+// The escaped gap: a snapshot handed the elements back without the controls they name, so a
+// scene re-authored from it was refused. The snapshot now keeps the scene whole, and a preview
+// names and draws exactly the view --state asks for, or says precisely why it cannot.
+test('a scene with controls round-trips a snapshot; --state previews one view', async () => {
+  const host = await host_link()
+  const { directory, port, session, bound } = host
+  const drawn = async () => (await status_json(directory, session)).shapes_count === 1
+  await test_pen_draw(port, 'shape:hill', drawn, session, hill)
+  await stage_upload(directory, port, session)
+  const out = path.join(directory, 'snapshots')
+  const first = await bound('snapshot', '--no-open', '--out', out)
+  expect(first.json).toMatchObject({ code: 'snapshot_saved', scene_controls: [], states_count: 1 })
+  const scene_path = String(first.json.scene_path)
+  scene_write(scene_path, (scene) => {
+    scene.controls = views_controls
+    scene.elements = views_elements
+  })
+  const published = await bound('publish', '--file', scene_path)
+
+  // A publish saves the view at rest: the one shape shown in every view.
+  expect(published.json).toMatchObject({ code: 'published', revision: 1, shapes_count: 1 })
+
+  // The snapshot hands the scene back whole, with what the board accepts as data.
+  const second = await bound('snapshot', '--no-open', '--out', out)
+  expect(second.json).toMatchObject({
+    code: 'snapshot_saved',
+    base_revision: 1,
+    scene_controls: views_controls,
+    states_count: 4,
+    capabilities: { format: 'tldraw-sync.scene-capabilities.v1', scene_format },
+  })
+  const capabilities_file = fs.readFileSync(String(second.json.capabilities_path), 'utf8')
+  expect(JSON.parse(capabilities_file)).toEqual(second.json.capabilities)
+  expect(second.json.capabilities.controls).toMatchObject({ count_max: 8, options_count_max: 12 })
+  const again_path = String(second.json.scene_path)
+  const again = JSON.parse(fs.readFileSync(again_path, 'utf8')) as Json
+  expect(again).toMatchObject({ base_revision: 1, controls: views_controls })
+  expect(again.elements).toMatchObject(views_elements)
+
+  // Published again as it was handed back: the same records, as a new revision.
+  const republished = await bound('publish', '--file', again_path)
+  expect(republished.json).toMatchObject({
+    code: 'published',
+    revision: 2,
+    records_hash: published.json.records_hash,
+  })
+
+  // A draft is checked against the current revision, so views are previewed from a fresh
+  // snapshot: the scene file handed back before the republish is now stale.
+  const stale = await bound('preview', '--file', again_path, '--no-open')
+  expect(stale.json).toMatchObject({ code: 'revision_conflict' })
+  const third = await bound('snapshot', '--no-open', '--out', out)
+  expect(third.json).toMatchObject({ base_revision: 2, scene_controls: views_controls })
+  const current_path = String(third.json.scene_path)
+  await views_previewed(host, current_path, String(published.json.records_hash))
+}, 90_000)
+
+async function views_previewed(host: Host, scene_path: string, rest_hash: string) {
+  const { directory, port, session, bound } = host
+  const stage_close = await test_stage_open(port, session)
+  const picture = png_sized(320, 200)
+  const preview = (...state: string[]) =>
+    bound('preview', '--file', scene_path, '--no-open', ...state)
+
+  // Without --state: the view at rest, which is exactly what the publish saved.
+  const rest_run = preview()
+  const rest_job = await stage_draw(port, session, picture)
+  const rest = (await rest_run).json
+  expect(rest).toMatchObject({
+    code: 'preview_saved',
+    view: 'rest',
+    state: { mode: 'first', more: 'off' },
+    states_count: 4,
+    base_revision: 2,
+    records_hash: rest_hash,
+    shapes_count: 1,
+    published: false,
+  })
+  expect(job_shapes(rest_job)).toEqual(['shape:scene-base'])
+
+  // One chosen view; a control left out keeps its value at rest.
+  const chosen_run = preview('--state', '{"mode":"second","more":"on"}')
+  const chosen_job = await stage_draw(port, session, picture)
+  const chosen = (await chosen_run).json
+  expect(chosen).toMatchObject({
+    code: 'preview_saved',
+    view: 'selected',
+    state: { mode: 'second', more: 'on' },
+    states_count: 4,
+    base_revision: 2,
+    shapes_count: 3,
+  })
+  expect(chosen.records_hash).not.toBe(rest_hash)
+  const shown = ['shape:scene-base', 'shape:scene-more_only', 'shape:scene-second_only']
+  expect(job_shapes(chosen_job)).toEqual(shown)
+  const partial_run = preview('--state', '{"more":"on"}')
+  const partial_job = await stage_draw(port, session, picture)
+  expect((await partial_run).json.state).toEqual({ mode: 'first', more: 'on' })
+  expect(job_shapes(partial_job)).toEqual(['shape:scene-base', 'shape:scene-more_only'])
+  stage_close()
+  await views_refused(host, scene_path)
+  expect(await status_json(directory, session)).toMatchObject({ agent_revision: 2 })
+}
+
+// A view the scene does not have, or a --state that is not one, is refused with a reason, and
+// nothing is drawn or published. A publish takes no view at all.
+async function views_refused(host: Host, scene_path: string) {
+  const preview = (state: string) =>
+    host.bound('preview', '--file', scene_path, '--no-open', '--state', state)
+  const cases: Array<[state: string, message: string]> = [
+    ['{"mode":"third"}', 'state.mode: Expected one of: first, second.'],
+    ['{"absent":"on"}', 'state.absent: Unknown control.'],
+    ['{"mode":', '--state is not JSON.'],
+    ['["mode"]', '--state must be a JSON object of control values.'],
+    ['{"mode":2}', '--state gives control "mode" a value that cannot exist.'],
+    [JSON.stringify({ mode: 'x'.repeat(1100) }), '--state is over 1024 bytes.'],
+  ]
+
+  for (const [state, message] of cases) {
+    const refused = await preview(state)
+    expect(refused.exit_code, state).toBe(1)
+    expect(refused.json, state).toMatchObject({
+      status: 'failure',
+      code: 'invalid_state',
+      message,
+      next_action: { action: 'fix_usage', command: 'tldraw-sync whiteboard-preview --help' },
+    })
+  }
+
+  const publish = await host.bound('publish', '--file', scene_path, '--state', '{}')
+  expect(publish.json).toMatchObject({ code: 'usage_error', exit_code: 1 })
+}

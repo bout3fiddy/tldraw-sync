@@ -33,6 +33,13 @@ import {
 } from './commands'
 import { exit_codes, failure, success, type Outcome } from './output'
 import { file_read_bounded } from './proposal_reader'
+import {
+  scene_capabilities,
+  scene_controls_from_json,
+  scene_states_count,
+  view_state_flag_read,
+  type ViewStateFlag,
+} from './scene_capabilities'
 import { canvas_prompt, scene_schema_text } from './scene_prompt'
 import { strokes_summarize } from './stroke_summary'
 import { binding_headers, machine_headers, type Scope } from './whiteboard_scope'
@@ -45,10 +52,17 @@ function quote(pathname: string): string {
   return "'" + pathname.replaceAll("'", "'\\''") + "'"
 }
 
-function command_bound(action: string, scope: Scope, file: string | null): string {
+function command_bound(
+  action: string,
+  scope: Scope,
+  file: string | null,
+  state: string | null = null,
+): string {
   assert(action.length > 0, 'a command is named')
+  assert(state === null || action === 'preview', 'only a preview names a view')
   const proposal = file === null ? '' : ` --file ${quote(file)}`
-  return `tldraw-sync whiteboard-${action} --binding ${quote(scope.file)}${proposal} --json`
+  const view = state === null ? '' : ` --state ${quote(state)}`
+  return `tldraw-sync whiteboard-${action} --binding ${quote(scope.file)}${proposal}${view} --json`
 }
 
 // The image and the records come from two requests. The records are served only for the
@@ -72,7 +86,14 @@ export async function canvas_snapshot(options: Options, scope: Scope): Promise<O
     const snapshot = answer.body as unknown as SketchSnapshot
     assert(snapshot.document_hash === image.document_hash, 'records match their image')
     assert(snapshot.session === image.session, 'records are of the board asked for')
-    return snapshot_save(image.bytes, snapshot, options.out, scope)
+
+    // A board from before controls sends none; one that sends a list it cannot have is wrong.
+    const controls = scene_controls_from_json(snapshot.scene_controls)
+
+    if (controls === null) return reply_unexpected('snapshot')
+
+    const states_count = scene_states_count(controls)
+    return snapshot_save(image.bytes, snapshot, options.out, scope, states_count)
   }
 
   return failure(
@@ -109,6 +130,7 @@ type SnapshotFiles = {
   records_path: string
   strokes_path: string
   scene_path: string
+  capabilities_path: string
   strokes_truncated: boolean
 }
 
@@ -124,24 +146,33 @@ function snapshot_files_write(
   const records_path = path.join(directory, 'sketch.json')
   const strokes_path = path.join(directory, 'strokes.json')
   const scene_path = path.join(directory, 'scene.json')
+  const capabilities_path = path.join(directory, 'capabilities.json')
   const records = snapshot.records as unknown as Array<Record<string, unknown>>
   const summaries = strokes_summarize(records)
   const { document_hash, session, bounds, agent_revision, scene } = snapshot
   file_write_atomic(image_path, png)
   json_write(records_path, { snapshot: document_hash, bounds, records: snapshot.records })
   json_write(strokes_path, { snapshot: document_hash, ...summaries })
+  json_write(capabilities_path, scene_capabilities)
+
+  // The scene is handed back whole: its controls go with the elements that name them, so the
+  // file publishes again as it is. A scene without controls is written as it always was.
+  const controls = scene === null ? [] : (snapshot.scene_controls ?? [])
   const proposal = {
     format: scene_format,
     session,
     snapshot: document_hash,
     base_revision: agent_revision,
     basis: 'sketch',
+    ...(controls.length === 0 ? {} : { controls }),
     elements: scene ?? [],
   }
   file_write_atomic(scene_path, new TextEncoder().encode(`${JSON.stringify(proposal, null, 2)}\n`))
   assert(fs.statSync(scene_path).size > 0, 'the scene file was written')
+  assert(scene !== null || controls.length === 0, 'controls belong to a scene')
   const strokes_truncated = summaries.truncated
-  return { image_path, records_path, strokes_path, scene_path, strokes_truncated }
+  const paths = { image_path, records_path, strokes_path, scene_path, capabilities_path }
+  return { ...paths, strokes_truncated }
 }
 
 function snapshot_directory(session: string, out: string | null): string {
@@ -158,7 +189,9 @@ function snapshot_save(
   snapshot: SketchSnapshot,
   out: string | null,
   scope: Scope,
+  states_count: number,
 ): Outcome {
+  assert(states_count >= 1, 'a canvas has at least one view')
   const directory = snapshot_directory(snapshot.session, out)
   const files = snapshot_files_write(directory, png, snapshot)
   const image = png_size(png)
@@ -202,10 +235,21 @@ function snapshot_save(
     bounds,
     image,
     mapping,
+    scene_controls: snapshot.scene_controls ?? [],
+    states_count,
     schema: scene_schema_text,
+    capabilities: scene_capabilities,
     prompt,
     preview_command,
     publish_command,
+  })
+}
+
+function reply_unexpected(command: string): Outcome {
+  assert(command.length > 0, 'a command is named')
+  return failure('invalid_response', 'Unexpected response from the board.', {
+    action: 'ask_human',
+    message: `Upgrade the Mac board, then run whiteboard-${command} again.`,
   })
 }
 
@@ -310,7 +354,13 @@ export async function canvas_publish(options: Options, scope: Scope): Promise<Ou
 
 // Has the Mac stage render the scene exactly as a publish would save it, and saves the
 // picture. Nothing is published: the canvas, its revision and the sketch stay as they are.
+// With `--state`, the view of the draft that state names; without, the view a publish saves.
 export async function canvas_preview(options: Options, scope: Scope): Promise<Outcome> {
+  const help = { action: 'fix_usage', command: 'tldraw-sync whiteboard-preview --help' } as const
+  const flag = view_state_flag_read(options.state)
+
+  if (flag.kind === 'invalid') return failure('invalid_state', flag.message, help)
+
   const text = scene_read(options, scope, 'whiteboard-preview')
 
   if (typeof text !== 'string') return text
@@ -320,7 +370,8 @@ export async function canvas_preview(options: Options, scope: Scope): Promise<Ou
   if ('kind' in found) return found
 
   const session = found.status.session
-  const route = `${whiteboard_path}preview?${board_query(session)}`
+  const view = flag.kind === 'selected' ? `&state=${encodeURIComponent(flag.text)}` : ''
+  const route = `${whiteboard_path}preview?${board_query(session)}${view}`
   const answer = await api_request(found.port, route, text, binding_headers(scope.binding))
 
   if (answer.kind === 'unreachable') return not_running({ kind: 'not_running' })
@@ -328,15 +379,14 @@ export async function canvas_preview(options: Options, scope: Scope): Promise<Ou
   if (answer.status !== 200) return answer_failure(answer, scope)
 
   const { preview, records_hash, shapes_count, base_revision, snapshot } = answer.body
+  const shown = preview_state(answer.body, flag)
 
-  if (typeof preview !== 'string' || typeof records_hash !== 'string') {
-    return failure('invalid_response', 'Unexpected response from the board.', {
-      action: 'ask_human',
-      message: 'Upgrade the Mac board, then preview again.',
-    })
+  if (typeof preview !== 'string' || typeof records_hash !== 'string' || shown === null) {
+    return reply_unexpected('preview')
   }
 
-  const image = await preview_image(found, scope, preview, options)
+  const state_text = flag.kind === 'selected' ? flag.text : null
+  const image = await preview_image(found, scope, preview, options, state_text)
 
   if ('kind' in image) return image
 
@@ -345,14 +395,47 @@ export async function canvas_preview(options: Options, scope: Scope): Promise<Ou
   fs.mkdirSync(path.dirname(image_path), { recursive: true })
   file_write_atomic(image_path, image.bytes)
   const facts = { preview, records_hash, shapes_count, base_revision, snapshot }
-  return success('preview_saved', `Saved the draft's rendering to ${image_path}`, image_path, {
+  const named = flag.kind === 'selected' ? ` of view ${JSON.stringify(shown.state)}` : ''
+  const human = `Saved the draft's rendering${named} to ${image_path}`
+  return success('preview_saved', human, image_path, {
     session,
     image_path,
     path: image_path,
     ...facts,
+    view: flag.kind,
+    ...shown,
     image: png_size(image.bytes),
     published: false,
   })
+}
+
+type PreviewState = { state: Readonly<Record<string, unknown>> | null; states_count: number | null }
+
+// What a board from before controls answers for the view a publish saves.
+const preview_unnamed: PreviewState = { state: null, states_count: null }
+
+// The view the board drew, as it names it. A board that drew some other view than the one
+// asked for, or that cannot draw a chosen view at all, is not believed: nothing is saved.
+function preview_state(
+  body: Answer['body'],
+  flag: Exclude<ViewStateFlag, { kind: 'invalid' }>,
+): PreviewState | null {
+  const state = body.state
+  const states_count = body.states_count
+  const named = state !== null && typeof state === 'object' && !Array.isArray(state)
+  const counted = Number.isSafeInteger(states_count) && (states_count as number) >= 1
+
+  if (flag.kind === 'rest') {
+    if (!named || !counted) return preview_unnamed
+
+    return { state: state as Record<string, unknown>, states_count: states_count as number }
+  }
+
+  if (!named || !counted) return null
+
+  const drawn = state as Record<string, unknown>
+  const same = Object.entries(flag.state).every(([control, value]) => drawn[control] === value)
+  return same ? { state: drawn, states_count: states_count as number } : null
 }
 
 // The stage's rendering of one draft. The board waits on each request; the stage is opened
@@ -362,10 +445,11 @@ async function preview_image(
   scope: Scope,
   preview: string,
   options: Options,
+  state_text: string | null,
 ): Promise<{ bytes: Uint8Array } | Outcome> {
   const session = found.status.session
   const route = `${whiteboard_path}preview-image?id=${preview}&${board_query(session)}`
-  const retry = command_bound('preview', scope, options.file)
+  const retry = command_bound('preview', scope, options.file, state_text)
   let stage_opened = false
 
   for (let attempt = 0; attempt < preview_attempts_count_max; attempt += 1) {
@@ -502,6 +586,14 @@ function answer_failure(answer: Answer, scope: Scope | null, session = board_def
 
   if (code === 'boards_busy' || code === 'unknown_preview') {
     return failure(code, message, { action: 'retry', command: again }, exit_codes.not_ready)
+  }
+
+  // A view the draft does not have: the message names the control or value.
+  if (code === 'invalid_state') {
+    return failure(code, message, {
+      action: 'fix_usage',
+      command: 'tldraw-sync whiteboard-preview --help',
+    })
   }
 
   if (code === 'invalid_scene' || code === 'invalid_json' || code === 'too_large') {

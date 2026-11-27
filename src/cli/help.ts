@@ -1,8 +1,14 @@
 // The help is the documentation, for people and for agents alike. It is layered: the top level
 // says what the board is and how to get the drawing; each command's help has the detail.
 
-import { board_name_length_max, port_default, proposal_size_bytes_max } from '../shared/constants'
+import {
+  board_name_length_max,
+  port_default,
+  proposal_size_bytes_max,
+  view_state_size_bytes_max,
+} from '../shared/constants'
 import { message_length_max, text_code_points_max, whiteboard_protocol } from '../shared/whiteboard'
+import { scene_capabilities_format } from './scene_capabilities'
 import { scene_schema_text } from './scene_prompt'
 
 export const commands = [
@@ -25,6 +31,7 @@ const session_option_text =
 export type Command = (typeof commands)[number]
 
 const protocol = String(whiteboard_protocol)
+const state_bytes = String(view_state_size_bytes_max)
 
 export const help_top = `tldraw-sync: draw on an iPad, see it on the Mac, let agents fetch it.
 
@@ -128,12 +135,19 @@ sketch its strokes were copied from. "canvas.legacy" is true when the canvas sho
 published in a retired format: it is shown and kept in the history, but has no scene to edit,
 so scene.json starts empty.
 
+Views: scene.json keeps the scene whole, with any "controls" its elements name, so it
+publishes again as it is. "scene_controls" lists them and "states_count" counts the views
+they choose between. capabilities.json, also given as "capabilities", lists the formats,
+styles, controls and limits the board accepts, as data; its "format" is
+"${scene_capabilities_format}".
+
 Output:
   --json   {"status": "success", "code": "snapshot_saved", "session", "title_wanted",
             "image_path", "records_path", "strokes_path", "strokes_truncated", "scene_path",
-            "snapshot", "base_revision", "agent_revision", "agent_history",
-            "agent_source_hash", "canvas", "shapes_count", "bounds", "image", "mapping",
-            "schema", "prompt", "preview_command", "publish_command"}
+            "capabilities_path", "snapshot", "base_revision", "agent_revision",
+            "agent_history", "agent_source_hash", "canvas", "shapes_count", "bounds", "image",
+            "mapping", "scene_controls", "states_count", "schema", "capabilities", "prompt",
+            "preview_command", "publish_command"}
 
 Failure codes:
   not_running      exit 2: the board daemon is not running
@@ -145,7 +159,7 @@ Example:
   tldraw-sync whiteboard-snapshot --binding /private/binding.json --json`
 
 const help_preview = `Usage: tldraw-sync whiteboard-preview --binding <file> --file <scene.json>
-    [--out <image.png>] [--no-open] --json
+    [--state <json>] [--out <image.png>] [--no-open] --json
 
 Renders the scene in --file exactly as whiteboard-publish would publish it, and saves the
 picture. Nothing is published: the Agent canvas, its revision and the sketch stay as they are,
@@ -157,12 +171,20 @@ hash.
 The Mac stage draws the picture, in the browser, with the same code that shows the canvas. It
 is opened if it is not, unless --no-open is given.
 
+Options:
+  --state <json>  Draw one view of a scene with controls: a JSON object of control ids and
+                  values, at most ${state_bytes} bytes. A control left out keeps its value at
+                  rest. Without it, the view at rest is drawn: the one a publish saves.
+
 Output:
   --json   {"status": "success", "code": "preview_saved", "session", "image_path",
-            "records_hash", "shapes_count", "base_revision", "snapshot", "image",
-            "published": false}
+            "records_hash", "shapes_count", "base_revision", "snapshot", "view", "state",
+            "states_count", "image", "published": false}
+  "view" is "selected" with --state and "rest" without. "state" is the value of every
+  control in the view drawn, and "base_revision" the canvas revision the draft builds on.
 
 Failure codes:
+  invalid_state      exit 1: the message names the control or value; fix --state
   invalid_scene      exit 1: the message names the field; fix the scene
   scene_too_large    exit 1: the scene is over ${proposal_size_bytes_max} bytes
   scene_unreadable   exit 1: the scene is not a readable regular file
@@ -172,8 +194,10 @@ Failure codes:
   stage_closed       exit 4: the Mac page is not open and could not be opened
   preview_not_ready  exit 4: the Mac page did not draw the draft in time; try again
 
-Example:
-  tldraw-sync whiteboard-preview --binding /private/binding.json --file scene.json --json`
+Examples:
+  tldraw-sync whiteboard-preview --binding /private/binding.json --file scene.json --json
+  tldraw-sync whiteboard-preview --binding /private/binding.json --file scene.json \\
+    --state '{"<control id>":"<value>"}' --json`
 
 const help_publish = `Usage: tldraw-sync whiteboard-publish --binding <file> --file <scene.json>
     --json
@@ -187,7 +211,8 @@ sketch has moved on. Otherwise nothing changes. The sketch itself is never modif
 A "sketch" element is published as the person's own pen strokes. With "basis": "sketch" the
 board copies the strokes it names from the sketch as it is now, and refuses a stroke the
 sketch does not have. With "basis": "canvas" it keeps the strokes the same element already
-holds on the canvas. An empty "elements" list publishes an empty canvas.
+holds on the canvas. An empty "elements" list publishes an empty canvas. A scene with
+"controls" is published whole; a page that does not choose a view shows the view at rest.
 
 The file may be at most ${proposal_size_bytes_max} bytes. See tldraw-sync whiteboard-snapshot --help
 for the scene format.

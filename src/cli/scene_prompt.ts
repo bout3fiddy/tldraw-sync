@@ -14,6 +14,10 @@ import {
   proposal_shapes_count_max,
   proposal_summary_length_max,
   proposal_text_length_max,
+  scene_conditions_count_max,
+  scene_control_label_length_max,
+  scene_control_options_count_max,
+  scene_controls_count_max,
   scene_depth_max,
   scene_path_points_count_max,
   scene_stroke_ids_count_max,
@@ -52,6 +56,9 @@ export type PromptFacts = {
 }
 
 const list = (values: readonly string[]) => values.map((value) => `"${value}"`).join(' | ')
+const option_counts = `2 to ${scene_control_options_count_max}`
+const label_max = scene_control_label_length_max
+const conditions_max = scene_conditions_count_max
 
 // The scene format. The first option of each style is its default.
 export const scene_schema_text = `{
@@ -63,6 +70,10 @@ export const scene_schema_text = `{
   "agent": "<your name, optional>",
   "summary": "<one line, optional, at most ${proposal_summary_length_max} characters>",
   "title": "<a few words, optional: only when whiteboard-snapshot asks for one>",
+  "controls": [ optional, 0 to ${scene_controls_count_max} of:
+    {"id", "kind": "choice" | "steps", "label", "options": [{"value", "label"}, ...]}
+    {"id", "kind": "toggle", "label"}
+  ],
   "elements": [ 0 to ${proposal_shapes_count_max} of:
     {"type": "text", "id", "x", "y", "text", "w"?, "color"?, "size"?, "font"?, "align"?}
     {"type": "geo", "id", "geo"?, "x", "y", "w", "h", "text"?, "color"?, "label_color"?,
@@ -108,7 +119,14 @@ export const scene_schema_text = `{
   "align" is "start" | "middle" | "end". An arrowhead is ${list(scene_arrowheads.slice(0, 5))}
           | ${list(scene_arrowheads.slice(5))}.
   A canvas keeps at most ${ink_points_count_max} points across all strokes. An empty "elements"
-  list is an empty canvas. There are no images, links, embeds or code, and no other fields.`
+  list is an empty canvas. There are no images, links, embeds or code, and no other fields.
+  controls  optional: without them a scene is one view. Each has ${option_counts} options,
+          the first its value at rest; a toggle is "off", then "on". Ids start with a letter;
+          ids and values are 1 to 40 letters, digits, _ or -. Labels are one line of at most
+          ${label_max} characters. An element may add "visible_when", up to ${conditions_max} of
+          {"control", "values": [...]} that must all hold, and "on_tap": {"control", "value"}
+          on a text, geo, path, stroke or arrow. A publish saves the view at rest;
+          whiteboard-preview --state draws any one view.`
 
 export function canvas_prompt(facts: PromptFacts): string {
   facts_check(facts)
@@ -169,6 +187,7 @@ function write_lines(facts: PromptFacts): string[] {
     `   "base_revision": ${facts.base_revision}. Use "basis": "sketch" when the scene is made`,
     '   from the sketch: it is accepted only while the sketch is unchanged. Use "basis":',
     '   "canvas" to change your canvas alone; it keeps the sketch strokes the canvas holds.',
+    '   Controls are optional: keep any the file has, and add them only if views help.',
     ...title_lines(facts.title_wanted),
   ]
 }
@@ -178,7 +197,8 @@ function check_lines(facts: PromptFacts): string[] {
     `3. Run: ${facts.preview_command}`,
     '   It renders the draft exactly as it would be published and publishes nothing. Look at',
     '   the picture at "image_path" and fix the scene until it reads well: nothing overlaps',
-    '   by accident, words fit their shapes, and arrows meet what they point at.',
+    '   by accident, words fit their shapes, and arrows meet what they point at. With',
+    '   controls, add --state \'{"<control>":"<value>"}\' to draw one other view.',
     `4. Run: ${facts.publish_command}`,
     '   It replaces the whole Agent canvas in one step. On "invalid_scene", fix the field the',
     '   message names. On "sketch_changed", "revision_conflict" or "session_mismatch", take',

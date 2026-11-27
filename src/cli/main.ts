@@ -34,7 +34,8 @@ const options_by_command = {
     message: string_option },
   'whiteboard-snapshot': { ...layer, out: string_option, 'no-open': { type: 'boolean' } },
   'whiteboard-preview': {
-    ...layer, file: string_option, out: string_option, 'no-open': { type: 'boolean' },
+    ...layer, file: string_option, out: string_option, state: string_option,
+    'no-open': { type: 'boolean' },
   },
   'whiteboard-publish': { ...layer, file: string_option },
   start: { ...options_common, port: { type: 'string' }, 'no-open': { type: 'boolean' } },
