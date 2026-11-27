@@ -1,6 +1,13 @@
 {
   "checks": [
     {
+      "id": "print-preparation-benchmark",
+      "kind": "benchmark",
+      "required": true,
+      "argv": ["node", "tests/fixtures/print-performance/prepare-bench.mjs"],
+      "timeoutMs": 90000
+    },
+    {
       "id": "typecheck",
       "kind": "static",
       "required": true,

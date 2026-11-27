@@ -1,0 +1,193 @@
+{
+  "about": [
+    "Measured with prepare-bench.mjs on synthetic scenes only (scene.mjs); no board data.",
+    "A sample ends when the renderer reports the view drawn, plus two frames.",
+    "Times in milliseconds, heap in MiB."
+  ],
+  "measured": "2026-11-27",
+  "machine": {
+    "cpu": "Apple M4, 10 cores",
+    "memory_gib": 24,
+    "os": "macOS 27.2.1 arm64",
+    "browser": "chromium 143.0.7499.4 headless, Playwright 1.57.0, 1440x900, one page at a time",
+    "build": "vite 5.4.21 production; tldraw 4.2.3; node 26.12.1; bun 1.3.5"
+  },
+  "boundaries": {
+    "svg-print": [
+      "From the press event time on the board's switch to the print naming the view and not",
+      "busy, polled once a frame, plus two frames."
+    ],
+    "native-control": [
+      "From one store change applying the view in a kept read-only tldraw editor to every",
+      "shape in the page, plus two frames. No press, switch or event delay is included."
+    ]
+  },
+  "dense": {
+    "scene": [
+      "772 elements; 3 controls of 6, 4 and 5 options (120 states); six disjoint views of 8,",
+      "142, 185, 200, 120 and 100 elements. Top-level shapes shown: m1 149, m2 192, m3 207,",
+      "m4 127, m5 107."
+    ],
+    "command": [
+      "node tests/fixtures/print-performance/prepare-bench.mjs",
+      "--renderer svg-print,native-control --rounds 2"
+    ],
+    "svg-print baseline": {
+      "cold": {
+        "count": 10,
+        "median": 1976,
+        "p90": 3300,
+        "max": 3300,
+        "long_task_max": 201,
+        "samples": [1089, 2437, 3300, 1947, 1176, 1072, 2456, 3215, 1976, 1367]
+      },
+      "revisit": { "count": 12, "median": 2054, "p90": 3210, "max": 3966, "long_task_max": 217 },
+      "minor change": { "count": 2, "samples": [3491, 3152] },
+      "quick run of four": { "count": 2, "samples": [1399, 1316] },
+      "idle": {
+        "heap_rest": 16,
+        "heap_all_seen": 65,
+        "nodes_all_seen": 37240,
+        "task_ms_per_s": 8.3
+      }
+    },
+    "native-control": {
+      "cold": {
+        "count": 10,
+        "median": 90,
+        "p90": 100,
+        "max": 100,
+        "long_task_max": 91,
+        "samples": [90, 93, 96, 74, 48, 78, 94, 100, 79, 76]
+      },
+      "revisit": { "count": 12, "median": 60, "p90": 90, "max": 93, "long_task_max": 85 },
+      "minor change": { "count": 2, "samples": [42, 39] },
+      "quick run of four": { "count": 2, "samples": [86, 87] },
+      "idle": { "heap_rest": 8, "heap_all_seen": 40, "nodes_all_seen": 11735, "task_ms_per_s": 6.6 }
+    }
+  },
+  "sweep": {
+    "scene": [
+      "A 40-element view at rest; a view of N elements it does not share, cold; a toggle",
+      "adding 8 text shapes to it (sparse); revisits. Shapes shown are N and one title."
+    ],
+    "command": [
+      "node tests/fixtures/print-performance/prepare-bench.mjs",
+      "--renderer <name> --sweep <sizes> [--rounds 2]"
+    ],
+    "svg-print baseline": {
+      "rounds": 1,
+      "fields": ["shapes", "cold", "sparse", "revisits", "long_task_max", "heap", "nodes"],
+      "sizes": [
+        [101, 832, 1086, [1052, 438, 786], 90, 51, 17193],
+        [201, 1462, 2684, [2671, 574, 1585], 196, 39, 21067],
+        [401, 3071, 9176, [10612, 1066, 3506], 568, 86, 45854],
+        [601, 5370, 21278, [21494, 1461, 5440], 1111, 104, 65494],
+        [752, 6218, 30572, [33871, 1818, 7016], 1611, 115, 74876]
+      ],
+      "note": [
+        "The sparse change and the revisit of the large view redraw every shape while the",
+        "large view and its hidden editor are in the page. Each serial export forces a style",
+        "and layout pass over the whole document, so time grows faster than the shapes."
+      ]
+    },
+    "native-control": {
+      "rounds": 2,
+      "cold_ms_per_shape": 0.508,
+      "fields": [
+        "shapes",
+        "cold",
+        "sparse",
+        "revisit_median",
+        "revisit_max",
+        "long_task_max",
+        "heap",
+        "nodes"
+      ],
+      "sizes": [
+        [101, 73, 35, 36, 47, 0, 15, 1940],
+        [201, 137, 38, 50, 96, 0, 62, 17387],
+        [401, 208, 44, 56, 182, 0, 71, 23496],
+        [601, 324, 29, 70, 285, 0, 101, 34448],
+        [752, 413, 29, 72, 367, 0, 119, 43177]
+      ],
+      "note": [
+        "revisit_max is the large view shown again from the small one: every shape mounted",
+        "anew. The control never repaints, exports or hit-tests a separate print."
+      ]
+    }
+  },
+  "profiles": {
+    "svg-print baseline, cold switch to m3 (207 shapes), 2868 sampled": [
+      "Native style and layout 1128, body.focus inside each export 460, computed-style reads",
+      "478, getBoundingClientRect 118. Each serial getSvgElement forces a style pass over the",
+      "whole document."
+    ],
+    "native-control, cold switch to m3, about 130 sampled": [
+      "Store change with shape geometry and label measuring about 56 (geometry 40), React",
+      "commit about 30."
+    ]
+  },
+  "experiments not delivered": {
+    "why": [
+      "The separate SVG print beneath the ink is superseded by agent shapes as native shapes",
+      "on the shared canvas. These changes to print_engine.tsx were measured, then withdrawn."
+    ],
+    "bench": "An earlier bench revision (MutationObserver end), dense scene, svg-print.",
+    "baseline then": {
+      "cold_median": 1911,
+      "cold_p90": 3027,
+      "cold_max": 3293,
+      "cold_count": 15,
+      "revisit_median": 1826,
+      "minor_median": 3189,
+      "quick_run_median": 1337
+    },
+    "steps": [
+      {
+        "change": "Export top-level shapes concurrently in batches of 64, not one after another.",
+        "cold_median": "1719 to 620, 5 samples each",
+        "cold_median_by_batch": { "32": 541, "64": 500, "128": 558, "256": 549 }
+      },
+      {
+        "change": "Hidden editor without a canvas (components.Canvas null).",
+        "effect": "Hidden editor mount 170 to 75 on 207 shapes; cold median 549 to 523."
+      },
+      {
+        "change": "Keep up to 6 drawn views (48 MiB), each with its hidden editor.",
+        "effect": "Revisit median 1826 to 25, max 43, 18 samples."
+      },
+      {
+        "change": "Reuse a picture while its subtree, bindings and bound shapes are unchanged.",
+        "effect": "Minor change 3189 to between 118 and 154."
+      },
+      {
+        "change": "Once default fonts are loaded, name no fonts to exports (textOptions).",
+        "effect": "Cold median 495 to 379, p90 749 to 490."
+      },
+      {
+        "change": "TldrawEditor instead of Tldraw for the hidden editor.",
+        "effect": "No measurable gain (495 against 509); rejected."
+      }
+    ],
+    "combined": {
+      "cold_median": 379,
+      "cold_p90": 490,
+      "cold_max": 557,
+      "cold_count": 15,
+      "revisit_median": 25,
+      "minor_median": 118,
+      "quick_run_median": 434,
+      "pixels": "6 views against baseline screenshots: 4 pixels differ, by 1 of 255."
+    },
+    "bottleneck left": [
+      "tldraw's style embedding for text labels inside getSvgElement, about 54 percent of a",
+      "cold switch. Only rendering without per-shape export removes it."
+    ],
+    "defect found": [
+      "Kept hidden editors stacked in page flow made #root taller than the window, and the",
+      "page scrolled the canvas 153 px off the top (caught by tests/scenes.e2e.ts). Any design",
+      "keeping several hidden editors must lay them over one another."
+    ]
+  }
+}
