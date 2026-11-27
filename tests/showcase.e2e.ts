@@ -82,7 +82,7 @@ const pictures = ['ipad-add-sketch', 'ipad-one-canvas', 'ipad-take', 'mac-chat']
 async function journey_all(browser: Browser) {
   await showcase_board(browser, async (board) => {
     const drawn = await step(
-      'the person draws a rough flow in three inks',
+      'the person draws a rough flow in black, the one ink of the pen',
       () => ink(board),
       step_long_ms,
     )
@@ -95,7 +95,15 @@ async function journey_all(browser: Browser) {
   })
 }
 
-type Board = { root: string; cli: Cli; bound: Cli; stage: Page; ipad: Page; session: string }
+type Board = {
+  root: string
+  cli: Cli
+  bound: Cli
+  stage: Page
+  ipad: Page
+  session: string
+  origin: string
+}
 
 // A disposable linked board, as `board_linked` makes one, but with Retina pages: the iPad in
 // landscape with touch and the Mac stage at a common laptop size. The board is always stopped
@@ -132,13 +140,14 @@ async function showcase_board(browser: Browser, journey: (board: Board) => Promi
       pair(root, file, stage, ipad),
     )
     const session = String(linked.session)
+    const origin = new URL(String(linked.stage_url)).origin
     const renamed = cli('session-rename', '--session', session, '--name', board_name)
     expect(renamed).toMatchObject({ code: 'session_renamed', session: { name: board_name } })
 
     for (const page of [stage, ipad]) await page.reload()
 
     await expect(ipad.getByText(board_name).first()).toBeVisible()
-    await journey({ root, cli, bound, stage, ipad, session })
+    await journey({ root, cli, bound, stage, ipad, session, origin })
   } finally {
     await Promise.all([stage_context.close(), ipad_context.close()])
     expect(cli('stop').status).toBe('success')
@@ -260,51 +269,37 @@ async function pen(page: Page, points: readonly Point[]) {
   }
 }
 
-// Chooses an ink from the pen's wells, as a person does: the pen, then the well.
-async function ink_choose(ipad: Page, label: string) {
-  const pen_button = ipad.getByRole('button', { name: 'Pen', exact: true })
-  const well = ipad.getByRole('button', { name: label, exact: true })
-
-  if ((await pen_button.getAttribute('aria-pressed')) !== 'true') await pen_button.click()
-
-  await expect(pen_button).toHaveAttribute('aria-pressed', 'true')
-  await pen_button.click()
-  await well.click()
-  await expect(well).toBeHidden()
-}
-
 const ink_strokes_count = 8
 
-// Three rough boxes and the arrows between them, then the middle step circled and questioned.
-// Returns every screen point the pen touched, from which the agent's frame is read.
-async function ink({ ipad, cli, session }: Board): Promise<Point[]> {
+// Three rough boxes and the arrows between them, then the middle step circled and questioned,
+// all with the pen as it comes: in black, its one ink. Returns every screen point the pen
+// touched, from which the agent's frame is read.
+async function ink({ ipad, cli, session, origin }: Board): Promise<Point[]> {
   const ink_drawn: Point[] = []
-  const strokes_black = [160, 340, 520].map((top) => box_points(200, top, 200, 76))
-  const strokes_blue = [arrow_points(300, 246, 330), arrow_points(300, 426, 510)]
-  const strokes_red = [
+  const strokes = [
+    ...[160, 340, 520].map((top) => box_points(200, top, 200, 76)),
+    arrow_points(300, 246, 330),
+    arrow_points(300, 426, 510),
     circle_points({ x: 300, y: 378 }, 158, 78),
-    ...question_points({
-      x: 492,
-      y: 300,
-    }),
+    ...question_points({ x: 492, y: 300 }),
   ]
-  const inks: [string, Point[][]][] = [
-    ['Black ink', strokes_black],
-    ['Blue ink', strokes_blue],
-    ['Red ink', strokes_red],
-  ]
+  expect(strokes).toHaveLength(ink_strokes_count)
+  await expect(ipad.getByRole('button', { name: 'Pen', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
 
-  for (const [label, strokes] of inks) {
-    await ink_choose(ipad, label)
-
-    for (const points of strokes) {
-      await pen(ipad, points)
-      ink_drawn.push(...points)
-    }
+  for (const points of strokes) {
+    await pen(ipad, points)
+    ink_drawn.push(...points)
   }
 
-  expect(inks.flatMap(([, strokes]) => strokes)).toHaveLength(ink_strokes_count)
   await expect.poll(() => cli('status', '--session', session).shapes_count).toBe(ink_strokes_count)
+  const response = await ipad.request.get(`${origin}/api/drawing.json?session=${session}`)
+  const colours = ((await response.json()) as Json[])
+    .filter((record) => record.type === 'draw')
+    .map((record) => record.props.color)
+  expect(colours).toEqual(Array(ink_strokes_count).fill('black'))
   return ink_drawn
 }
 

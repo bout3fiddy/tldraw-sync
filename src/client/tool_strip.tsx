@@ -1,63 +1,77 @@
 // The drawing tools, down the left edge under the hand that is not holding the Pencil: pen,
-// eraser, undo and redo. Tapping the pen again lays out its four inks beside it. Clearing the
-// sketch is in the board's menu, away from a resting palm. Both tools touch only the person's
-// ink: the agent's print lies under the glass, out of their reach.
+// eraser, undo and redo, and nothing else. The pen and the eraser are one choice: pressing one
+// lets go of the other, and pressing the one already held puts both down, leaving the pointer,
+// which chooses and moves the person's own ink. The pen writes in black only; ink written in
+// another colour before stays as it was. Clearing the sketch and deleting the board are in the
+// board's menu, away from a resting palm. Both tools touch only the person's ink: the agent's
+// print lies under the glass, out of their reach.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { DefaultColorStyle, useEditor, useValue } from 'tldraw'
+import type { ReactNode } from 'react'
+import { DefaultColorStyle, useEditor, useValue, type Editor } from 'tldraw'
+import { assert } from '../shared/assert'
 import { icon_eraser, icon_pen, icon_redo, icon_undo } from './icons'
 
-// tldraw's own ink names, with the colours it draws them in, so a well matches its stroke.
-const inks = [
-  { name: 'black', label: 'Black ink', colour: '#1d1d1d' },
-  { name: 'blue', label: 'Blue ink', colour: '#4465e9' },
-  { name: 'red', label: 'Red ink', colour: '#e03131' },
-  { name: 'green', label: 'Green ink', colour: '#099268' },
-] as const
+// The one ink the pen writes in: tldraw's black, which the chrome is drawn in too.
+export const pen_ink = 'black'
 
-const inks_id = 'strip-inks'
+// The tool held when neither the pen nor the eraser is: tldraw's pointer.
+export const pointer_tool = 'select'
+
+type HeldTool = 'draw' | 'eraser'
+
+// What pressing a tool does: take it up, or put it down if it is already held. Pure, so the
+// strip's whole rule can be checked without a canvas.
+export function tool_after_press(current: string, pressed: HeldTool): string {
+  assert(pressed === 'draw' || pressed === 'eraser', 'only the pen and eraser are held')
+  const next = current === pressed ? pointer_tool : pressed
+  assert(next !== current || current === pointer_tool, 'a press always changes the tool')
+  return next
+}
+
+// Takes up the pen in its one ink, or puts down whichever tool is held.
+export function tool_press(editor: Editor, pressed: HeldTool): void {
+  const next = tool_after_press(editor.getCurrentToolId(), pressed)
+
+  if (next === 'draw') pen_ink_set(editor)
+
+  editor.setCurrentTool(next)
+  assert(editor.getCurrentToolId() === next, 'the pressed tool is held')
+}
+
+// New ink is black, whatever colour an earlier visit or a taken shape left set for the next.
+export function pen_ink_set(editor: Editor): void {
+  if (editor.getStyleForNextShape(DefaultColorStyle) !== pen_ink) {
+    editor.setStyleForNextShapes(DefaultColorStyle, pen_ink)
+  }
+
+  assert(editor.getStyleForNextShape(DefaultColorStyle) === pen_ink, 'the pen writes in black')
+}
 
 export function ToolStrip() {
   const editor = useEditor()
   const tool = useValue('tool', () => editor.getCurrentToolId(), [editor])
-  const ink = useValue('ink', () => editor.getStyleForNextShape(DefaultColorStyle), [editor])
   const undo_possible = useValue('undo', () => editor.getCanUndo(), [editor])
   const redo_possible = useValue('redo', () => editor.getCanRedo(), [editor])
-  const [inks_open, inks_set] = useState(false)
-  const strip = useRef<HTMLElement>(null)
-  use_inks_dismiss(inks_open, strip, () => inks_set(false))
-
-  const pen = () => {
-    if (tool === 'draw') return inks_set(!inks_open)
-
-    editor.setCurrentTool('draw')
-    inks_set(false)
-  }
-  const eraser = () => {
-    editor.setCurrentTool('eraser')
-    inks_set(false)
-  }
-  const colour = inks.find((candidate) => candidate.name === ink)?.colour ?? inks[0].colour
   return (
     <div className="toolside">
       <nav
-        ref={strip}
         className="strip"
         aria-label="Drawing tools"
+        data-tool={tool}
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <div className="strip__pen">
-          <StripButton label="Pen" active={tool === 'draw'} expanded={inks_open} onPress={pen}>
-            {icon_pen}
-            <span
-              className="strip__nib"
-              data-ink={ink}
-              style={{ '--ink-well': colour } as React.CSSProperties}
-            />
-          </StripButton>
-          {inks_open && <InkWells ink={ink} onChosen={() => inks_set(false)} />}
-        </div>
-        <StripButton label="Eraser" active={tool === 'eraser'} onPress={eraser}>
+        <StripButton
+          label="Pen"
+          active={tool === 'draw'}
+          onPress={() => tool_press(editor, 'draw')}
+        >
+          {icon_pen}
+        </StripButton>
+        <StripButton
+          label="Eraser"
+          active={tool === 'eraser'}
+          onPress={() => tool_press(editor, 'eraser')}
+        >
           {icon_eraser}
         </StripButton>
 
@@ -73,72 +87,23 @@ export function ToolStrip() {
   )
 }
 
-function InkWells({ ink, onChosen }: { ink: string; onChosen: () => void }) {
-  const editor = useEditor()
-  return (
-    <div id={inks_id} className="strip__inks" role="group" aria-label="Inks">
-      {inks.map((candidate) => (
-        <button
-          key={candidate.name}
-          type="button"
-          className="strip__ink"
-          aria-label={candidate.label}
-          aria-pressed={ink === candidate.name}
-          style={{ '--ink-well': candidate.colour } as React.CSSProperties}
-          onClick={() => {
-            editor.setStyleForNextShapes(DefaultColorStyle, candidate.name)
-            editor.setCurrentTool('draw')
-            onChosen()
-          }}
-        />
-      ))}
-    </div>
-  )
-}
-
-// The inks go away when anything else is pressed, or on Escape.
-function use_inks_dismiss(open: boolean, strip: React.RefObject<HTMLElement>, close: () => void) {
-  const latest = useRef(close)
-  latest.current = close
-  useEffect(() => {
-    if (!open) return
-
-    const press = (event: PointerEvent) => {
-      if (event.target instanceof Node && strip.current?.contains(event.target)) return
-
-      latest.current()
-    }
-    const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') latest.current()
-    }
-    window.addEventListener('pointerdown', press, true)
-    window.addEventListener('keydown', key)
-    return () => {
-      window.removeEventListener('pointerdown', press, true)
-      window.removeEventListener('keydown', key)
-    }
-  }, [open, strip])
-}
-
 type StripButtonProps = {
   label: string
   active?: boolean
-  expanded?: boolean
   disabled?: boolean
   onPress: () => void
   children: ReactNode
 }
 
 function StripButton(props: StripButtonProps) {
-  const { label, active = false, expanded, disabled = false, onPress, children } = props
+  const { label, active, disabled = false, onPress, children } = props
   return (
     <button
       type="button"
       className="strip__button"
       aria-label={label}
+      title={label}
       aria-pressed={active}
-      aria-expanded={expanded}
-      aria-controls={expanded === undefined ? undefined : inks_id}
       disabled={disabled}
       onClick={onPress}
     >

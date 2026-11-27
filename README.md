@@ -4,11 +4,11 @@ Sketch with an Apple Pencil on your iPad. Your agent answers on the same canvas,
 
 <img
   src="docs/images/ipad-one-canvas.png"
-  alt="iPad canvas: a rough flow drawn in black, blue and red ink beside the agent's tidy
-  violet diagram of the same flow, with a dashed arrow back to the circled step."
+  alt="iPad canvas: a rough flow drawn in black ink beside the agent's tidy violet diagram of
+  the same flow, with a dashed arrow back to the circled step."
 />
 
-Your ink stays yours: loose, colourful and exactly as you drew it. The agent draws its answer as
+Your ink stays yours: loose, in black, and exactly as you drew it. The agent draws its answer as
 ordinary shapes, printed in violet under your ink, so you can always tell whose line is whose.
 Nothing the agent does moves your view or touches your strokes.
 
@@ -36,6 +36,10 @@ into your ink, exactly where it is, as shapes you can edit. One Undo takes the c
 agent has drawn again or your sketch has changed since you chose the shape, the copy is refused: tap
 it again.
 
+The tools float at the left: **Pen**, **Eraser**, **Undo** and **Redo**. Press the pen or eraser you
+are holding to put it down and point instead: choose and move your own ink, or tap an agent shape,
+with the Pencil too. The pen writes in black; ink drawn in other colours before stays as it was.
+
 The pen and eraser only touch your ink. The key at the foot of the canvas says which revision of the
 agent's drawing is shown, and brings **Your ink** or **Agent** into view. When a new revision
 arrives the key says so, with the one before it a press away. Looking back restores nothing.
@@ -49,7 +53,8 @@ arrives the key says so, with the one before it a press away. Looking back resto
 />
 
 The Mac presents the whole board and holds the same chat, so you can keep talking while you look at
-the drawing.
+the drawing. On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its
+view; on a narrow or short screen, or when the keyboard leaves too little room, it takes the screen.
 
 ## Try it
 

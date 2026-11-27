@@ -24,8 +24,8 @@
   --paper-quiet: rgb(246 247 244 / 0.72);
   /* Paper a shade under the vellum, for a control under the pointer. */
   --blotter: #ecede9;
-  /* The agent's one ink. None of the person's four inks is violet, so the print is never
-     mistaken for their own. */
+  /* The agent's one ink. The person's pen writes in black, and none of the inks written
+     before is violet, so the print is never mistaken for their own. */
   --agent: #6a4fd0;
   --agent-wash: rgb(106 79 208 / 0.08);
   --dot: rgb(29 29 29 / 0.22);
@@ -158,9 +158,9 @@ button {
   }
 }
 
-/* Too narrow to share: the chat takes the screen, and the canvas waits behind it, still laid
-   out at full size so its camera and, on the stage, its rendering go on. */
-@media (max-width: 720px) {
+/* Too narrow or too short to share: the chat takes the screen, and the canvas waits behind
+   it, still laid out at full size so its camera and, on the stage, its rendering go on. */
+@media (max-width: 720px), (max-height: 480px) {
   .board .drawer {
     width: 100%;
     border-left: 0;
@@ -174,6 +174,17 @@ button {
   .board[data-chat='true'] .key {
     display: none;
   }
+}
+
+/* A keyboard that leaves too little in sight beside the canvas: the chat lies over it from
+   edge to edge until the keyboard goes. The canvas keeps its size and camera underneath. */
+.drawer:has(> .chat[data-cramped='true']) {
+  width: 100%;
+  border-left: 0;
+}
+
+.board:has(.chat[data-cramped='true']) .key {
+  display: none;
 }
 
 /* A white sheet, dotted every 24 units. */
@@ -640,8 +651,7 @@ button.key__item {
   background: var(--rule);
 }
 
-.strip__button,
-.strip__ink {
+.strip__button {
   display: grid;
   place-items: center;
   width: var(--control);
@@ -659,59 +669,9 @@ button.key__item {
   color: var(--vellum);
 }
 
-/* The pen carries a square of its ink; tapped again, it lays its four inks out beside it. */
-.strip__pen {
-  position: relative;
-}
-
-.strip__pen .strip__button {
-  position: relative;
-}
-
-.strip__nib {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-inner);
-  background: var(--ink-well);
-}
-
-.strip__button[aria-pressed='true'] .strip__nib[data-ink='black'] {
-  background: var(--vellum);
-}
-
-.strip__inks {
-  position: absolute;
-  top: calc(-1 * var(--frame) - 1px);
-  left: calc(100% + var(--frame) + 9px);
-  display: flex;
-  gap: 2px;
-  padding: var(--frame);
-  border: 1px solid var(--ink);
-  border-radius: var(--radius);
-  background: var(--vellum);
-}
-
 .strip__button:disabled {
   color: var(--ink-quiet);
   cursor: default;
-}
-
-/* An ink well: a square of the ink itself. The chosen ink is drawn round with a ruled frame. */
-.strip__ink::before {
-  content: '';
-  width: 16px;
-  height: 16px;
-  border-radius: var(--radius-inner);
-  background: var(--ink-well);
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
-}
-
-.strip__ink[aria-pressed='true']::before {
-  outline: 1.5px solid var(--ink);
-  outline-offset: 4px;
 }
 
 /* Pairing an iPad, on the Mac stage: one instrument at the top right, beside Chat. Pressed,
@@ -1759,7 +1719,6 @@ button.key__item {
   .key__action:hover,
   .inspect__ask:hover,
   .strip__button:not([aria-pressed='true'], :disabled):hover,
-  .strip__ink:hover,
   .pair__button:not([aria-expanded='true']):hover,
   .chat__add:not([aria-pressed='true'], :disabled):hover,
   .chat__open:hover,

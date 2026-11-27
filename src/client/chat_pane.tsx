@@ -4,6 +4,7 @@
 // alone unless the sketch is added, and then the sketch goes as it is at that moment.
 
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from 'react'
+import { assert } from '../shared/assert'
 import type { Role } from '../shared/constants'
 import type { Chat } from './chat_state'
 import { composer_ready, type Composer } from './chat_state'
@@ -101,9 +102,20 @@ function use_follow(count: number) {
   return scroller
 }
 
+// Under this much height left in sight, a chat beside the canvas is too short to read and
+// write in: the chat takes the whole width until the keyboard goes.
+export const chat_split_height_min_px = 400
+
+// Whether the chat should take the whole width for a keyboard that leaves `visible_px` in sight.
+export function chat_cramped(visible_px: number): boolean {
+  assert(Number.isFinite(visible_px), 'a visible height is a number')
+  return visible_px < chat_split_height_min_px
+}
+
 // The part of the screen a keyboard leaves in sight, told to the chat as the inset under it,
 // so the composer stays above the keyboard. The page's own size, and every view, stay as
-// they were.
+// they were. When too little is left, the chat is marked cramped, and lies over the canvas
+// from edge to edge; the canvas keeps its size and camera underneath.
 function use_keyboard_inset() {
   const root = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
@@ -113,8 +125,10 @@ function use_keyboard_inset() {
     if (!viewport || !element) return
 
     const update = () => {
-      const hidden_px = window.innerHeight - viewport.offsetTop - viewport.height
-      element.style.setProperty('--keyboard-inset', `${Math.max(0, Math.round(hidden_px))}px`)
+      const hidden_px = Math.max(0, window.innerHeight - viewport.offsetTop - viewport.height)
+      element.style.setProperty('--keyboard-inset', `${Math.round(hidden_px)}px`)
+      const cramped = hidden_px > 0 && chat_cramped(viewport.height)
+      element.dataset.cramped = String(cramped)
     }
     update()
     viewport.addEventListener('resize', update)

@@ -1,5 +1,6 @@
 // The iPad workspace: one canvas, where the person's ink lies over the agent's print in one
-// camera, with the drawing tools at the left, the key at the foot and Chat at the top right.
+// camera, with the drawing tools floating at the left, the key at the foot and Chat at the top
+// right. No band runs across the top: every instrument floats over the canvas.
 // Everything else tldraw offers is hidden. There are no views to switch between: the chat
 // slides over the canvas, and the canvas never stops.
 
@@ -22,7 +23,7 @@ import { Surface } from './surface'
 import { camera_fit } from './surface_fit'
 import { sketch_hash, take_into_sketch, type TakeOutcome } from './take_apply'
 import { take_tools } from './take_tools'
-import { ToolStrip } from './tool_strip'
+import { pen_ink_set, ToolStrip } from './tool_strip'
 
 export function DrawPage({ session, title }: { session: string; title: string }) {
   const board = use_board_store('draw', session)
@@ -201,6 +202,7 @@ function draw_mount(editor: Editor): void {
   // stored that much wider, so it is as heavy to the writer as one written at full size, and
   // stays that heavy on the stage and in the image agents read.
   editor.user.updateUserPreferences({ colorScheme: 'light', isDynamicSizeMode: true })
+  pen_ink_set(editor)
   editor.setCurrentTool('draw')
 
   // The fine nib suits handwriting: a note stays legible at the size it was written.

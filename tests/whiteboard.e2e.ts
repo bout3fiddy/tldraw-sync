@@ -149,7 +149,7 @@ async function canvas_seen(page: Page): Promise<CanvasSeen> {
     retired_count: await retired_controls(page).count(),
     boards: await targets(page, '.rail-toggle'),
     chat: await targets(page, '.chat-toggle__button'),
-    tools: await targets(page, '.strip > .strip__button, .strip__pen > .strip__button'),
+    tools: await targets(page, '.strip .strip__button'),
     key: keys[0] ?? null,
     surface: await surface(page).boundingBox(),
   }

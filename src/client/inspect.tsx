@@ -1,7 +1,8 @@
 // Looking at one shape of the agent's print, and taking it into the sketch. A tap with a finger,
 // or a click that does not drag, on the print chooses its shape: the whole top-level shape,
 // with anything grouped in it. A card under it says whose it is and offers the two things to do
-// with it. The Pencil never chooses: it always writes, over the print as over paper.
+// with it. While the pen or eraser is held the Pencil never chooses: it writes, over the print
+// as over paper. With both put down, the Pencil points, and chooses as a finger does.
 //
 // A click with a mouse also reaches the pen, which marks a dot. When the click chose a shape
 // that dot is taken back, so choosing never leaves ink behind.
@@ -13,6 +14,7 @@ import { icon_chat_small, icon_pen_small } from './icons'
 import { use_print, type Print } from './print_engine'
 import { sketch_hash, take_into_sketch, type TakeOutcome } from './take_apply'
 import { take_tools } from './take_tools'
+import { pointer_tool } from './tool_strip'
 
 // A press that moves further than this, or lasts longer, is a stroke or a drag, not a tap.
 const tap_slop_px = 8
@@ -136,7 +138,13 @@ function ask_words(print: Editor, chosen: Chosen): string {
   return `About ${name} in revision ${chosen.revision}: `
 }
 
-type Tap = { id: number; x: number; y: number; at_ms: number; mark: string | null; tool: string }
+// A press that may be a tap, and whether it also reached the tool held when it began.
+type Tap = { id: number; x: number; y: number; at_ms: number; reached: boolean; tool: string }
+
+// A mouse press of the pen that began on the print, marked so that a tap can take back its
+// dot. Once the press is over, the mark either takes the dot back, or holds the press's ink
+// as one step: one Undo per press, and never a step with nothing in it.
+type PenPress = { id: number; mark: string }
 
 // What a tap asks: which print shape is under it, and then, once the tool's dot is taken back,
 // to choose it.
@@ -152,10 +160,23 @@ function use_taps(editor: Editor, hit: TapHandlers['hit'], choose: TapHandlers['
     const container = editor.getContainer()
     const pressed = new Set<number>()
     let candidate: Tap | null = null
+    let pen_press: PenPress | null = null
 
+    const pen_press_end = (pointer: number): PenPress | null => {
+      if (pen_press === null || pen_press.id !== pointer) return null
+
+      const ended = pen_press
+      pen_press = null
+      return ended
+    }
     const down = (event: PointerEvent) => {
       pressed.add(event.pointerId)
       candidate = tap_start(editor, event, pressed.size)
+
+      if (pen_press === null && pen_press_on_print(editor, candidate, hit)) {
+        const mark = editor.markHistoryStoppingPoint('pen press on the print')
+        pen_press = { id: event.pointerId, mark }
+      }
     }
     const move = (event: PointerEvent) => {
       if (candidate === null || candidate.id !== event.pointerId) return
@@ -166,19 +187,27 @@ function use_taps(editor: Editor, hit: TapHandlers['hit'], choose: TapHandlers['
     }
     const up = (event: PointerEvent) => {
       pressed.delete(event.pointerId)
-      const tap = candidate
+      const tap = tap_end(candidate, event)
       candidate = null
+      const press = pen_press_end(event.pointerId)
 
-      if (tap === null || tap.id !== event.pointerId) return
-
-      if (event.timeStamp - tap.at_ms > tap_duration_ms_max) return
+      if (tap === null && press === null) return
 
       const point = editor.screenToPage({ x: event.clientX, y: event.clientY })
-      window.setTimeout(() => tap_finish(editor, tap, point, { hit, choose }), 0)
+      window.setTimeout(() => {
+        const taken_back = tap !== null && tap_finish(editor, tap, press, point, { hit, choose })
+
+        if (press !== null && !taken_back) pen_press_keep(editor, press)
+      }, 0)
     }
+
+    // A cancelled press leaves nothing: tldraw takes back its stroke, and the mark goes too.
     const cancel = (event: PointerEvent) => {
       pressed.delete(event.pointerId)
       candidate = null
+      const press = pen_press_end(event.pointerId)
+
+      if (press !== null) window.setTimeout(() => editor.bailToMark(press.mark), 0)
     }
     const listeners = [
       ['pointerdown', down],
@@ -196,46 +225,83 @@ function use_taps(editor: Editor, hit: TapHandlers['hit'], choose: TapHandlers['
 }
 
 function tap_start(editor: Editor, event: PointerEvent, pressed_count: number): Tap | null {
-  if (pressed_count > 1 || event.button !== 0 || event.pointerType === 'pen') return null
+  if (pressed_count > 1 || event.button !== 0) return null
+
+  const tool = editor.getCurrentToolId()
+  const pencil = event.pointerType === 'pen'
+
+  // The Pencil writes and erases; only with both put down, as a pointer, does it choose.
+  if (pencil && tool !== pointer_tool) return null
 
   const target = event.target
 
   if (!(target instanceof Element) || target.closest('.tl-canvas') === null) return null
 
-  // In pen mode tldraw leaves a finger alone; otherwise the press also reaches the tool, and
-  // the mark lets a tap take back what the tool did with it.
-  const reaches_tool = !editor.getInstanceState().isPenMode
-  const mark = reaches_tool ? editor.markHistoryStoppingPoint('tap on the canvas') : null
-  const tool = editor.getCurrentToolId()
+  // In pen mode tldraw leaves a finger alone; otherwise the press also reaches the tool.
+  const reached = pencil || !editor.getInstanceState().isPenMode
   const { pointerId: id, clientX: x, clientY: y, timeStamp: at_ms } = event
-  return { id, x, y, at_ms, mark, tool }
+  assert(pencil || event.pointerType !== 'pen', 'only the Pencil is a pen')
+  return { id, x, y, at_ms, reached, tool }
 }
 
+// Whether a press is the pen's, under a mouse, beginning on the print: the only press whose
+// dot a tap may take back.
+function pen_press_on_print(editor: Editor, tap: Tap | null, hit: TapHandlers['hit']): boolean {
+  if (tap === null || !tap.reached || tap.tool !== 'draw') return false
+
+  return hit(editor.screenToPage({ x: tap.x, y: tap.y })) !== null
+}
+
+// Keeps what a pen press drew as one step under its mark. tldraw holds the latest changes
+// aside until the next mark, so a mark is made first to put them in the history, and the
+// squash then folds them, with tldraw's own mark and that one, under the press's mark.
+function pen_press_keep(editor: Editor, press: PenPress): void {
+  const flushed = editor.markHistoryStoppingPoint('pen press kept')
+  assert(flushed !== press.mark, 'a kept press is folded under its own mark')
+  editor.squashToMark(press.mark)
+}
+
+// The press as a tap, if it ended where and soon after it began.
+function tap_end(candidate: Tap | null, event: PointerEvent): Tap | null {
+  if (candidate === null || candidate.id !== event.pointerId) return null
+
+  if (event.timeStamp - candidate.at_ms > tap_duration_ms_max) return null
+
+  return candidate
+}
+
+// Answers a tap, once tldraw is done with it. True when the pen's dot was taken back.
 function tap_finish(
   editor: Editor,
   tap: Tap,
+  press: PenPress | null,
   point: { x: number; y: number },
   handlers: TapHandlers,
-): void {
+): boolean {
+  assert(press === null || tap.tool === 'draw', 'only the pen leaves a dot to take back')
 
-  // A click of the eraser on the person's own ink erases it: that is not a tap on the print.
-  if (tap.mark !== null && tap.tool === 'eraser') {
+  // A click of the eraser on the person's own ink erases it, and one of the pointer chooses
+  // it: neither is a tap on the print.
+  if (tap.reached && tap.tool !== 'draw') {
     const ink = editor.getShapeAtPoint(point, { margin: hit_margin_px / editor.getZoomLevel() })
 
-    if (ink !== undefined) return
+    if (ink !== undefined) return false
   }
 
   const found = handlers.hit(point)
 
-  // A tap beside the print lets go of any choice, and leaves what the tool did.
-  if (found === null) {
+  // A tap beside the print lets go of any choice, and leaves what the tool did. So does a
+  // click of the pen that began beside the print: its dot is the person's to keep, and no
+  // card is laid over it.
+  if (found === null || (tap.reached && tap.tool === 'draw' && press === null)) {
     handlers.choose(null)
-    return
+    return false
   }
 
-  if (tap.mark !== null && tap.tool === 'draw') editor.bailToMark(tap.mark)
+  if (press !== null) editor.bailToMark(press.mark)
 
   handlers.choose(found)
+  return press !== null
 }
 
 type CardProps = {
@@ -256,18 +322,15 @@ function InspectCard({ editor, print, chosen, onTake, onAsk, onClose }: CardProp
   ])
   const first = useRef<HTMLButtonElement>(null)
   useEffect(() => first.current?.focus({ preventScroll: true }), [chosen])
-  useEffect(() => {
-    const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', key)
-    return () => window.removeEventListener('keydown', key)
-  }, [onClose])
+  use_escape_close(onClose)
 
   if (place === null) return null
 
   const current = !print.showing_previous && chosen.revision === print.revision_current
   const stop = (event: { stopPropagation: () => void }) => event.stopPropagation()
+
+  // Other keys typed in the card go no further than the card.
+  const key_down = (event: KeyboardEvent) => event.stopPropagation()
   return (
     <>
       <div className="inspect__outline" style={place.outline} aria-hidden="true" />
@@ -277,7 +340,7 @@ function InspectCard({ editor, print, chosen, onTake, onAsk, onClose }: CardProp
         aria-label="Agent shape"
         style={place.card}
         onPointerDown={stop}
-        onKeyDown={(event: KeyboardEvent) => event.stopPropagation()}
+        onKeyDown={key_down}
       >
         <p className="inspect__who">
           <span className="inspect__swatch" aria-hidden="true" />
@@ -307,6 +370,22 @@ function InspectCard({ editor, print, chosen, onTake, onAsk, onClose }: CardProp
       </div>
     </>
   )
+}
+
+// Escape puts the card away and nothing else. It is caught on the way down, before tldraw's
+// listener on its container, which would otherwise cancel the held tool too and put the pen
+// down: closing a card must leave the person holding what they held.
+function use_escape_close(onClose: () => void): void {
+  useEffect(() => {
+    const key = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+
+      event.stopPropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', key, true)
+    return () => window.removeEventListener('keydown', key, true)
+  }, [onClose])
 }
 
 type Place = { outline: React.CSSProperties; card: React.CSSProperties }
