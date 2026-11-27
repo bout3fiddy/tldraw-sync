@@ -1,8 +1,9 @@
 // The iPad workspace: one canvas, where the person's ink lies over the agent's print in one
 // camera, with the drawing tools floating at the left, the key at the foot and Chat at the top
 // right. No band runs across the top: every instrument floats over the canvas.
-// Everything else tldraw offers is hidden. There are no views to switch between: the chat
-// slides over the canvas, and the canvas never stops.
+// Everything else tldraw offers is hidden. There are no layers to switch between: the chat
+// slides over the canvas, and the canvas never stops. Only a drawing the agent made
+// interactive brings its own switch, which changes that drawing on this iPad alone.
 
 import { useCallback, useLayoutEffect, useMemo, useState } from 'react'
 import { atom, DefaultSizeStyle, useValue, type Atom, type Editor } from 'tldraw'
@@ -16,6 +17,7 @@ import { ChatPane } from './chat_pane'
 import { use_board_chat } from './chat_state'
 import { use_cleaned } from './cleaned_state'
 import { Inspect } from './inspect'
+import { use_interactive, use_print_choice, ViewChoiceProvider } from './interactive_state'
 import { Notice } from './notice'
 import { PrintProvider, use_print } from './print_engine'
 import type { PrintBox } from './print_svg'
@@ -24,6 +26,7 @@ import { camera_fit } from './surface_fit'
 import { sketch_hash, take_into_sketch, type TakeOutcome } from './take_apply'
 import { take_tools } from './take_tools'
 import { pen_ink_set, ToolStrip } from './tool_strip'
+import { ViewSwitch } from './view_switch'
 
 export function DrawPage({ session, title }: { session: string; title: string }) {
   const board = use_board_store('draw', session)
@@ -45,6 +48,10 @@ export function DrawPage({ session, title }: { session: string; title: string })
   const ask = (words: string) => chat_ask(talk.composer, words, () => chat_open_set(true))
   const show_canvas = use_show_canvas({ editor, bounds, chat_open, chat_open_set })
 
+  // The view of an interactive drawing chosen on this iPad, and the print of it.
+  const choice = use_interactive(session, cleaned.document)
+  const print_choice = use_print_choice(choice)
+
   if (board.status === 'loading') return <Notice text="Opening the board" />
 
   if (board.status === 'error') {
@@ -53,14 +60,17 @@ export function DrawPage({ session, title }: { session: string; title: string })
 
   return (
     <main className="board board--draw" data-linked={linked} data-chat={chat_open}>
-      <PrintProvider document={cleaned.document} bounds={bounds}>
-        <Surface store={board.store} onMount={mount}>
-          <ToolStrip />
-          <Inspect onOutcome={(outcome) => notice_show(take_notice(outcome))} onAsk={ask} />
-        </Surface>
-        <BoardKey editor={editor} notice={notice} linked={linked} interactive />
-        <SketchMenu editor={editor} onNotice={notice_show} />
-      </PrintProvider>
+      <ViewChoiceProvider value={choice}>
+        <PrintProvider document={cleaned.document} choice={print_choice} bounds={bounds}>
+          <Surface store={board.store} onMount={mount}>
+            <ToolStrip />
+            <Inspect onOutcome={(outcome) => notice_show(take_notice(outcome))} onAsk={ask} />
+            <ViewSwitch />
+          </Surface>
+          <BoardKey editor={editor} notice={notice} linked={linked} interactive />
+          <SketchMenu editor={editor} onNotice={notice_show} />
+        </PrintProvider>
+      </ViewChoiceProvider>
       <div className="corner">
         <ChatButton
           open={chat_open}

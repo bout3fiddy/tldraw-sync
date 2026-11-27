@@ -144,6 +144,17 @@ export const scene_conditions_count_max = 4
 // A view state names one value for each control: a small JSON object in a query parameter.
 export const view_state_size_bytes_max = 1024
 
+// The scene of an interactive revision, as a page that projects its own views reads it once:
+// the agent's elements, up to a proposal's size, and the strokes the board copied into them,
+// up to the canvas's pen samples. A larger scene is not offered, and the page shows the view
+// at rest. A whole view response, its records with the scene, is read up to the second bound.
+export const interactive_scene_size_bytes_max = 8 * 1024 * 1024
+export const interactive_view_size_bytes_max = 16 * 1024 * 1024
+
+// The query parameter that asks a view for its scene, and how often a page tries to load it.
+export const interactive_param = 'interactive'
+export const interactive_attempts_count_max = 3
+
 // Pen samples one canvas keeps, across the strokes copied from the sketch and the agent's own:
 // about 2 MB of saved strokes a revision, so the retained history, nine revisions at most,
 // still saves in one quick write.
@@ -193,6 +204,10 @@ assert(scene_control_options_count_max >= 2, 'a control chooses between at least
 assert(
   Number.isSafeInteger(scene_control_options_count_max ** scene_controls_count_max),
   'the number of views is an exact count',
+)
+assert(
+  interactive_scene_size_bytes_max < interactive_view_size_bytes_max,
+  'a view response holds its scene',
 )
 assert(boards_open_count_max <= board_sessions_count_max, 'open boards are listed boards')
 assert(

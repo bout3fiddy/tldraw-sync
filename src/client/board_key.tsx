@@ -119,14 +119,18 @@ function KeyItem({ layer, text, away, interactive, onPress }: ItemProps) {
 
 function key_words(print: Print | null, linked: boolean): Words {
   const current = print?.revision_current ?? 0
-  const shown = print?.view?.revision ?? current
   const failed = print?.view?.failed ?? 0
-  const missing = failed > 0 ? ` · ${failed} not shown` : ''
 
-  if (print?.showing_previous) {
+  // The key names the revision wanted on screen. While its print is still being drawn the one
+  // before stays shown, and the key says so rather than counting shapes it has not drawn.
+  const drawing =
+    print !== null && print.key_wanted !== null && print.key_wanted !== print.view?.key
+  const missing = drawing ? ' · drawing' : failed > 0 ? ` · ${failed} not shown` : ''
+
+  if (print?.showing_previous && print.revision_previous !== null) {
     return {
       ink: 'Your ink',
-      agent: `Agent · showing revision ${shown}${missing}`,
+      agent: `Agent · showing revision ${print.revision_previous}${missing}`,
       action: `Back to revision ${current}`,
     }
   }

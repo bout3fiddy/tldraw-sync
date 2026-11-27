@@ -6,6 +6,7 @@
 import { assert } from '../shared/assert'
 import {
   image_size_bytes_max,
+  interactive_param,
   restore_request_size_bytes_max,
   view_state_size_bytes_max,
 } from '../shared/constants'
@@ -82,11 +83,20 @@ export function view_state_param(url: URL): Body {
 }
 
 // One view of the Agent canvas, for a page that shows its controls. Readable wherever the
-// canvas itself is; asking for a view changes nothing.
+// canvas itself is; asking for a view changes nothing. Only `?interactive=1` adds the scene a
+// page projects views from: null for a revision without views to choose between. Any other
+// value of the parameter is refused, so a mistyped request never looks like a static board.
 export function cleaned_view_response(board: Board, url: URL): Response {
   const state = view_state_param(url)
 
   if (!state.ok) return state.response
+
+  const interactive = url.searchParams.get(interactive_param)
+
+  if (interactive !== null && interactive !== '1') {
+    const message = `Send ?${interactive_param}=1 to ask for the scene, or leave it out.`
+    return json_error(400, 'invalid_request', message)
+  }
 
   const result = board.cleaned_view(state.value)
 
@@ -95,9 +105,14 @@ export function cleaned_view_response(board: Board, url: URL): Response {
     return json_error(400, 'invalid_state', message, { path: result.path })
   }
 
-  assert(result.view.revision >= 0, 'a view names its revision')
-  assert(result.view.states_count >= 1, 'a canvas has at least one view')
-  return Response.json(result.view, no_store)
+  const { interactive: scene, ...view } = result.view
+  assert(view.revision >= 0, 'a view names its revision')
+  assert(view.states_count >= 1, 'a canvas has at least one view')
+  assert(scene == null || scene.revision === view.revision, 'a scene is the shown revision')
+
+  if (interactive === null) return Response.json(view, no_store)
+
+  return Response.json({ ...view, interactive: scene ?? null }, no_store)
 }
 
 // Why a scene was not accepted, for a publish and a draft alike. Nothing changed.

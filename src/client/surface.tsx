@@ -115,6 +115,8 @@ function PrintLayer() {
       role="region"
       aria-label="Agent print"
       data-revision={view?.revision ?? 0}
+      data-view={view?.key ?? ''}
+      aria-busy={print.key_wanted !== null && print.key_wanted !== view?.key}
       data-showing={print.showing_previous ? 'previous' : 'current'}
       data-failed={view?.failed ?? 0}
     >

@@ -57,6 +57,12 @@ export const icon_eraser = drawn([
 export const icon_undo = drawn(['M9 6L4.5 10.5 9 15', 'M5 10.5h9a5 5 0 010 10h-3'])
 export const icon_redo = drawn(['M15 6l4.5 4.5L15 15', 'M19 10.5h-9a5 5 0 000 10h3'])
 export const icon_chat = drawn([chat_path], 22)
+
+// The view switch: the chosen answer's tick, a step back or on, and the folded switch's caret.
+export const icon_check_small = drawn(['M5 12.5l4.5 4.5L19 7.5'], 20, 2)
+export const icon_step_back = drawn(['M14.5 6L8.5 12l6 6'], 20, 1.75)
+export const icon_step_next = drawn(['M9.5 6l6 6-6 6'], 20, 1.75)
+export const icon_fold_open = drawn(['M6.5 14.5L12 9l5.5 5.5'], 20, 1.75)
 export const icon_chat_small = drawn([chat_path], 20, 1.6)
 export const icon_boards = (
   <svg

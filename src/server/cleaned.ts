@@ -19,17 +19,20 @@
 import type { TLRecord } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
 import { board_id_pattern } from '../shared/board_session'
-import type {
-  CanvasRecord,
-  CanvasView,
-  CleanedDocument,
-  CleanedProvenance,
-  CleanedStatus,
+import {
+  interactive_scene_format,
+  type CanvasRecord,
+  type CanvasView,
+  type CleanedDocument,
+  type CleanedProvenance,
+  type CleanedStatus,
+  type InteractiveScene,
 } from '../shared/canvas_types'
 import {
   canvas_records_count_max,
   cleaned_history_count_max,
   document_hash_pattern,
+  interactive_scene_size_bytes_max,
 } from '../shared/constants'
 import { document_hash } from '../shared/document_hash'
 import { JsonReader } from '../shared/json_reader'
@@ -42,6 +45,7 @@ import {
   type ViewState,
 } from '../shared/scene_controls'
 import type { SceneElement } from '../shared/scene_types'
+import { scene_static } from '../shared/scene_view'
 import { canvas_migrate, type MigratedVersion } from './canvas_migration'
 import { canvas_records_problem, canvas_shapes_count } from './canvas_records'
 import {
@@ -123,6 +127,10 @@ const state_format = 'tldraw-sync.canvas.v3'
 const label = '-'
 
 export class Cleaned {
+
+  // The scene a page projects views from, made once for the current version that has one.
+  private interactive_made: { version: Version; scene: InteractiveScene | null } | null = null
+
   private constructor(
     private readonly disk: Disk,
     private state: State,
@@ -225,7 +233,8 @@ export class Cleaned {
   }
 
   // One view of the current revision. A revision without controls, or from a retired format,
-  // has one view: its records, whatever was asked.
+  // has one view: its records, whatever was asked. `interactive` is the scene a page may
+  // project every view from itself; the network edge serves it only to a page that asks.
   view(state_input: unknown): ViewResult {
     const current = this.state.current
     const controls = current?.controls ?? []
@@ -245,10 +254,37 @@ export class Cleaned {
       states_count: view_states_count(controls),
       records,
       taps: scene === null ? [] : view_taps(scene, read.state),
+      interactive: current === null ? null : this.interactive_scene(current),
     }
     assert(records.length <= canvas_records_count_max, 'a served view is bounded')
     assert(current !== null || records.length === 0, 'records belong to the current revision')
     return { kind: 'view', view }
+  }
+
+  // The scene of an interactive version, as a page reads it: what the publish saved, with the
+  // strokes the board copied, and nothing else. Null for any other version, and for a scene
+  // too large to offer, which a page then shows at rest.
+  private interactive_scene(version: Version): InteractiveScene | null {
+    const made = this.interactive_made
+
+    if (made !== null && made.version === version) return made.scene
+
+    const scene: InteractiveScene | null =
+      version.scene === null || !version_interactive(version)
+        ? null
+        : {
+            format: interactive_scene_format,
+            revision: version.revision,
+            controls: scene_controls_write(version.controls),
+            elements: scene_elements_write(version.scene, 'with_ink'),
+          }
+    const size_bytes =
+      scene === null ? 0 : new TextEncoder().encode(JSON.stringify(scene)).byteLength
+    const offered = size_bytes <= interactive_scene_size_bytes_max ? scene : null
+    assert(offered === null || offered.elements.length === version.scene?.length, 'whole scene')
+    assert(offered === null || offered.controls.length > 0, 'an interactive scene has controls')
+    this.interactive_made = { version, scene: offered }
+    return offered
   }
 
   // The controls of the current revision's scene, as an agent may send them again.
@@ -400,7 +436,22 @@ function provenance(version: Version): CleanedProvenance {
   const { scene, records, controls: _controls, ...rest } = version
   assert(records.length <= canvas_records_count_max, 'a published version is bounded')
   assert(rest.revision > 0, 'a published version has a revision')
-  return { ...rest, shapes_count: canvas_shapes_count(records), legacy: scene === null }
+  return {
+    ...rest,
+    shapes_count: canvas_shapes_count(records),
+    legacy: scene === null,
+    interactive: version_interactive(version),
+  }
+}
+
+// Whether a version has views to choose between: a scene whose controls show some elements
+// in some views only. A scene with controls that hide nothing looks the same in every view.
+function version_interactive(version: Version): boolean {
+  const interactive =
+    version.scene !== null && version.controls.length > 0 && !scene_static(version.scene)
+  assert(!interactive || version.scene !== null, 'an interactive version has a scene')
+  assert(version.controls.length === 0 || version.scene !== null, 'controls need a scene')
+  return interactive
 }
 
 function version_migrated(version: MigratedVersion): Version {

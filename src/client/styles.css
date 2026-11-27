@@ -561,6 +561,237 @@ button.key__item {
   cursor: default;
 }
 
+/* The switch of an interactive drawing: a paper frame with an ink edge on the drawing's top
+   edge, each control a row of 44px buttons named in words, the chosen one in ink. It has no
+   header and no shadow; the agent's violet marks whose drawing it changes. */
+
+.switch {
+  position: absolute;
+  z-index: 410;
+  display: flex;
+  flex-flow: row wrap;
+  gap: 2px 12px;
+  box-sizing: border-box;
+  width: max-content;
+  padding: var(--frame);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--vellum);
+  color: var(--ink);
+  font-family: var(--type);
+  touch-action: manipulation;
+}
+
+/* An unseen copy of the inline switch, measured to decide whether it fits. */
+.switch--measure {
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.switch__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--control);
+}
+
+.switch__label {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 11px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.switch__swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-inner);
+  background: var(--agent);
+}
+
+.switch__option,
+.switch__step,
+.switch__toggle,
+.switch__fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: var(--control);
+  min-height: var(--control);
+  box-sizing: border-box;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.switch__option {
+  padding: 0 16px 0 12px;
+}
+
+.switch__option[aria-checked='true'] {
+  background: var(--ink);
+  color: var(--vellum);
+  font-weight: 600;
+}
+
+.switch__step {
+  justify-content: center;
+  padding: 0;
+}
+
+.switch__step:disabled {
+  color: var(--ink-quiet);
+  cursor: default;
+}
+
+.switch__now {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 7rem;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.switch__count {
+  color: var(--lead);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.switch__toggle {
+  padding: 0 12px 0 11px;
+  font-weight: 600;
+}
+
+.switch__track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ink);
+  border-radius: 10px;
+  background: var(--vellum);
+}
+
+.switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.switch__track[data-on='true'] {
+  background: var(--ink);
+}
+
+.switch__track[data-on='true'] .switch__thumb {
+  left: 18px;
+  background: var(--vellum);
+}
+
+/* Folded: one button on the canvas's bottom edge, above the key, and the controls over it. */
+.switch-fold {
+  position: absolute;
+  right: calc(env(safe-area-inset-right) + var(--edge));
+  bottom: calc(env(safe-area-inset-bottom) + 84px);
+  left: calc(env(safe-area-inset-left) + var(--edge));
+  z-index: 410;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 30rem;
+  pointer-events: none;
+}
+
+.switch-fold .switch {
+  position: static;
+  width: auto;
+  pointer-events: auto;
+}
+
+.switch--panel {
+  flex-flow: column nowrap;
+}
+
+.switch--panel .switch__row {
+  flex-wrap: wrap;
+}
+
+.switch--panel .switch__label {
+  flex-basis: 100%;
+  min-height: 32px;
+}
+
+.switch__fold {
+  width: 100%;
+  padding: 0 12px 0 11px;
+  text-align: left;
+}
+
+.switch__summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switch__more {
+  color: var(--lead);
+}
+
+.switch__caret[data-open='true'] {
+  transform: rotate(180deg);
+}
+
+.switch [role='radio']:focus-visible,
+.switch button:focus-visible {
+  outline: 2px solid var(--agent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .switch__option,
+  .switch__thumb,
+  .switch__caret {
+    transition:
+      background-color 120ms ease-out,
+      left 120ms ease-out,
+      transform 120ms ease-out;
+  }
+}
+
+@media (forced-colors: active) {
+  .switch__option[aria-checked='true'],
+  .switch__track[data-on='true'] {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+
+  .switch__swatch {
+    outline: 1px solid CanvasText;
+  }
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

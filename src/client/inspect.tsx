@@ -10,8 +10,10 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useEditor, useValue, type Editor, type TLShapeId } from 'tldraw'
 import { assert } from '../shared/assert'
+import type { ViewTap } from '../shared/scene_controls'
 import { icon_chat_small, icon_pen_small } from './icons'
-import { use_print, type Print } from './print_engine'
+import { use_view_choice, type ViewChoice } from './interactive_state'
+import { print_key, use_print, type Print } from './print_engine'
 import { sketch_hash, take_into_sketch, type TakeOutcome } from './take_apply'
 import { take_tools } from './take_tools'
 import { pointer_tool } from './tool_strip'
@@ -29,8 +31,9 @@ const outline_px = 6
 const edge_px = 16
 const card_width_px = 500
 
-// A print shape under a tap, before anything the tap left on the sketch is taken back.
-type Hit = { id: string; revision: number }
+// A print shape under a tap, before anything the tap left on the sketch is taken back: the
+// top-level shape, the view of the print it is in, and what a tap on it sets, if anything.
+type Hit = { id: string; revision: number; key: string; tap: ViewTap | null }
 
 type Chosen = Hit & { sketch_hash: string }
 
@@ -43,29 +46,7 @@ export function Inspect({ onOutcome, onAsk }: Props) {
   const editor = useEditor()
   const print = use_print()
   const [chosen, chosen_set] = useState<Chosen | null>(null)
-  const latest = useRef(print)
-  latest.current = print
-  const hit = useCallback(
-    (point: { x: number; y: number }): Hit | null => {
-      const view = latest.current?.view
-
-      if (view === undefined || view === null) return null
-
-      const id = print_hit(view.editor, point, editor.getZoomLevel())
-      return id === null ? null : { id, revision: view.revision }
-    },
-    [editor],
-  )
-
-  // The sketch hash a take is guarded by is read only after the tap's own dot is gone: it is
-  // the sketch as the person sees it, not with a mark the choice is about to take back.
-  const choose = useCallback(
-    (found: Hit | null) => {
-      chosen_set(found === null ? null : { ...found, sketch_hash: sketch_hash(editor) })
-    },
-    [editor],
-  )
-  use_taps(editor, hit, choose)
+  use_print_taps(editor, print, chosen_set)
 
   // A choice outlives nothing it was made from: a new revision, or a print without the shape.
   const view = print?.view ?? null
@@ -108,13 +89,86 @@ export function Inspect({ onOutcome, onAsk }: Props) {
   )
 }
 
-function chosen_alive(view: NonNullable<Print['view']>, chosen: Chosen): boolean {
-  const shape = view.editor.getShape(chosen.id as TLShapeId)
-  return view.revision === chosen.revision && shape !== undefined
+// Taps on the print: each chooses the shape under it, or sets the view its shape names.
+function use_print_taps(
+  editor: Editor,
+  print: Print | null,
+  chosen_set: (chosen: Chosen | null) => void,
+): void {
+  const choice = use_view_choice()
+  const latest = useRef({ print, choice })
+  latest.current = { print, choice }
+  const hit = useCallback(
+    (point: { x: number; y: number }): Hit | null => {
+      const view = latest.current.print?.view
+
+      if (view === undefined || view === null) return null
+
+      const found = print_hit(view.editor, point, editor.getZoomLevel())
+
+      if (found === null) return null
+
+      const tap = tap_find(latest.current.choice, view.key, found.chain)
+      return { id: found.top, revision: view.revision, key: view.key, tap }
+    },
+    [editor],
+  )
+
+  // The sketch hash a take is guarded by is read only after the tap's own dot is gone: it is
+  // the sketch as the person sees it, not with a mark the choice is about to take back. A tap
+  // on a shape that sets a view sets it here, on this page only, and chooses nothing.
+  const choose = useCallback(
+    (found: Hit | null) => {
+      if (found?.tap != null) {
+        const choice = latest.current.choice
+        const shown = choice !== null && found.key === choice_print_key(choice)
+
+        if (shown) choice.choose(found.tap.control, found.tap.value)
+
+        chosen_set(null)
+        return
+      }
+
+      chosen_set(found === null ? null : { ...found, sketch_hash: sketch_hash(editor) })
+    },
+    [editor, chosen_set],
+  )
+  use_taps(editor, hit, choose)
 }
 
-// The top-level print shape under a page point, or null.
-function print_hit(print: Editor, point: { x: number; y: number }, zoom: number): string | null {
+// A choice is of one view of one revision: a change of either lets it go, so a take only ever
+// copies a shape that is on screen.
+function chosen_alive(view: NonNullable<Print['view']>, chosen: Chosen): boolean {
+  const shape = view.editor.getShape(chosen.id as TLShapeId)
+  return view.revision === chosen.revision && view.key === chosen.key && shape !== undefined
+}
+
+// The print's name for the view a choice shows.
+function choice_print_key(choice: ViewChoice): string {
+  return print_key(choice.revision, choice.at_rest ? null : choice.key)
+}
+
+// What a tap on a shape sets: the tap of the shape itself or of the nearest group round it,
+// and only in the view the taps were projected for.
+function tap_find(choice: ViewChoice | null, key: string, chain: readonly string[]) {
+  if (choice === null || key !== choice_print_key(choice)) return null
+
+  assert(chain.length > 0, 'a hit names a shape')
+
+  for (const id of chain) {
+    const tap = choice.taps.find((candidate) => candidate.shape_id === id)
+
+    if (tap !== undefined) return tap
+  }
+
+  return null
+}
+
+type PrintHit = { top: string; chain: string[] }
+
+// The top-level print shape under a page point, and the shapes from the one hit up to it, or
+// null.
+function print_hit(print: Editor, point: { x: number; y: number }, zoom: number): PrintHit | null {
   assert(zoom > 0, 'a zoom is positive')
   const shape = print.getShapeAtPoint(point, {
     hitInside: true,
@@ -126,9 +180,12 @@ function print_hit(print: Editor, point: { x: number; y: number }, zoom: number)
 
   if (shape === undefined) return null
 
-  const top = print.getShapeAncestors(shape)[0] ?? shape
+  const ancestors = print.getShapeAncestors(shape)
+  const top = ancestors[0] ?? shape
   assert(top.parentId === print.getCurrentPageId(), 'a chosen shape is top-level')
-  return top.id
+  const chain = [shape.id, ...ancestors.map((ancestor) => ancestor.id).reverse()]
+  assert(chain.at(-1) === top.id, 'the chain ends at the top-level shape')
+  return { top: top.id, chain }
 }
 
 function ask_words(print: Editor, chosen: Chosen): string {

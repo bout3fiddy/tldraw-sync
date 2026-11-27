@@ -23,6 +23,10 @@ export type CleanedProvenance = {
   // True for a revision published in a retired format. It is shown as it was and can be
   // restored, but it has no scene for an agent to edit.
   legacy: boolean
+
+  // True for a revision whose controls change what it shows. Only for such a revision does a
+  // page ask for its scene (`InteractiveScene`), to project the views itself.
+  interactive: boolean
 }
 
 // What a page polls: small, without records.
@@ -86,6 +90,24 @@ export type CanvasView = {
   states_count: number
   records: CanvasRecord[]
   taps: ViewTap[]
+
+  // Only when asked for with `?interactive=1`: the scene behind an interactive revision, or
+  // null for any other revision. Left out otherwise.
+  interactive?: InteractiveScene | null
+}
+
+// The scene of an interactive revision, for a page that projects its views itself, so a choice
+// of view is made on the page, offline once loaded, and sent nowhere. It holds what the
+// publish saved and nothing else: the agent's elements, the strokes the board copied into
+// them, and the controls. Never another sketch record, and never a credential. A page that
+// reads another format, another revision or more than the bounds shows the view at rest.
+export const interactive_scene_format = 'tldraw-sync.interactive.v1'
+
+export type InteractiveScene = {
+  format: typeof interactive_scene_format
+  revision: number
+  controls: SceneControlJson[]
+  elements: Array<Record<string, unknown>>
 }
 
 // A draft the stage is asked to render: the records a publish of the same proposal would

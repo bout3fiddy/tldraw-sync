@@ -14,17 +14,26 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type ReactNode,
 } from 'react'
 import { Tldraw, type Atom, type Editor, type TLPageId, type TLShapeId } from 'tldraw'
 import { AssertionError, assert } from '../shared/assert'
-import { cleaned_page_id, type CleanedDocument } from '../shared/canvas_types'
+import { cleaned_page_id, type CanvasRecord, type CleanedDocument } from '../shared/canvas_types'
 import { canvas_records_count_max } from '../shared/constants'
 import { asset_urls, components_quiet } from './board_store'
 import { print_svg_box, print_svg_markup, type PrintBox } from './print_svg'
 import { canvas_store } from './print_store'
+import {
+  timeline_arrived,
+  timeline_empty,
+  timeline_step,
+  type Arrival,
+  type Timeline,
+  type TimelineEvent,
+} from './print_timeline'
 import { print_records, print_subtree_hash, print_tree, type PrintTree } from './take_plan'
 
 export type PrintShape = {
@@ -37,8 +46,15 @@ export type PrintShape = {
   key: string
 }
 
+// The records of one view of the current revision, chosen on this page (`interactive_state`).
+// `key` names the view; the print shows it only while `revision` is the current revision.
+export type PrintChoice = { revision: number; key: string; records: CanvasRecord[] }
+
 export type PrintView = {
   revision: number
+
+  // The revision and the view drawn: the revision alone for its view at rest.
+  key: string
   document: CleanedDocument
   editor: Editor
   shapes: PrintShape[]
@@ -57,8 +73,13 @@ export type Print = {
   revision_previous: number | null
   showing_previous: boolean
 
-  // A newer revision replaced the print a moment ago.
+  // A newer revision replaced the one this page held a moment ago (`print_timeline`). It is
+  // said from when the page holds it, so `view` may still show the one before while it is drawn.
   arrived: boolean
+
+  // The name of the print wanted on screen. It differs from `view.key` while a chosen view is
+  // still being drawn.
+  key_wanted: string | null
   show_previous: () => void
   show_current: () => void
 }
@@ -75,64 +96,59 @@ export function use_print(): Print | null {
   return useContext(PrintContext)
 }
 
-type Held = { current: CleanedDocument | null; previous: CleanedDocument | null }
+type Held = Timeline<CleanedDocument>
 
 type ProviderProps = {
   document: CleanedDocument | null
+
+  // A view of the current revision other than its rest, or null. An earlier revision is
+  // always shown at rest.
+  choice?: PrintChoice | null
 
   // The print's page bounds, for a stage that keeps the whole board in view.
   bounds: Atom<PrintBox | null>
   children: ReactNode
 }
 
-// The page's documents: the newest, and the one it replaced while this page was open. A
-// moment without a document, while a newer one loads, keeps the print as it is.
+// The page's documents: the newest, and the one it replaced while this page was open, and
+// whether a revision has just arrived. A moment without a document, while a newer one loads,
+// keeps the print as it is.
 function use_held(document: CleanedDocument | null) {
-  const [held, held_set] = useState<Held>({ current: null, previous: null })
-  const [showing_previous, showing_previous_set] = useState(false)
+  const [held, held_step] = useReducer(
+    (last: Held, event: TimelineEvent<CleanedDocument>) => timeline_step(last, event),
+    undefined,
+    () => timeline_empty<CleanedDocument>(),
+  )
   useEffect(() => {
 
     // Nothing published yet: no print, and no hidden editor for it. An empty revision is a
     // revision, and is shown as one.
     if (document === null || document.current === null) return
 
-    held_set((last) => {
-      if (last.current?.revision === document.revision) return last
-
-      return { current: document, previous: last.current }
-    })
+    held_step({ kind: 'document', document })
   }, [document])
 
-  // Only a newer revision ends a look at the one before: a reloaded copy of the same revision
-  // leaves the person where they chose to be.
-  const revision_current = held.current?.revision ?? null
-  useEffect(() => showing_previous_set(false), [revision_current])
-  return { held, showing_previous, showing_previous_set }
+  // Each arrival is its own moment, ended only by its own timer: a revision arriving while the
+  // one before is still new starts its own window.
+  useTimeout(held.arrival, arrival_ms, (arrival: Arrival) => {
+    held_step({ kind: 'expire', revision: arrival.revision })
+  })
+  return { held, held_step }
 }
 
-export function PrintProvider({ document, bounds, children }: ProviderProps) {
-  const { held, showing_previous, showing_previous_set } = use_held(document)
-  const [view, view_set] = useState<PrintView | null>(null)
-  const [ghosts, ghosts_set] = useState<PrintShape[]>([])
-  const [arrived, arrived_set] = useState(false)
+// One document to draw, and the name of what it shows.
+type Printed = { key: string; document: CleanedDocument }
 
-  const wanted = showing_previous && held.previous !== null ? held.previous : held.current
-  const shown = useRef<PrintView | null>(null)
-  const ready = useCallback((next: PrintView) => {
-    const last = shown.current
+export function PrintProvider({ document, choice = null, bounds, children }: ProviderProps) {
+  const { held, held_step } = use_held(document)
+  const showing_previous = held.showing_previous
+  const { view, ghosts, ready } = use_shown(held)
 
-    if (last !== null && next.revision > last.revision) {
-      const kept = new Set(next.shapes.map((shape) => shape.id))
-      ghosts_set(last.shapes.filter((shape) => !kept.has(shape.id)))
-      arrived_set(true)
-    }
+  const wanted = useMemo(
+    () => printed_wanted(held, showing_previous, choice),
+    [held, showing_previous, choice],
+  )
 
-    shown.current = next
-    view_set(next)
-  }, [])
-
-  useTimeout(ghosts.length > 0, ghost_ms, () => ghosts_set([]))
-  useTimeout(arrived, arrival_ms, () => arrived_set(false))
   useEffect(() => {
     bounds.set(view?.bounds ?? null)
   }, [bounds, view])
@@ -144,11 +160,12 @@ export function PrintProvider({ document, bounds, children }: ProviderProps) {
       revision_current: held.current?.revision ?? 0,
       revision_previous: held.previous?.revision ?? null,
       showing_previous: showing_previous && held.previous !== null,
-      arrived: arrived && !showing_previous,
-      show_previous: () => showing_previous_set(true),
-      show_current: () => showing_previous_set(false),
+      arrived: timeline_arrived(held) !== null,
+      key_wanted: wanted?.key ?? null,
+      show_previous: () => held_step({ kind: 'show_previous' }),
+      show_current: () => held_step({ kind: 'show_current' }),
     }),
-    [wanted, view, ghosts, held, showing_previous, arrived],
+    [wanted, view, ghosts, held, showing_previous, held_step],
   )
   const benches = bench_documents(view, wanted)
   return (
@@ -157,9 +174,9 @@ export function PrintProvider({ document, bounds, children }: ProviderProps) {
       <div className="print-bench" aria-hidden="true">
         {benches.map((bench) => (
           <PrintBench
-            key={bench.revision}
-            document={bench}
-            onReady={bench.revision === wanted?.revision ? ready : null}
+            key={bench.key}
+            printed={bench}
+            onReady={bench.key === wanted?.key ? ready : null}
           />
         ))}
       </div>
@@ -167,33 +184,110 @@ export function PrintProvider({ document, bounds, children }: ProviderProps) {
   )
 }
 
+// The view drawn last, and the ghosts an arrival leaves of the shapes it removed. `ready` takes
+// each view as the bench finishes drawing it.
+function use_shown(held: Held) {
+  const [view, view_set] = useState<PrintView | null>(null)
+  const [ghosts, ghosts_set] = useState<PrintShape[]>([])
+
+  // The arrival the drawn print may still answer with ghosts, read when a view is ready.
+  const arrival = useRef<Arrival | null>(null)
+  arrival.current = held.arrival
+  const ghosted = useRef<number | null>(null)
+  const shown = useRef<PrintView | null>(null)
+  const ready = useCallback((next: PrintView) => {
+    const last = shown.current
+    const moment = arrival.current
+
+    // Only an arrival leaves ghosts, once, when the revision it replaced gives way to it on
+    // screen. Looking back, returning, or a change of view is the person's own choice.
+    const replaces =
+      last !== null &&
+      moment !== null &&
+      ghosted.current !== moment.revision &&
+      last.revision === moment.previous &&
+      next.revision === moment.revision
+
+    if (replaces) {
+      const kept = new Set(next.shapes.map((shape) => shape.id))
+      ghosts_set(last.shapes.filter((shape) => !kept.has(shape.id)))
+      ghosted.current = moment.revision
+    }
+
+    shown.current = next
+    view_set(next)
+  }, [])
+
+  useTimeout(ghosts.length > 0 ? ghosts : null, ghost_ms, () => ghosts_set([]))
+  return { view, ghosts, ready }
+}
+
+// What the print should show: the revision before, at rest, when the person looks back;
+// otherwise the current revision in the view chosen for it, or at rest. A choice made for any
+// other revision is not applied.
+function printed_wanted(
+  held: Held,
+  showing_previous: boolean,
+  choice: PrintChoice | null,
+): Printed | null {
+  const previous = showing_previous && held.previous !== null
+  const document = previous ? held.previous : held.current
+
+  if (document === null) return null
+
+  if (previous || choice === null || choice.revision !== document.revision) {
+    return { key: print_key(document.revision, null), document }
+  }
+
+  assert(choice.records.length <= canvas_records_count_max, 'a chosen view is bounded')
+  const records = choice.records
+  return { key: print_key(document.revision, choice.key), document: { ...document, records } }
+}
+
+// The name of a print: its revision, and the view chosen of it unless it is at rest.
+export function print_key(revision: number, view: string | null): string {
+  assert(Number.isSafeInteger(revision) && revision >= 0, 'a revision is whole')
+  assert(view === null || view.length > 0, 'a chosen view is named')
+  return view === null ? String(revision) : `${revision} ${view}`
+}
+
 // The hidden editors to keep: the one behind the print on screen, which inspecting and taking
-// read, and the one being drawn for the print wanted next. Never more than two.
-function bench_documents(view: PrintView | null, wanted: CleanedDocument | null) {
-  const list: CleanedDocument[] = []
+// read, and the one being drawn for the print wanted next. Never more than two, so a quick
+// run of choices draws only the latest view.
+function bench_documents(view: PrintView | null, wanted: Printed | null): Printed[] {
+  const list: Printed[] = []
 
-  if (view !== null) list.push(view.document)
+  if (view !== null) list.push({ key: view.key, document: view.document })
 
-  if (wanted !== null && wanted.revision !== view?.revision) list.push(wanted)
+  if (wanted !== null && wanted.key !== view?.key) list.push(wanted)
 
   assert(list.length <= 2, 'two hidden print editors at most')
   return list
 }
 
-function useTimeout(active: boolean, delay_ms: number, done: () => void): void {
+// Calls `done` with `moment` once `delay_ms` after it began, unless it is null. A different
+// moment starts its own delay, so a newer one is never ended by the timer of the one it
+// replaced, and `done` is told which moment ended.
+function useTimeout<Moment>(
+  moment: Moment | null,
+  delay_ms: number,
+  done: (moment: Moment) => void,
+): void {
+  assert(Number.isSafeInteger(delay_ms) && delay_ms > 0, 'a delay is whole and positive')
   const latest = useRef(done)
   latest.current = done
   useEffect(() => {
-    if (!active) return
+    if (moment === null) return
 
-    const timer = window.setTimeout(() => latest.current(), delay_ms)
+    const timer = window.setTimeout(() => latest.current(moment), delay_ms)
     return () => window.clearTimeout(timer)
-  }, [active, delay_ms])
+  }, [moment, delay_ms])
 }
 
-type BenchProps = { document: CleanedDocument; onReady: ((view: PrintView) => void) | null }
+type BenchProps = { printed: Printed; onReady: ((view: PrintView) => void) | null }
 
-function PrintBench({ document, onReady }: BenchProps) {
+function PrintBench({ printed, onReady }: BenchProps) {
+  const { key, document } = printed
   const store = useMemo(() => canvas_store(document.records), [document])
   const ready = useRef(onReady)
   ready.current = onReady
@@ -202,7 +296,7 @@ function PrintBench({ document, onReady }: BenchProps) {
       editor.user.updateUserPreferences({ colorScheme: 'light' })
       editor.updateInstanceState({ isReadonly: true })
       let stopped = false
-      print_draw(editor, document, () => stopped)
+      print_draw(editor, key, document, () => stopped)
         .then((view) => {
           if (view !== null && !stopped) ready.current?.(view)
         })
@@ -217,7 +311,7 @@ function PrintBench({ document, onReady }: BenchProps) {
         stopped = true
       }
     },
-    [document],
+    [key, document],
   )
   return (
     <Tldraw
@@ -234,9 +328,11 @@ function PrintBench({ document, onReady }: BenchProps) {
 // Every top-level shape of one revision, drawn in page order. Null once the revision is gone.
 async function print_draw(
   editor: Editor,
+  key: string,
   document: CleanedDocument,
   stopped: () => boolean,
 ): Promise<PrintView | null> {
+  assert(key.startsWith(String(document.revision)), 'a print is named by its revision')
   await editor.fonts.loadRequiredFontsForCurrentPage()
 
   // Keyed by the records this editor holds, which is what a take copies and hashes.
@@ -258,7 +354,7 @@ async function print_draw(
   const page = editor.getCurrentPageBounds()
   const bounds = page === undefined ? null : { x: page.x, y: page.y, w: page.w, h: page.h }
   assert(shapes.length + failed === roots.length, 'every top-level shape is accounted for')
-  return { revision: document.revision, document, editor, shapes, bounds, failed }
+  return { revision: document.revision, key, document, editor, shapes, bounds, failed }
 }
 
 async function print_shape_draw(

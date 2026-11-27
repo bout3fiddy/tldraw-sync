@@ -5,6 +5,7 @@
 // many views of generated scenes.
 
 import { expect, test } from 'bun:test'
+import { interactive_scene_format } from '../shared/canvas_types'
 import { scene_controls_count_max } from '../shared/constants'
 import { document_hash } from '../shared/document_hash'
 import { view_state_read, view_state_rest } from '../shared/scene_controls'
@@ -21,6 +22,7 @@ import { VirtualTime } from '../simulation/virtual_time'
 import { Board, StorageError } from './board'
 import { canvas_records_problem } from './canvas_records'
 import { state_decode } from './canvas_state'
+import { cleaned_view_response } from './http_canvas'
 import { scene_parse } from './scene_proposal'
 import { view_records } from './scene_view_records'
 import { envelope_encode } from './storage'
@@ -249,6 +251,51 @@ test('controls survive a restart and a restore, and are offered back to the agen
   expect(document_hash(view_of(board, { season: 'winter', labels: 'on' }).records)).toBe(
     document_hash(first.records),
   )
+  board.destroy()
+})
+
+// A page asks for the scene of a revision only when the status says it has views to choose
+// between, and only with `?interactive=1`. A restore of an interactive revision is a new
+// interactive revision with its own scene; a static one after it offers no scene.
+test('only an interactive revision is marked and offers its scene, on request', async () => {
+  const disk = sketch_disk([sketch_square('shape:a', 0)])
+  let board = board_open(disk)
+  const hash = board.document_state().hash
+  const scene_of = async (query: string) => {
+    const url = new URL(`http://board.test/api/cleaned/view.json${query}`)
+    const response = cleaned_view_response(board, url)
+    return { status: response.status, body: (await response.json()) as Json }
+  }
+
+  board.cleaned_publish(scene_controlled(hash, 0))
+  expect(board.cleaned_status().current).toMatchObject({ revision: 1, interactive: true })
+  const asked = await scene_of('?interactive=1')
+  expect(asked.body.interactive).toMatchObject({ format: interactive_scene_format, revision: 1 })
+  expect(asked.body.interactive.controls).toEqual(view_of(board, null).controls)
+  expect(await scene_of('')).toMatchObject({ status: 200 })
+  expect((await scene_of('')).body).not.toHaveProperty('interactive')
+  expect((await scene_of('?interactive=0')).status).toBe(400)
+
+  board.cleaned_publish(scene_example(hash, 1))
+  expect(board.cleaned_status()).toMatchObject({
+    current: { revision: 2, interactive: false },
+    history: [{ revision: 1, interactive: true }],
+  })
+  expect((await scene_of('?interactive=1')).body.interactive).toBeNull()
+  board.destroy()
+
+  // After a restart the flag is read again from the saved scene, and a restore makes a new
+  // interactive revision whose scene names the new revision.
+  board = board_open(disk)
+  expect(board.cleaned_status().history[0]).toMatchObject({ revision: 1, interactive: true })
+  expect(board.cleaned_restore(2, 1)).toMatchObject({ kind: 'restored', revision: 3 })
+  expect(board.cleaned_status().current).toMatchObject({ revision: 3, interactive: true })
+  const restored = await scene_of('?interactive=1')
+  expect(restored.body.interactive).toMatchObject({ revision: 3 })
+  expect(restored.body.interactive.elements).toEqual(asked.body.interactive.elements)
+
+  // Asking for the scene changed nothing.
+  expect(board.cleaned_status().revision).toBe(3)
   board.destroy()
 })
 
