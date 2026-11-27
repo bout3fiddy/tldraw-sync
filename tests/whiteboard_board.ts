@@ -139,7 +139,7 @@ export const chat_button = (page: Page) => page.getByRole('button', { name: /^Ch
 export const field = (page: Page) => page.getByRole('textbox', { name: 'Message to agent' })
 export const send_button = (page: Page) => page.getByRole('button', { name: 'Send', exact: true })
 export const add_sketch = (page: Page) =>
-  page.getByRole('button', { name: /^(Add sketch|Sketch added)$/ })
+  page.getByRole('button', { name: /^(Add sketch|Remove sketch)$/ })
 export const messages = (page: Page) => page.getByRole('log', { name: 'Messages' })
 export const mine = (page: Page, text: string | RegExp) =>
   messages(page).locator('.chat__mine').filter({ hasText: text })
@@ -388,7 +388,8 @@ export async function pair(root: string, file: string, stage: Page, ipad: Page) 
     location.hash = hash
   }, paired.hash)
   await expect(send_button(ipad)).toBeEnabled()
-  await expect(ipad.locator('.chat__standing')).toContainText('Agent linked on this Mac')
+  await expect(ipad.locator('.chat__standing')).toHaveCount(0)
+  await expect(field(ipad)).toHaveAttribute('placeholder', /^Message the agent about /)
   await ipad.reload()
 
   // The words, the pairing and the open chat outlive the reload; the pairing leaves the address.

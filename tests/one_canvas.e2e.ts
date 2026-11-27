@@ -43,9 +43,11 @@ test('a mouse chooses and takes the print, never leaving a dot, and chat overlay
       await expect(surface(mac)).toBeVisible()
       await step('the agent publishes a scene', async () => publish(board))
       await step('a click chooses, a drag draws, a take is one undo', () => clicks(board, mac))
+      const hash = board.cli('status', '--session', board.session).document_hash
       await step('the chat lies over the canvas and moves nothing on it', () =>
         overlay(mac, info.outputPath('mac-chat.png')),
       )
+      expect(board.cli('status', '--session', board.session).document_hash).toBe(hash)
       await info.attach('mac-chat', { path: info.outputPath('mac-chat.png') })
     } finally {
       await mac.close()
@@ -132,6 +134,15 @@ async function overlay(mac: Page, picture: string) {
   const canvas = (await surface(mac).boundingBox())!
   expect(Math.round(canvas.width)).toBe(design_screen.width - 440)
   expect(await at_rest(mac, '.print__shape[data-print-shape="shape:scene-a"]')).toBe(print)
+  const edge = mac.getByRole('separator', { name: 'Chat width' })
+  await mac.mouse.move(drawer.x + 1, drawer.height / 2)
+  await mac.mouse.down()
+  await mac.mouse.move(drawer.x - 99, drawer.height / 2, { steps: 4 })
+  await mac.mouse.up()
+  await expect(edge).toHaveAttribute('aria-valuenow', '540')
+  expect(Math.round((await surface(mac).boundingBox())!.width)).toBe(design_screen.width - 540)
+  expect(await at_rest(mac, '.print__shape[data-print-shape="shape:scene-a"]')).toBe(print)
+  await expect(surface(mac).locator('.tl-shape[data-shape-type="draw"]')).toHaveCount(0)
   await mac.screenshot({ path: picture })
   await sketch_open(mac)
   expect(await at_rest(mac, '.print__shape[data-print-shape="shape:scene-a"]')).toBe(print)

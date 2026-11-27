@@ -78,7 +78,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
           onToggle={() => chat_open_set(!chat_open)}
         />
       </div>
-      <ChatDrawer open={chat_open} onClose={() => chat_open_set(false)}>
+      <ChatDrawer role="draw" open={chat_open} onClose={() => chat_open_set(false)}>
         <ChatPane
           role="draw"
           title={title}

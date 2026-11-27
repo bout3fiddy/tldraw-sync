@@ -6,6 +6,7 @@
 import { useCallback, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { Role } from '../shared/constants'
 import { icon_chat } from './icons'
+import { ChatSize, use_chat_width } from './chat_resize'
 
 export const chat_drawer_id = 'board-chat'
 
@@ -74,10 +75,11 @@ export function ChatButton({ open, unread, onToggle }: ButtonProps) {
   )
 }
 
-type DrawerProps = { open: boolean; onClose: () => void; children: ReactNode }
+type DrawerProps = { role: Role; open: boolean; onClose: () => void; children: ReactNode }
 
-// Over the canvas, not beside it: the canvas keeps its size, so nothing under the chat moves.
-export function ChatDrawer({ open, onClose, children }: DrawerProps) {
+export function ChatDrawer({ role, open, onClose, children }: DrawerProps) {
+  const width = use_chat_width(role)
+
   if (!open) return null
 
   const key_down = (event: KeyboardEvent<HTMLElement>) => {
@@ -89,6 +91,7 @@ export function ChatDrawer({ open, onClose, children }: DrawerProps) {
   return (
     <aside id={chat_drawer_id} className="drawer" aria-label="Chat" onKeyDown={key_down}>
       {children}
+      <ChatSize {...width} controls={chat_drawer_id} />
     </aside>
   )
 }

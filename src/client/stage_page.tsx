@@ -58,7 +58,7 @@ export function StagePage({ session, title }: { session: string; title: string }
           onToggle={() => chat_open_set(!chat_open)}
         />
       </div>
-      <ChatDrawer open={chat_open} onClose={() => chat_open_set(false)}>
+      <ChatDrawer role="stage" open={chat_open} onClose={() => chat_open_set(false)}>
         <ChatPane
           role="stage"
           title={title}

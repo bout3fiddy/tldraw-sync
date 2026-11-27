@@ -265,6 +265,7 @@ async function room(mac: Page) {
     }),
   )
   await expect.poll(() => drawer_width(mac)).toBe(design_screen.width)
+  await expect(mac.getByRole('separator', { name: 'Chat width' })).toHaveCount(0)
   await expect(key(mac)).toBeHidden()
   await soon(
     mac.evaluate(() => {
@@ -281,6 +282,7 @@ async function room(mac: Page) {
   const short_rested = await at_rest(mac, print)
   await chat_open(mac)
   expect(await drawer_width(mac)).toBe(short.width)
+  await expect(mac.getByRole('separator', { name: 'Chat width' })).toHaveCount(0)
   await sketch_open(mac)
   expect(await at_rest(mac, print)).toBe(short_rested)
   await soon(mac.setViewportSize(design_screen))

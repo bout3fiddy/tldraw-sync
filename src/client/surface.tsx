@@ -41,11 +41,11 @@ export function Surface({ store, onMount, children }: SurfaceProps) {
 }
 
 // The sheet's dots are 24 page units apart, as drawn at full size. Zoomed in or out they
-// double or halve so that they stay between 12 and 48 pixels apart on the screen.
+// double or halve to avoid dense clusters. Only the grid fades with zoom (see styles.css).
 const dot_spacing_units = 24
-const dot_gap_px_min = 12
+const dot_gap_px_min = 24
 const dot_gap_px_max = 48
-const dot_radius_px = 1.5
+const dot_radius_px = 1.15
 const dot_steps_max = 64
 
 let dot_grids_count = 0

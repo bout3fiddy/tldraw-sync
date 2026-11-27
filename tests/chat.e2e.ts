@@ -7,6 +7,8 @@
 // Run: bun run build && npx playwright test tests/chat.e2e.ts
 
 import { expect, test, type Page, type Request } from '@playwright/test'
+import { compact_chat, resize_chat } from './chat_geometry'
+import { at_rest } from './one_canvas'
 import {
   action_ms,
   add_sketch,
@@ -57,6 +59,7 @@ test('the iPad and Mac share one board chat: words alone, the sketch, answers an
       canvas_only(board),
     )
     await step('the sketch goes only when added; words alone name none', () => sends(board))
+    await step('the left edge resizes only chat, by pointer and keyboard', () => resize_chat(board))
     await step('answers are read where seen and news where not, across reloads', () => news(board))
     await step(
       'another board keeps its own chat, draft and news',
@@ -101,21 +104,25 @@ async function sends({ ipad, bound, cli, session }: Linked) {
   // With the sketch: the card says what goes, the request names the sketch as it is now.
   await chat_open(ipad)
   await add_sketch(ipad).click()
-  await expect(ipad.locator('.chat__attached')).toContainText('Sketch, as it is now')
+  await expect(ipad.locator('.chat__attached')).toContainText('Sketch attached')
   await expect(ipad.locator('.chat__attached')).toContainText('1 shape')
+  expect((await ipad.locator('.chat__attached').boundingBox())!.height).toBeLessThanOrEqual(28)
+  await expect(add_sketch(ipad)).toHaveAttribute('aria-pressed', 'true')
   await ipad.getByRole('button', { name: 'Remove sketch' }).click()
   await expect(add_sketch(ipad)).toHaveAttribute('aria-pressed', 'false')
   const drawn = event_posted(ipad)
   await chat_send(ipad, 'Tidy this up.', true)
   expect((await drawn).postDataJSON()).toMatchObject({ include_sketch: true, sketch_hash: hash })
-  await expect(mine(ipad, 'Tidy this up.').locator('.chat__sketch')).toContainText('1 shape')
+  const chip = mine(ipad, 'Tidy this up.').getByRole('img', { name: 'Attached sketch · 1 shape' })
+  await expect(chip).toHaveAttribute('title', `Attached sketch · 1 shape · ${hash}`)
+  await compact_chat(ipad, chip, test.info().outputPath('compact-chat.png'))
 
   // Words alone: no sketch in the request, and none in what the host is handed.
   const alone = event_posted(ipad)
   await chat_send(ipad, 'And words alone.')
   expect((await alone).postDataJSON()).not.toHaveProperty('sketch_hash')
   await expect(mine(ipad, 'And words alone.').locator('.chat__receipt')).toContainText(
-    'Words only · Queued on the Mac',
+    'Queued on the Mac',
   )
   await expect(mine(ipad, 'And words alone.').locator('.chat__sketch')).toHaveCount(0)
   const events = bound('poll').events as Json[]
@@ -205,16 +212,24 @@ async function boards_apart({ ipad, bound, cli, session }: Linked) {
 // agent answered, sends words alone, and renders the sketch for the agent while it does.
 async function stage_chat({ stage, ipad, bound, cli, session }: Linked) {
   await chat_open(stage)
-  await expect(stage.locator('.chat__standing')).toContainText('Agent linked on this Mac')
+  await expect(stage.locator('.chat__standing')).toHaveCount(0)
   await expect(answers(stage, 'Tidied: three boxes')).toBeVisible()
   await expect(mine(stage, 'Is the gateway the slow part?')).toBeVisible()
   await expect(add_sketch(stage)).toBeEnabled()
+  const edge = stage.getByRole('separator', { name: 'Chat width' })
+  await expect(edge).toHaveAttribute('aria-valuenow', '440')
   await chat_send(stage, 'From the Mac: and the retry?')
+  const ink = '.surface .tl-shape[data-shape-type="draw"]'
+  const fitted = await at_rest(stage, ink)
+  await edge.press('End')
+  await expect(edge).toHaveAttribute('aria-valuenow', '720')
   const sent = (bound('poll').events as Json[]).at(-1)!
   expect(sent).toMatchObject({ include_sketch: false, text: 'From the Mac: and the retry?' })
   await chat_open(ipad)
   await expect(mine(ipad, 'From the Mac: and the retry?')).toBeVisible()
   await sketch_open(ipad)
+
+  expect(await at_rest(stage, ink)).toBe(fitted)
 
   // A new stroke on the iPad is rendered by the stage, though it shows the chat.
   await stroke(ipad, { x: 320, y: 420 }, { x: 25, y: -10 })
@@ -280,7 +295,7 @@ async function lost({ ipad, bound }: Linked) {
   await expect(mine(ipad, 'Save first, then ack.')).toHaveCount(1)
   await expect(mine(ipad, 'Save first, then ack.')).toHaveAttribute('data-local', 'false')
   await expect(mine(ipad, 'Save first, then ack.')).toContainText('Queued on the Mac')
-  await expect(ipad.locator('.chat__caption')).not.toContainText('waiting above')
+  await expect(ipad.locator('.chat__caption')).toHaveCount(0)
   expect(bound('poll').events).toHaveLength(1)
   await ipad.reload()
   await expect(mine(ipad, 'Save first, then ack.')).toHaveCount(1)

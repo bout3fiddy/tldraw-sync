@@ -20,9 +20,9 @@ Nothing the agent does moves your view or touches your strokes.
   the sign-up flow."
 />
 
-Each board has its own **Chat**. Your words go alone unless you press **Add sketch**, which sends
-the sketch as it is at that moment. The agent answers under your message and draws on the canvas;
-**Show on canvas** brings its drawing into view.
+Each board has its own **Chat**. Your words go alone unless you tap the board icon beside the
+message. Tap it again to remove the sketch before sending. The agent answers under your message and
+draws on the canvas; **Show on canvas** brings its drawing into view.
 
 ## Take what helps, in one undo
 
@@ -54,7 +54,9 @@ arrives the key says so, with the one before it a press away. Looking back resto
 
 The Mac presents the whole board and holds the same chat, so you can keep talking while you look at
 the drawing. On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its
-view; on a narrow or short screen, or when the keyboard leaves too little room, it takes the screen.
+view. Drag the chat’s left edge, or focus it and use the arrow keys, to choose a width for this
+device. On a narrow or short screen, or when the keyboard leaves too little room, chat takes the
+screen.
 
 ## Try it
 

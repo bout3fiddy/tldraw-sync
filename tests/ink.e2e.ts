@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { child_stop, contexts_close } from './board_child'
+import { pixels_read } from './screen_pixels'
 
 const repo_root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
@@ -102,7 +103,28 @@ async function line_width_min_px(page: Page): Promise<number | null> {
   return widths.length === 0 ? null : Math.min(...widths) * zoom
 }
 
-test('ink written and shown far zoomed out is never a hairline', async ({ browser }) => {
+// A blank 96px square clear of ink and instruments. Check painted pixels, not SVG presence.
+async function grid_contrast(page: Page, screenshot?: string) {
+  const pixels = await pixels_read(page, 5000)
+  let darkest = 255
+  let lightest = 0
+
+  for (let y = 120; y < 216; y++) {
+    for (let x = 200; x < 296; x++) {
+      const light = pixels.data[4 * (y * pixels.width + x)]!
+      darkest = Math.min(darkest, light)
+      lightest = Math.max(lightest, light)
+    }
+  }
+
+  expect(lightest).toBe(255)
+
+  if (screenshot) fs.writeFileSync(screenshot, pixels.png)
+
+  return lightest - darkest
+}
+
+test('ink written and shown far zoomed out is never a hairline', async ({ browser }, info) => {
   const origin = `http://127.0.0.1:${port}`
   const contexts = [
     await browser.newContext({ viewport: { width: 640, height: 480 } }),
@@ -121,6 +143,8 @@ test('ink written and shown far zoomed out is never a hairline', async ({ browse
     await stroke_draw(ipad, 500, 400)
     const scales = async () => (await strokes()).map((stroke) => Math.round(stroke.props.scale))
     await expect.poll(scales).toEqual([1])
+    const normal = await grid_contrast(ipad, info.outputPath('grid-normal.png'))
+    expect(normal).toBeGreaterThanOrEqual(20)
 
     // Zoomed all the way out, the stroke written at full size is still a line one can see.
     await ipad.mouse.move(500, 400)
@@ -129,6 +153,15 @@ test('ink written and shown far zoomed out is never a hairline', async ({ browse
     await ipad.keyboard.up('Control')
     await expect.poll(() => zoom_read(ipad)).toBeCloseTo(zoom_floor_tldraw, 5)
     await expect.poll(() => line_width_min_px(ipad)).toBeGreaterThanOrEqual(ink_width_min_px)
+
+    const far = await grid_contrast(ipad, info.outputPath('grid-far.png'))
+    expect(far).toBeLessThanOrEqual(6)
+
+    // Negative control: restoring full opacity must break the distant contrast limit.
+    const unfaded = await ipad.addStyleTag({ content: '.surface .tl-grid { opacity: 1 }' })
+    expect(await grid_contrast(ipad)).toBeGreaterThan(6)
+    await unfaded.evaluate((style) => style.parentNode!.removeChild(style))
+    console.log(`Grid contrast (of 255): normal ${normal}, far ${far}`)
 
     // A stroke written out here is stored as wide as it looked: the nib follows the zoom.
     await stroke_draw(ipad, 150, 150)

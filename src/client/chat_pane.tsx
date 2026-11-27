@@ -19,7 +19,7 @@ import {
   type Mine,
 } from './chat_thread'
 import { ChatComposer } from './chat_composer'
-import { icon_retry, icon_sketch_small } from './icons'
+import { icon_boards, icon_retry } from './icons'
 
 export type ChatProps = {
   role: Role
@@ -49,13 +49,13 @@ export function ChatPane(props: ChatProps) {
   const working = chat.items === null ? null : thread_working(chat.items)
   const log = use_follow(entries.length)
   const root = use_keyboard_inset()
+  const standing = standing_text(props)
+
   return (
     <div className="chat" ref={root}>
       <header className="chat__head">
         <h2 className="visually-hidden">Chat for {props.title}</h2>
-        <p className="chat__standing" data-trouble={standing_trouble(props)}>
-          {standing_text(props)}
-        </p>
+        {standing && <p className="chat__standing" role="status">{standing}</p>}
       </header>
       <div className="chat__scroll" ref={log}>
         <div className="chat__lane">
@@ -141,7 +141,7 @@ function use_keyboard_inset() {
   return root
 }
 
-function standing_text({ linked, online, paired, chat, role }: ChatProps): string {
+function standing_text({ linked, online, paired, chat, role }: ChatProps): string | null {
   if (!linked) return 'No agent linked. Link one on the Mac to chat here.'
 
   if (!online) return role === 'draw' ? 'Lost the Mac' : 'The board has stopped'
@@ -154,11 +154,8 @@ function standing_text({ linked, online, paired, chat, role }: ChatProps): strin
       : 'Reload this page to open the chat.'
   }
 
-  return 'Agent linked on this Mac. This chat is for this board only.'
+  return null
 }
-
-const standing_trouble = (props: ChatProps) =>
-  !props.linked || !props.online || !props.paired || props.chat.denied
 
 type EntryProps = ChatProps & { entry: Entry; before: Entry | undefined }
 
@@ -187,7 +184,6 @@ function MineMessage({ mine, composer, composer_props }: ChatProps & { mine: Min
     !composer.busy &&
     composer_props.online &&
     composer_props.token !== null
-  const words = mine.include_sketch ? '' : 'Words only · '
   return (
     <li className="chat__mine" data-state={mine.state} data-local={mine.local}>
       <div className="chat__slip">
@@ -197,7 +193,6 @@ function MineMessage({ mine, composer, composer_props }: ChatProps & { mine: Min
       <div className="chat__receipt" data-trouble={receipt_trouble(mine.state)}>
         <span className="chat__mark" data-ended={receipt_ended(mine.state)} aria-hidden="true" />
         <span>
-          {words}
           {receipt_label(mine.state)} · {time_of(mine.at_ms)}
         </span>
         {mine.state === 'unconfirmed' && (
@@ -219,21 +214,14 @@ function MineMessage({ mine, composer, composer_props }: ChatProps & { mine: Min
 
 function SketchSent({ mine }: { mine: Mine }) {
   const shapes = mine.shapes_count
-  const count = shapes === null ? '' : `${shapes} ${shapes === 1 ? 'shape' : 'shapes'} · `
-  const hash = mine.sketch_hash?.slice(0, 6) ?? ''
+  const count = shapes === null ? '' : ` · ${shapes} ${shapes === 1 ? 'shape' : 'shapes'}`
+  const label = `Attached sketch${count}`
+  const snapshot = mine.sketch_hash ? ` · ${mine.sketch_hash}` : ''
+
   return (
-    <div className="chat__sketch">
-      <span className="chat__picture" aria-hidden="true">
-        {icon_sketch_small}
-      </span>
-      <span className="chat__sketch-text">
-        <span className="chat__sketch-title">Sketch, as it was</span>
-        <span className="chat__sketch-meta">
-          {count}
-          {hash}
-        </span>
-      </span>
-    </div>
+    <span className="chat__sketch" role="img" aria-label={label} title={label + snapshot}>
+      {icon_boards} Sketch
+    </span>
   )
 }
 

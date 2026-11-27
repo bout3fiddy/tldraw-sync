@@ -48,6 +48,7 @@ function fit_start(editor: Editor, print: () => PrintBox | null): () => void {
   let key_fitted = ''
   let frame = 0
   let fitted_once = false
+  const board = editor.getContainer().closest<HTMLElement>('.board')
 
   const fit = (): void => {
     frame = 0
@@ -65,9 +66,12 @@ function fit_start(editor: Editor, print: () => PrintBox | null): () => void {
   const react_stop = react('stage fit', () => {
     const bounds = board_bounds(editor, print())
     const viewport = editor.getViewportScreenBounds()
+    // Keep fitting a changed board or window, but not a moving divider.
+    const width = board?.clientWidth ?? viewport.w
     const key = bounds === undefined
       ? 'empty'
-      : [bounds.x, bounds.y, bounds.w, bounds.h, viewport.w, viewport.h].join(' ')
+      : [bounds.x, bounds.y, bounds.w, bounds.h, width, viewport.h, board?.dataset.chat].join(' ')
+
     if (key !== key_fitted) {
       if (frame === 0) frame = window.requestAnimationFrame(fit)
       key_fitted = key

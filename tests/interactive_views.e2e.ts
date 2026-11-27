@@ -671,7 +671,7 @@ async function page_state(page: Page, errors: string[]): Promise<string> {
 
 async function beside_chat({ ipad }: Linked, errors: string[], info: TestInfo) {
   try {
-    await chat_beside(ipad)
+    await chat_beside(ipad, info)
   } catch (error) {
     const state = await page_state(ipad, errors)
     await soon(capture(ipad, info, 'interactive-ipad-chat-failed')).catch(() => null)
@@ -679,30 +679,43 @@ async function beside_chat({ ipad }: Linked, errors: string[], info: TestInfo) {
   }
 }
 
-async function chat_beside(ipad: Page) {
+async function chat_beside(ipad: Page, info: TestInfo) {
   await soon(ipad.setViewportSize({ width: 1180, height: 820 }))
   await key_agent(ipad).click()
   const camera = await camera_of(ipad)
   await chat_open(ipad)
+  await switch_inside_canvas(ipad)
+  expect(await camera_of(ipad)).toBe(camera)
 
-  // The switch keeps to the canvas the chat leaves, in whichever form it takes there: inline,
-  // or folded. Only the form shown exists, so measure every shown frame rather than waiting on
-  // one form, and settle after the chat narrows the canvas.
+  const edge = ipad.getByRole('separator', { name: 'Chat width' })
+
+  for (const [key, width] of [['Home', '320'], ['End', '720']] as const) {
+    await edge.press(key)
+    await expect(edge).toHaveAttribute('aria-valuenow', width)
+    await switch_inside_canvas(ipad)
+    expect(await camera_of(ipad)).toBe(camera)
+  }
+
+  await capture(ipad, info, 'interactive-ipad-chat-wide')
+  await sketch_open(ipad)
+  await soon(ipad.setViewportSize(ipad_portrait))
+}
+
+// Only the form shown exists. Both inline and folded controls must fit the actual canvas.
+async function switch_inside_canvas(ipad: Page) {
   const forms = switch_frame(ipad)
   await expect(forms.first()).toBeVisible()
   await expect
     .poll(async () => {
       const canvas = (await surface(ipad).boundingBox())!
-      const rights = await forms.evaluateAll((frames) =>
-        frames.map((frame) => frame.getBoundingClientRect().right),
-      )
-      return rights.length > 0 && rights.every((right) => right <= canvas.x + canvas.width + 1)
+      return forms.evaluateAll((frames, box) => {
+        return frames.length > 0 && frames.every((frame) => {
+          const bounds = frame.getBoundingClientRect()
+          return bounds.left >= box.x - 1 && bounds.right <= box.x + box.width + 1
+        })
+      }, canvas)
     })
     .toBe(true)
-
-  expect(await camera_of(ipad)).toBe(camera)
-  await sketch_open(ipad)
-  await soon(ipad.setViewportSize(ipad_portrait))
 }
 
 async function rest_state({ ipad, stage }: Linked, info: TestInfo) {

@@ -744,7 +744,7 @@ async function retired_request(board: Linked) {
   // Nothing is waiting to be sent again: no message is shown as unconfirmed, and the tab
   // holds nothing of the earlier page's.
   await expect(ipad.locator('.chat__mine[data-local="true"]')).toHaveCount(0)
-  await expect(ipad.locator('.chat__caption')).not.toContainText('waiting above')
+  await expect(ipad.locator('.chat__caption')).toHaveCount(0)
   const left = await soon(
     ipad.evaluate((key) => sessionStorage.getItem(key!), `tldraw-sync.notify.${session}`),
   )

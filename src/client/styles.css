@@ -148,19 +148,22 @@ button {
 
 .board[data-chat='true'] .key {
   left: calc((100% - var(--drawer-width)) / 2);
+  max-width: calc(100% - var(--drawer-width) - 2 * var(--edge));
 }
 
 /* Beside the chat, a narrow canvas has no room for the key clear of tldraw's notice in its
    corner. The chat says what the agent did meanwhile; the key is back when the chat closes. */
-@media (max-width: 1100px) {
-  .board[data-chat='true'] .key {
-    display: none;
-  }
+.board[data-chat='true'][data-narrow-canvas='true'] .key {
+  display: none;
 }
 
 /* Too narrow or too short to share: the chat takes the screen, and the canvas waits behind
    it, still laid out at full size so its camera and, on the stage, its rendering go on. */
 @media (max-width: 720px), (max-height: 480px) {
+  .board .chat-edge {
+    display: none;
+  }
+
   .board .drawer {
     width: 100%;
     border-left: 0;
@@ -183,6 +186,12 @@ button {
   border-left: 0;
 }
 
+.board:has(.chat[data-cramped='true']) .surface {
+  right: 0;
+  visibility: hidden;
+}
+
+.drawer:has(.chat[data-cramped='true']) .chat-edge,
 .board:has(.chat[data-cramped='true']) .key {
   display: none;
 }
@@ -191,6 +200,12 @@ button {
 .surface .tl-container.tl-theme__light,
 .surface .tl-theme__light {
   --tl-color-background: var(--sheet);
+}
+
+/* Both native and custom grid SVGs live here. Fade only the sheet's dots, never the ink,
+   the print, or the offscreen editors used for image export. */
+.surface .tl-grid {
+  opacity: clamp(0, var(--tl-zoom, 1), 1);
 }
 
 .surface__dot {
@@ -371,6 +386,31 @@ button {
   border-left: 1px solid var(--ink);
   background: var(--vellum);
   animation: drawer-arrive 160ms ease-out both;
+}
+
+/* Keep the drag target on the drawer, clear of both the canvas and the composer. */
+.chat-edge {
+  position: absolute;
+  inset: 20% auto 20% 0;
+  width: 24px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.chat-edge::after {
+  position: absolute;
+  top: calc(50% - 18px);
+  left: 2px;
+  width: 3px;
+  height: 36px;
+  border-radius: 2px;
+  background: var(--lead);
+  content: '';
+}
+
+.chat-edge:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
 }
 
 @keyframes drawer-arrive {
@@ -1008,8 +1048,9 @@ button.key__item {
   align-items: center;
   gap: 8px;
   margin: 0;
-  color: var(--lead);
+  color: var(--ink);
   font-size: 13px;
+  font-weight: 600;
   line-height: 18px;
 }
 
@@ -1019,16 +1060,6 @@ button.key__item {
   box-sizing: border-box;
   width: 6px;
   height: 6px;
-  background: var(--ink);
-}
-
-/* Trouble is said in the weight of ink, with an open square: never in red. */
-.chat__standing[data-trouble='true'] {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.chat__standing[data-trouble='true']::before {
   border: 1.5px solid var(--ink);
   background: transparent;
 }
@@ -1121,62 +1152,27 @@ button.key__item {
 
 .chat__sketch,
 .chat__attached {
-  display: flex;
+  display: inline-flex;
+  align-self: flex-start;
   align-items: center;
-  gap: 14px;
-  padding: 10px 16px 10px 10px;
-}
-
-.chat__sketch:not(:last-child),
-.chat__attached {
-  border-bottom: 1px solid var(--rule);
-}
-
-.chat__attached {
-  gap: 12px;
-  padding: 8px 4px 8px 8px;
-}
-
-.chat__picture {
-  display: grid;
-  flex: none;
-  place-items: center;
-  box-sizing: border-box;
-  width: 104px;
-  height: 72px;
-  border: 1px solid var(--rule);
-  background: var(--vellum);
-  overflow: hidden;
-}
-
-.chat__picture--small {
-  width: 64px;
-  height: 44px;
-}
-
-.chat__picture img {
-  max-width: 100%;
-  max-height: 100%;
-}
-
-.chat__sketch-text {
-  display: flex;
-  flex: 1 1 0;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.chat__sketch-title {
-  font-size: 15px;
-  font-weight: 500;
-  line-height: 20px;
-}
-
-.chat__sketch-meta {
+  gap: 6px;
+  padding: 6px 14px;
   color: var(--lead);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
+  font-size: 14px;
   line-height: 18px;
+}
+
+.chat__sketch svg {
+  width: 18px;
+  height: 18px;
+}
+
+.chat__sketch + .chat__words {
+  padding-top: 0;
+}
+
+.chat__attached {
+  padding-bottom: 0;
 }
 
 .chat__receipt {
@@ -1397,9 +1393,10 @@ button.key__item {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  width: var(--control);
   height: var(--control);
-  padding: 0 14px 0 10px;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-inner);
   background: transparent;
@@ -1412,9 +1409,6 @@ button.key__item {
 
 /* Added, the sketch is chosen: a square of solid ink, as every chosen control is. */
 .chat__add[aria-pressed='true'] {
-  justify-content: center;
-  width: var(--control);
-  padding: 0;
   background: var(--ink);
   color: var(--vellum);
 }
@@ -1422,14 +1416,6 @@ button.key__item {
 .chat__add:disabled {
   color: var(--ink-quiet);
   cursor: default;
-}
-
-.chat__rule {
-  flex: none;
-  align-self: center;
-  width: 1px;
-  height: 28px;
-  background: var(--rule);
 }
 
 .chat__field-box {
@@ -1450,7 +1436,7 @@ button.key__item {
   min-width: 0;
   max-height: calc(6 * 22px);
   margin: 0;
-  padding: 11px 6px 11px 14px;
+  padding: 11px 6px;
   border: 0;
   /* Sixteen pixels: Safari on the iPad zooms the page into any smaller field it focuses. */
   font: 400 16px / 22px var(--type);
@@ -1470,7 +1456,7 @@ button.key__item {
 @supports (-webkit-touch-callout: none) {
   .chat__mirror {
     padding-right: 9px;
-    padding-left: 17px;
+    padding-left: 9px;
   }
 }
 
@@ -1503,8 +1489,7 @@ button.key__item {
   background: transparent;
 }
 
-.chat__send,
-.chat__remove {
+.chat__send {
   display: grid;
   flex: none;
   place-items: center;
@@ -1545,11 +1530,6 @@ button.key__item {
   color: var(--lead);
   font-size: 13px;
   line-height: 18px;
-}
-
-.chat__caption[data-trouble='true'] span:first-child {
-  color: var(--ink);
-  font-weight: 600;
 }
 
 /* A narrow window keeps the column, with less margin, and drops the receipts' extra words. */
@@ -1953,7 +1933,6 @@ button.key__item {
   .pair__button:not([aria-expanded='true']):hover,
   .chat__add:not([aria-pressed='true'], :disabled):hover,
   .chat__open:hover,
-  .chat__remove:hover,
   .rail__icon:not([aria-pressed='true']):hover,
   .rail__options:hover,
   .rail__item:not([data-active='true']):hover {

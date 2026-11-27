@@ -467,7 +467,7 @@ async function delivery(ipad: Page, bound: Cli, hash: string) {
   await send_button(ipad).click()
   await expect(field(ipad)).toHaveValue('')
   await expect(add_sketch(ipad)).toHaveAttribute('aria-pressed', 'false')
-  await expect(mine(ipad, question).locator('.chat__sketch')).toContainText('Sketch, as it was')
+  await expect(mine(ipad, question).getByRole('img', { name: /Attached sketch/ })).toBeVisible()
   await expect(mine(ipad, question).locator('.chat__receipt')).toContainText('Queued on the Mac')
   const words = await words_alone(ipad, bound)
   await answered(ipad, bound, { hash, question, words })
@@ -488,7 +488,8 @@ async function words_alone(ipad: Page, bound: Cli): Promise<string> {
   expect(bound('poll').events).toHaveLength(1)
   await field(ipad).press('Enter')
   await expect(field(ipad)).toHaveValue('')
-  await expect(mine(ipad, 'r and d?').locator('.chat__receipt')).toContainText('Words only')
+  await expect(mine(ipad, 'r and d?').locator('.chat__receipt')).toContainText('Queued on the Mac')
+  await expect(mine(ipad, 'r and d?').locator('.chat__sketch')).toHaveCount(0)
   return words
 }
 
