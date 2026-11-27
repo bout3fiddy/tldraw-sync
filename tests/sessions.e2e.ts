@@ -23,26 +23,11 @@ const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
 const bun = process.env.BUN ?? 'bun'
 const protocol = String(whiteboard_protocol)
 
-// Resolved, because a binding file is refused under a path that goes through a link.
-const data_directory = fs.realpathSync(
-  fs.mkdtempSync(path.join(os.tmpdir(), 'board-sessions-e2e-')),
-)
-
-// The command line's temporary folder too, so default output paths stay inside the test.
-const out_directory = path.join(data_directory, 'out')
-fs.mkdirSync(out_directory, { recursive: true })
-
-// First on the command line's PATH, and holding a stand-in for the system's way of opening a
-// browser: linking a board whose stage is closed opens nothing real.
-const tools_directory = path.join(data_directory, 'tools')
-fs.mkdirSync(tools_directory, { recursive: true })
-
-for (const opener of ['open', 'xdg-open']) {
-  fs.writeFileSync(path.join(tools_directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
-}
-
-// Where the bindings of the linked boards are kept. The link makes it, private.
-const private_directory = path.join(data_directory, 'private')
+// Every journey owns its daemon, output paths and browser opener, never a live board.
+let data_directory: string
+let out_directory: string
+let tools_directory: string
+let private_directory: string
 const ready_wait_ms = 20_000
 
 let port = 0
@@ -182,12 +167,23 @@ function scene_publish(scene_path: string, title: string, sender: Host): CliResu
   return sender.bound('publish', '--file', scene_path)
 }
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
+  data_directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'board-sessions-e2e-')))
+  out_directory = path.join(data_directory, 'out')
+  tools_directory = path.join(data_directory, 'tools')
+  private_directory = path.join(data_directory, 'private')
+  fs.mkdirSync(out_directory)
+  fs.mkdirSync(tools_directory)
+
+  for (const opener of ['open', 'xdg-open']) {
+    fs.writeFileSync(path.join(tools_directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+  }
+
   port = await port_free_pick()
   await server_start()
 })
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   try {
     await server_stop()
   } finally {
@@ -322,11 +318,67 @@ async function delete_current(page: Page, origin: string) {
     .getByRole('button', { name: 'Delete board' })
     .click()
   await expect(page).toHaveURL(`${origin}/draw`)
-  const permanent = list.locator('li', { has: page.locator('a[href="/draw"]') })
-  await permanent.getByRole('button').click()
-  await expect(permanent.getByRole('menuitem', { name: 'Delete' })).toBeDisabled()
-  await expect(permanent.getByText('The default board is permanent.')).toBeVisible()
+  await expect(list.locator('a[href="/s/default/draw"]')).toHaveAttribute('aria-current', 'page')
 }
+
+test('both role homes follow deletion through an empty list and a new first board', async ({
+  page: ipad,
+  context,
+}) => {
+  const origin = `http://127.0.0.1:${port}`
+  const stage = await context.newPage()
+  await stage.goto(origin)
+  await expect(stage).toHaveTitle('Untitled board · Board')
+  await ipad.setViewportSize({ width: 1024, height: 768 })
+  await ipad.goto(`${origin}/draw`)
+  const creation = await ipad.request.post(`${origin}/api/sessions`, { data: { name: 'Second' } })
+  expect(creation.ok()).toBe(true)
+  const second = (await creation.json()).session.id
+  const remove = async (name: string) => {
+    await rail(ipad)
+      .getByRole('button', { name: `Actions for ${name}` })
+      .click()
+    await rail(ipad).getByRole('menuitem', { name: 'Delete' }).click()
+    await ipad.getByRole('dialog').getByRole('button', { name: 'Delete board' }).click()
+  }
+  await rail_open(ipad)
+  await rail(ipad).getByRole('link', { name: 'Second' }).click()
+  await expect(ipad).toHaveURL(`${origin}/s/${second}/draw`)
+  await ipad.goBack()
+  await expect(ipad).toHaveTitle('Untitled board · Board')
+  await rail_open(ipad)
+  await remove('Untitled board')
+  await expect(ipad).toHaveURL(`${origin}/draw`)
+  await expect(ipad).toHaveTitle('Second · Board')
+  await stage.bringToFront()
+  await expect(stage).toHaveTitle('Second · Board')
+  await ipad.bringToFront()
+  await remove('Second')
+  const new_board = (page: Page) => rail(page).getByRole('button', { name: 'New board' })
+  await expect(new_board(ipad)).toBeFocused()
+  await ipad.goForward()
+  await expect(ipad).toHaveURL(`${origin}/s/${second}/draw`)
+  await expect(ipad.getByText(/There is no such board/)).toBeVisible()
+  await ipad.goBack()
+  await expect(ipad).toHaveURL(`${origin}/draw`)
+  await stage.bringToFront()
+  await expect(new_board(stage)).toBeVisible()
+  await stage.reload()
+  await expect(stage.getByText('No boards yet.')).toBeVisible()
+  await ipad.bringToFront()
+  await new_board(ipad).click()
+  await expect(ipad).toHaveURL(/\/s\/[0-9a-f]{16}\/draw$/)
+  const first = board_id_of(ipad)
+  expect(first).not.toBe(second)
+  await ipad.goBack()
+  await expect(ipad).toHaveURL(`${origin}/draw`)
+  await expect(ipad).toHaveTitle('Untitled board · Board')
+  await stage.bringToFront()
+  await expect(stage).toHaveTitle('Untitled board · Board')
+  expect(await status(first)).toMatchObject({ shapes_count: 0, session: first })
+  await ipad.goto(`${origin}/s/default/draw`)
+  await expect(ipad.getByText(/There is no such board/)).toBeVisible()
+})
 
 // The default board first, at its old address; then two new boards from the rail and the CLI.
 async function boards_make_and_switch(ipad: Page): Promise<[string, string]> {
@@ -520,9 +572,9 @@ async function restart_and_default(
   await expect.poll(async () => (await status()).stage_connected).toBe(true)
   expect(await status()).toMatchObject({ shapes_count: 1, session: 'default', cleaned_revision: 0 })
   await rail_open(ipad)
-  await rail(ipad).locator('a[href="/draw"]').click()
+  await rail(ipad).locator('a[href="/s/default/draw"]').click()
   await expect(ipad).toHaveURL(/\/draw$/)
-  expect(new URL(ipad.url()).pathname).toBe('/draw')
+  expect(new URL(ipad.url()).pathname).toBe('/s/default/draw')
   const fetched = cli('fetch', '--no-open')
   expect(fetched.json).toMatchObject({ code: 'image_saved', session: 'default' })
   await ipad.getByRole('tab', { name: 'Cleaned' }).click()

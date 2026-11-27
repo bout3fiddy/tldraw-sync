@@ -1,6 +1,6 @@
 // What a board session is to every part of the system: an opaque id, a plain-text name, and the
-// page addresses that open it. The default board is the board from before sessions existed, so
-// its addresses stay exactly as they were: `/` for the stage and `/draw` for the pen.
+// page addresses that open it. A deep link names an identity, including the original board.
+// The role homes `/` and `/draw` instead open the first remaining board in registry order.
 
 import { assert } from './assert'
 import { path_draw, type Role } from './constants'
@@ -60,19 +60,19 @@ function character_forbidden(code: number): boolean {
 
 export function board_stage_path(id: string): string {
   assert(board_id_pattern.test(id), 'a board id is well formed')
-  return id === board_default_id ? '/' : `/s/${id}`
+  return `/s/${id}`
 }
 
 export function board_draw_path(id: string): string {
   assert(board_id_pattern.test(id), 'a board id is well formed')
-  return id === board_default_id ? path_draw : `/s/${id}/draw`
+  return `/s/${id}/draw`
 }
 
 // Which board and role a page address names, or null when it names neither.
-export function board_page_parse(pathname: string): { id: string; role: Role } | null {
-  if (pathname === '/') return { id: board_default_id, role: 'stage' }
+export function board_page_parse(pathname: string): { id: string | null; role: Role } | null {
+  if (pathname === '/') return { id: null, role: 'stage' }
 
-  if (pathname === path_draw) return { id: board_default_id, role: 'draw' }
+  if (pathname === path_draw) return { id: null, role: 'draw' }
 
   const match = path_session_pattern.exec(pathname)
 

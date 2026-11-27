@@ -300,7 +300,6 @@ test('deleting a linked room closes its socket and recovery finishes only its cl
     expect(reopened.find(id)).toBeNull()
     expect(reopened.owner(id)).toBeNull()
     expect(env.disks.has(id)).toBe(false)
-    expect(reopened.remove(board_default_id)).toBe('permanent')
     expect(board_of(reopened, peer).shapes()).toHaveLength(1)
     expect(board_of(reopened, board_default_id).shapes()).toHaveLength(1)
     const relink = reopened.link('test-owner')
@@ -337,6 +336,41 @@ function deletion_fault(env: SimulatedRegistryEnvironment, cut: string, id: stri
     env.disk.on_write = () => {}
   }
 }
+
+test('v2 cannot authorize root cleanup; deleting its original board upgrades atomically', () => {
+  const env = environment()
+  const original = BoardRegistry.open(env)
+  const sessions = original.list()
+  original.close()
+  const allocation = { serial: 0, legacy: [] }
+  const save = (list: typeof sessions, pending: string | null) => {
+    const state = { format: 'tldraw-sync.sessions.v2', allocation, sessions: list, pending }
+    env.disk.write_atomic(
+      'sessions.registry',
+      envelope_encode({
+        kind: 'registry',
+        label: '-',
+        payload: new TextEncoder().encode(JSON.stringify(state)),
+      }),
+    )
+  }
+  const ink = env.disk.read('board.snapshot')
+  save([], 'default')
+  expect(() => BoardRegistry.open(env)).toThrow(StorageError)
+  expect(env.disk.read('board.snapshot')).toEqual(ink)
+  save(sessions, null)
+  const migrated = BoardRegistry.open(env)
+  env.disk.write_fault_armed = true
+  expect(() => migrated.remove('default')).toThrow(SimulatedCrash)
+  migrated.destroy()
+  const before = BoardRegistry.open(env)
+  expect(board_of(before, 'default').shapes()).toHaveLength(1)
+  expect(before.remove('default')).toBe('removed')
+  before.close()
+  const after = BoardRegistry.open(env)
+  expect(after.list()).toEqual([])
+  after.close()
+})
 
 test('migration permanently reserves a legacy id even when the allocator repeats it', () => {
   const env = environment()
@@ -451,9 +485,10 @@ function seed_run(seed: number): Counts {
 
   for (let step = 0; step < steps_count; step += 1) {
     const ids = [...model.keys()]
-    const id = ids[prng.below(ids.length)] as string
-    const source = prng.chance(0.25) ? (ids[prng.below(ids.length)] as string) : id
-    const choice = prng.below(10)
+    const pick = () => ids[prng.below(Math.max(1, ids.length))] ?? ''
+    const id = pick()
+    const source = prng.chance(0.25) ? pick() : id
+    const choice = ids.length === 0 ? 0 : prng.below(10)
 
     // A fault in the data directory: the registry's file, and the default board's.
     env.disk.write_fault_armed = choice < 9 && prng.chance(0.08)
@@ -468,7 +503,7 @@ function seed_run(seed: number): Counts {
         registry.rename(id, `Named ${step}`)
         model.set(id, { ...model.get(id)!, name: `Named ${step}`, named_by: 'person' })
         counts.renamed += 1
-      } else if (choice === 8 && id !== board_default_id) {
+      } else if (choice === 8) {
         expect(registry.remove(id)).toBe('removed')
         model.delete(id)
         counts.removed += 1
@@ -536,6 +571,12 @@ function model_check(registry: BoardRegistry, model: Model, label: string): void
   }
 
   expect(registry.open_count(), label).toBeLessThanOrEqual(boards_open_count_max)
+
+  if (model.size === 0) {
+    expect(registry.open_count(), label).toBe(0)
+    return
+  }
+
   const [id, entry] = [...model.entries()][model.size - 1]!
   expect(board_of(registry, id).cleaned_status().revision, label).toBe(entry.revision)
 }

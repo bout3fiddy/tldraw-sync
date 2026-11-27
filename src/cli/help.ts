@@ -21,7 +21,7 @@ export const commands = [
 
 // Every board command takes this; it is described once here and named in each command's help.
 const session_option_text =
-  '  --session <id>  Work on this board (see session-list); without it, the default board'
+  '  --session <id>  Work on this board (see session-list); without it, the oldest remaining board'
 export type Command = (typeof commands)[number]
 
 const protocol = String(whiteboard_protocol)
@@ -60,7 +60,7 @@ Options:
   --quiet, -q  Print one bare value on stdout, for piping
   --help, -h   Show help for a command
   --version    Show the version
-  --session    The board a board command works on (default: the default board)
+  --session    The board a board command works on (default: the oldest remaining board)
 
 For agents:
   The user sketches on an iPad while talking to you. When they mention their drawing,
@@ -76,7 +76,7 @@ For agents:
 
   The user may keep several boards. When they name one, find its id with
   tldraw-sync session-list --json and add --session <id> to each command. Without it, every
-  command works on the default board.
+  command works on the oldest remaining board.
 
 Exit codes:
   0  success
@@ -368,9 +368,9 @@ Example:
 
   'session-list': `Usage: tldraw-sync session-list [--json | --quiet]
 
-Lists every board, oldest first. The default board, id "default", is the board from before
-there were several, at the addresses it always had. A board nobody has named is untitled; the
-first scene published to a linked board may name it.
+Lists every board, oldest first. The first one opens at / and /draw. The id "default" names
+only the original board. Deleting a board retires its id; deleting the last leaves an empty
+list. A board nobody has named is untitled; the first scene on a linked board may name it.
 
 Output:
   default  one line per board: its id and name

@@ -59,6 +59,9 @@ test('only the local machine links, and an older host is told to upgrade', async
     )
   expect((await link(hash, true)).status).toBe(403)
   expect((await link(key, false)).status).toBe(403)
+  const targeted = request('link?session=ffffffffffffffff', key, owner, { owner, protocol })
+  expect((await whiteboard_route(targeted, registry, 'ffffffffffffffff', key, true)).status)
+    .toBe(400)
 
   // A host that speaks the protocol before this one is told to upgrade, and links nothing.
   expect(await (await link(key, true, protocol - 1)).json()).toMatchObject({
@@ -143,6 +146,8 @@ test('an authorized send awaiting its body cannot cross deletion and relinking',
   }
 
   // The route checks the credential synchronously, then yields while reading the request.
+  expect(registry.remove('default')).toBe('removed')
+  expect(registry.list()[0]?.id).toBe(session)
   const waiting = run(request('event/v2', event_key, owner, body))
   expect(registry.remove(session)).toBe('removed')
   const next = registry.link(owner)

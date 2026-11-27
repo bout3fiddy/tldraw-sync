@@ -14,7 +14,7 @@ import {
   start_wait_ms_max,
   stop_wait_ms_max,
 } from '../shared/constants'
-import type { BoardStatus } from '../server/http'
+import type { BoardStatus, DaemonStatus } from '../server/http'
 import { pairing_terminal } from '../server/pairing'
 import { server_run } from '../server/server_run'
 import { process_alive } from '../server/server_state'
@@ -37,7 +37,7 @@ export type Options = BoardFlags & {
   readonly file: string | null
   readonly base_revision: number | null
   readonly revision: number | null
-  // The board session a command is about: null for the default board. A name for a board.
+  // The board session a command is about: null to resolve home once. A name for a board.
   readonly session: string | null
   readonly name: string | null
   // Whether a person is reading: only then is the QR code worth printing.
@@ -53,10 +53,10 @@ const command_stop = 'tldraw-sync stop'
 export const command_session_list = 'tldraw-sync session-list --json'
 const output_directory_root = path.join(os.tmpdir(), 'tldraw-sync')
 
-// What to add to a suggested command so it stays on the same board: nothing for the default.
+// A suggested retry must target the same identity even if home changes.
 export function session_flag(session: string): string {
   assert(board_id_pattern.test(session), 'a board id is well formed')
-  return session === board_default_id ? '' : ` --session ${session}`
+  return ` --session ${session}`
 }
 
 // Where a command writes for a board when it is not told: the default board keeps the paths it
@@ -72,13 +72,17 @@ export function output_directory(session: string): string {
 }
 
 // Finds the running board and the status of the named session, or the outcome that says why
-// there is none. The default board's status is the one the board reports anyway.
+// there is none. Capture the home id at discovery; all subsequent requests name that board.
 export async function session_find(session: string | null): Promise<SessionFound | Outcome> {
   const found = await board_find(data_directory())
   if (found.kind !== 'running') return not_running(found)
 
   const port = found.status.port
-  if (session === null || session === board_default_id) return { port, status: found.status }
+  session ??= found.status.session
+  if (session === null) {
+    return failure('no_boards', 'There are no boards yet.',
+      { action: 'run', command: 'tldraw-sync session-create --json' })
+  }
 
   const answer = await api_request(port, `${path_status}?${board_query(session)}`, null)
   if (answer.kind === 'unreachable') return not_running({ kind: 'not_running' })
@@ -151,7 +155,7 @@ async function running_wait(
   return found
 }
 
-async function board_ready(status: BoardStatus, code: string, options: Options): Promise<Outcome> {
+async function board_ready(status: DaemonStatus, code: string, options: Options): Promise<Outcome> {
   assert(code === 'started' || code === 'already_running', 'a board is ready one of two ways')
   const stage_opened = !status.stage_connected && !options.no_open && browser_open(status.stage_url)
   const pairing = options.terminal ? await pairing_get(status.port) : null
@@ -281,6 +285,7 @@ export async function image_current(options: Options): Promise<ImageCurrent | Ou
       return { bytes: image.bytes, document_hash: image.document_hash, port, session }
     }
     if (image.kind === 'unreachable') return not_running({ kind: 'not_running' })
+    if (image.kind === 'unknown_session') return session_unknown(session)
     if (image.kind === 'empty') {
       return failure('board_empty', 'The board is empty.',
         { action: 'ask_human', message: 'Draw something on the iPad, then ask again.' },

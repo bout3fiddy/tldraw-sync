@@ -110,7 +110,6 @@ test('delete is scoped, origin checked, and refuses stale names and reconnects',
 
   expect((await fetch(origin + endpoint)).status).toBe(405)
   expect((await post(endpoint, { session: '../' })).status).toBe(400)
-  expect((await post(endpoint, { session: 'default' })).status).toBe(409)
   expect((await post(endpoint, { ...body, name: 'Old label' })).status).toBe(409)
   expect(await get(`/api/status?session=${id}`)).toMatchObject({ session_name: 'Selected' })
 
@@ -121,6 +120,32 @@ test('delete is scoped, origin checked, and refuses stale names and reconnects',
   expect((await fetch(`${origin}/api/status?session=${id}`)).status).toBe(404)
   expect(await get(`/api/status?session=${peer}`)).toMatchObject({ session_name: 'Peer' })
   expect(await get('/api/status')).toMatchObject({ session: 'default' })
+})
+
+test('home reads follow registry order; stale syncs and writes never follow home', async () => {
+  const endpoint = '/api/sessions/delete'
+  const one = await board_new('Oldest')
+  const two = await board_new('Newest')
+  expect(await json(await post(endpoint, { session: 'default' }))).toEqual({ deleted: 'default' })
+  expect(await get('/api/status')).toMatchObject({ session: one, session_name: 'Oldest' })
+  expect(await get('/api/status?session=default')).toMatchObject({ code: 'unknown_session' })
+
+  for (const query of ['', '&session=default']) {
+    const sync = await fetch(`${origin}/sync?role=draw&sessionId=stale${query}`)
+    expect(sync.status).toBe(404)
+    const restore = await post(`/api/cleaned/restore?${query}`, { base_revision: 0 })
+    expect(await json(restore)).toMatchObject({ code: 'unknown_session' })
+  }
+
+  expect(await get(`/api/status?session=${one}`)).toMatchObject({ cleaned_revision: 0 })
+  expect((await post(endpoint, { session: one })).status).toBe(200)
+  expect(await get('/api/status')).toMatchObject({ session: two })
+  expect((await post(endpoint, { session: two })).status).toBe(200)
+  expect(await get('/api/status')).toMatchObject({ code: 'no_boards' })
+  expect(await get('/api/sessions')).toMatchObject({ sessions: [], open_count: 0 })
+  expect(await get('/api/status?server=1')).toMatchObject({ session: null, pid: process.pid })
+  const next = await board_new('Next')
+  expect(await get('/api/status')).toMatchObject({ session: next })
 })
 
 test('every board has its own address, and old addresses are the default board', async () => {

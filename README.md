@@ -24,6 +24,10 @@ Start opens the board on your Mac. With your iPad on the same network, scan the 
 Ask your agent to read `tldraw-sync --help`: it can then fetch your sketch as a picture whenever you
 mention it.
 
+Open **Boards** on either device to switch boards. Use a board’s **⋮** menu to rename or delete it.
+The home addresses (`/` on the Mac and `/draw` on the iPad) open the oldest remaining board. Delete
+all boards and the list stays empty until you select **New board**.
+
 In a pih session with whiteboard support, use `/start_whiteboard` instead to link the board to that
 session. Scan the QR code on the Mac stage and leave the stage open. On the iPad, open the note, say
 what you want if you like, and send: every send is your sketch as it is, with or without a note. Ask

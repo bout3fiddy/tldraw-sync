@@ -62,7 +62,8 @@ export type RegistryPublish = (PublishResult & { title_applied: boolean }) | Boa
 export type RegistryPreview = PreviewResult | BoardLookupFailure
 
 const file_name = 'sessions.registry'
-const registry_format = 'tldraw-sync.sessions.v2'
+const registry_format = 'tldraw-sync.sessions.v3'
+const permanent_home_format = 'tldraw-sync.sessions.v2'
 const legacy_format = 'tldraw-sync.sessions.v1'
 const label = '-'
 
@@ -108,17 +109,20 @@ export class BoardRegistry {
       bytes,
     )
     registry.cleanup()
-    const board = Board.open({ time: environment.time, disk: environment.disk })
-    registry.boards.set(board_default_id, board)
 
-    assert(registry.sessions[0]?.id === board_default_id, 'the default board is listed first')
-    assert(registry.boards.size === 1, 'only the default board opens at start')
+    if (registry.find(board_default_id) !== null) {
+      const board = Board.open({ time: environment.time, disk: environment.disk })
+      registry.boards.set(board_default_id, board)
+    }
+
+    assert(registry.pending === null, 'retired files are cleaned before serving')
+    assert(registry.boards.size <= 1, 'only the legacy root board opens at start')
     return registry
   }
 
   list(): readonly BoardSession[] {
     assert(this.sessions.length <= board_sessions_count_max, 'sessions are bounded')
-    assert(this.sessions.length > 0, 'the default board is always listed')
+    assert(this.owners.size <= this.sessions.length, 'only listed boards can be owned')
     return this.sessions
   }
 
@@ -186,8 +190,7 @@ export class BoardRegistry {
     return { kind: 'renamed', session }
   }
 
-  remove(id: string): 'removed' | 'not_found' | 'permanent' {
-    if (id === board_default_id) return 'permanent'
+  remove(id: string): 'removed' | 'not_found' {
 
     // Retry the previous cleanup before recording another. One durable slot bounds recovery.
     const retry = this.pending === id
@@ -218,7 +221,7 @@ export class BoardRegistry {
     if (this.pending === null) return
 
     assert(this.find(this.pending) === null, 'cleanup only touches a retired board')
-    assert(this.pending !== board_default_id, 'never remove default storage')
+    assert(!this.owners.has(this.pending), 'cleanup cannot affect a live binding')
     assert(!this.boards.has(this.pending), 'no socket or timer can write during cleanup')
     this.environment.disk_remove(this.pending)
     this.commit(this.sessions, this.owners, null)
@@ -266,7 +269,7 @@ export class BoardRegistry {
 
   open_count(): number {
     assert(this.boards.size <= boards_open_count_max, 'open boards are bounded')
-    assert(this.boards.has(board_default_id), 'the default board stays open')
+    assert(this.boards.size <= this.sessions.length, 'only listed rooms are open')
     return this.boards.size
   }
 
@@ -318,7 +321,7 @@ export class BoardRegistry {
 
   // An orderly stop: every open board is saved.
   close(): void {
-    assert(this.boards.size > 0, 'the default board is open until the end')
+    assert(this.boards.size <= this.sessions.length, 'only listed rooms need closing')
 
     for (const board of this.boards.values()) board.close()
 
@@ -403,7 +406,7 @@ export class BoardRegistry {
     allocation = this.allocation,
   ): void {
     assert(sessions.length <= board_sessions_count_max, 'sessions are bounded')
-    assert(sessions[0]?.id === board_default_id, 'the default board stays first')
+    assert(sessions.findIndex((s) => s.id === board_default_id) <= 0, 'legacy ink stays first')
     assert(allocation.serial >= this.allocation.serial, 'issued board identities never roll back')
 
     if (pending !== null) {
@@ -478,20 +481,23 @@ function registry_read(bytes: Uint8Array) {
   }
 
   const json = parsed as Record<string, unknown> | null
-  const list =
-    json && (json.format === registry_format || json.format === legacy_format)
-      ? json.sessions
-      : null
+  const known =
+    json?.format === registry_format ||
+    json?.format === permanent_home_format ||
+    json?.format === legacy_format
+  const list = known ? json.sessions : null
 
-  if (!Array.isArray(list) || list.length === 0 || list.length > board_sessions_count_max) {
+  if (!Array.isArray(list) || list.length > board_sessions_count_max) {
     throw new StorageError(`${file_name} is damaged: unknown format or session count`)
   }
 
   const sessions = list.map(session_read)
   const ids = new Set(sessions.map((session) => session.id))
 
-  if (ids.size !== sessions.length || sessions[0]?.id !== board_default_id) {
-    throw new StorageError(`${file_name} is damaged: ids repeat or the default board is missing`)
+  const needs_original = json?.format !== registry_format || ids.has(board_default_id)
+
+  if (ids.size !== sessions.length || (needs_original && sessions[0]?.id !== board_default_id)) {
+    throw new StorageError(`${file_name} is damaged: inconsistent board identities`)
   }
 
   assert(sessions.length <= board_sessions_count_max, 'a read registry is bounded')
@@ -523,7 +529,7 @@ function registry_read(bytes: Uint8Array) {
     used.add(owner)
   }
 
-  assert(owners.size < sessions.length, 'there is at least one unbound board')
+  assert(owners.size <= sessions.length, 'only listed boards have owners')
   assert(used.size === owners.size, 'each owner links to one board')
   const { pending, allocation } = lifecycle_read(json!, ids)
   return { sessions, owners, pending, allocation }
@@ -541,7 +547,9 @@ function lifecycle_read(json: Record<string, unknown>, ids: Set<string>) {
   const valid_id = (id: unknown): id is string =>
     typeof id === 'string' && id !== board_default_id && board_id_pattern.test(id)
 
-  if (pending !== null && (!valid_id(pending) || ids.has(pending))) {
+  const retiring_original = json.format === registry_format && pending === board_default_id
+
+  if (pending !== null && ((!valid_id(pending) && !retiring_original) || ids.has(pending))) {
     throw new StorageError('Invalid pending board cleanup.')
   }
 

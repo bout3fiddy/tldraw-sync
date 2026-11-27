@@ -1,9 +1,9 @@
 // The board session commands: list the boards, make a new one, rename one. Each board is a
 // whole board of its own; every board command takes --session <id> to work on one of them,
-// and works on the default board without it.
+// and works on the oldest remaining board without it.
 
 import { assert } from '../shared/assert'
-import { board_default_id, board_label, type BoardSession } from '../shared/board_session'
+import { board_stage_path, board_label, type BoardSession } from '../shared/board_session'
 import {
   board_sessions_count_max as sessions_count_max,
   path_sessions,
@@ -92,7 +92,7 @@ export async function session_rename(options: Options): Promise<Outcome> {
   )
 }
 
-async function board_port(): Promise<number | Outcome> {
+export async function board_port(): Promise<number | Outcome> {
   const found = await board_find(data_directory())
 
   if (found.kind !== 'running') return not_running(found)
@@ -103,8 +103,7 @@ async function board_port(): Promise<number | Outcome> {
 
 function stage_url(port: number, session: BoardSession): string {
   assert(port > 0, 'a running board has a port')
-  const suffix = session.id === board_default_id ? '' : `/s/${session.id}`
-  return `http://localhost:${port}${suffix}`
+  return `http://localhost:${port}${board_stage_path(session.id)}`
 }
 
 function answer_failure(answer: Extract<ApiAnswer, { kind: 'answer' }>): Outcome {

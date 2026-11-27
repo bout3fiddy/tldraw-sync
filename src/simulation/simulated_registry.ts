@@ -3,7 +3,7 @@
 // makes the same ids in the same order.
 
 import { assert } from '../shared/assert'
-import { board_id_pattern } from '../shared/board_session'
+import { board_default_id, board_id_pattern } from '../shared/board_session'
 import type { Time } from '../shared/time'
 import type { RegistryEnvironment } from '../server/board_registry'
 import { SimulatedDisk } from './simulated_disk'
@@ -36,7 +36,8 @@ export function registry_environment_simulated(
     },
     disk_exists: (id) => disks.has(id),
     disk_remove(id) {
-      disks.delete(id)
+      if (id === board_default_id) disk.remove_board_files()
+      else disks.delete(id)
     },
     id_create() {
       ids_count += 1

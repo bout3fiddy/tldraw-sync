@@ -24,7 +24,7 @@ import { BoardActions } from './board_actions'
 type ShellProps = {
   role: Role
   sessions: SessionsState
-  active: string
+  active: string | null
   onChoose: (id: string) => void
   children: ReactNode
 }
@@ -38,7 +38,8 @@ export function SessionShell({ role, sessions, active, onChoose, children }: She
   const [open, open_set] = useState(false)
   const toggle = useRef<HTMLButtonElement>(null)
   const docked = wide && pinned
-  const shown = docked || open
+  const empty = sessions.list?.length === 0
+  const shown = empty || docked || open
 
   const close = useCallback(() => {
     open_set(false)
@@ -74,7 +75,7 @@ export function SessionShell({ role, sessions, active, onChoose, children }: She
           {icon_boards}
         </button>
       )}
-      {shown && !docked && <div className="rail-scrim" onPointerDown={close} />}
+      {shown && !empty && !docked && <div className="rail-scrim" onPointerDown={close} />}
       {shown && (
         <Rail
           role={role}
@@ -94,7 +95,7 @@ export function SessionShell({ role, sessions, active, onChoose, children }: She
 type RailProps = {
   role: Role
   sessions: SessionsState
-  active: string
+  active: string | null
   docked: boolean
   wide: boolean
   onChoose: (id: string) => void
@@ -107,16 +108,18 @@ function Rail({ role, sessions, active, docked, wide, onChoose, onPin, onClose }
   const [creating, creating_set] = useState(false)
   const [problem, problem_set] = useState<string | null>(null)
 
+  const empty = sessions.list?.length === 0
+
   // Opened as a drawer, the list takes the focus, on the board shown, and Escape gives it back.
   useEffect(() => {
-    if (docked) return
+    if (docked && !empty) return
 
     const element = rail.current
     const target =
       element?.querySelector<HTMLElement>('[aria-current="page"]') ??
       element?.querySelector<HTMLElement>('.rail__new')
     target?.focus()
-  }, [docked])
+  }, [docked, empty])
 
   const create = async () => {
     if (creating) return
@@ -141,10 +144,12 @@ function Rail({ role, sessions, active, docked, wide, onChoose, onPin, onClose }
       className="rail"
       aria-label="Boards"
       onKeyDown={(event) => {
-        if (event.key === 'Escape' && !docked) onClose()
+        if (event.key === 'Escape' && !docked && !empty) onClose()
       }}
     >
-      <RailHeader docked={docked} wide={wide} onPin={onPin} onClose={onClose} />
+      {empty ? (
+        <header className="rail__header"><h2 className="rail__title">Boards</h2></header>
+      ) : <RailHeader docked={docked} wide={wide} onPin={onPin} onClose={onClose} />}
       <button type="button" className="rail__new" disabled={creating} onClick={() => void create()}>
         {icon_plus}
         <span>New board</span>
@@ -194,7 +199,7 @@ function RailHeader({ docked, wide, onPin, onClose }: HeaderProps) {
 type ListProps = {
   role: Role
   sessions: SessionsState
-  active: string
+  active: string | null
   onChoose: (id: string) => void
 }
 
@@ -208,6 +213,8 @@ function RailList({ role, sessions, active, onChoose }: ListProps) {
       </p>
     )
   }
+
+  if (sessions.list.length === 0) return <p className="rail__problem">No boards yet.</p>
 
   const newest_first = [...sessions.list].reverse()
   return (

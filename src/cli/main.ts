@@ -20,7 +20,7 @@ const options_common = {
   help: { type: 'boolean', short: 'h' },
 } as const
 
-// The board session a command works on. Without it, the default board.
+// An explicit identity, or resolve the home board once at the start of the command.
 const option_session = { session: { type: 'string' } } as const
 
 const string_option = { type: 'string' } as const

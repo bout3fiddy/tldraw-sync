@@ -16,11 +16,11 @@ export type Disk = {
 // and a directory of its own for every other board session. The registry of sessions lives
 // only in the data directory. The archives are canvases saved in retired formats, kept as
 // they were when the board moved on from them.
-export const file_names = [
-  'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'sessions.registry',
-  'ideas.state', 'events.state', 'whiteboard.key', 'interpretation.archive', 'ideas.archive',
-  'canvas.archive',
+export const board_file_names = [
+  'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'ideas.state',
+  'events.state', 'interpretation.archive', 'ideas.archive', 'canvas.archive',
 ] as const
+export const file_names = [...board_file_names, 'sessions.registry', 'whiteboard.key'] as const
 export type FileName = (typeof file_names)[number]
 
 export type EnvelopeKind = 'board' | 'image' | 'frame' | 'cleaned' | 'registry' | 'events'
@@ -169,13 +169,17 @@ export function session_storage(root: string) {
     disk_board: (id: string) => disk_open(location(id)),
     disk_exists: (id: string) => fs.existsSync(location(id)),
     disk_remove(id: string) {
-      const directory = location(id)
-      assert(path.dirname(directory) === parent, 'cleanup stays in the session namespace')
+      // The original board shares its directory with registry, keys, and unrelated files.
+      // Unlink only the known board files. Never remove or enumerate the root directory.
       try {
+        if (id === board_default_id) return board_files_unlink(root)
+
+        const directory = location(id)
+        assert(path.dirname(directory) === parent, 'cleanup stays in the session namespace')
         if (fs.existsSync(directory)) session_files_remove(directory)
         if (fs.existsSync(parent)) directory_sync(parent)
       } catch (error) {
-        if (error instanceof AssertionError) throw error
+        if (error instanceof AssertionError || error instanceof StorageError) throw error
         throw new StorageError('Cannot finish deleted board cleanup. Check session storage.')
       }
     },
@@ -183,8 +187,16 @@ export function session_storage(root: string) {
 }
 
 function session_files_remove(directory: string): void {
-  for (const name of file_names) {
-    if (name === 'sessions.registry' || name === 'whiteboard.key') continue
+  board_files_unlink(directory)
+  try {
+    fs.rmdirSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw error
+  }
+}
+
+function board_files_unlink(directory: string): void {
+  for (const name of board_file_names) {
     for (const suffix of ['', '.tmp']) {
       const file = path.join(directory, name + suffix)
       assert(path.dirname(file) === directory, 'only direct board files are removed')
@@ -195,11 +207,6 @@ function session_files_remove(directory: string): void {
   }
 
   directory_sync(directory)
-  try {
-    fs.rmdirSync(directory)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw error
-  }
 }
 
 // Never issue credentials from a public, linked or oversized key file, even if its contents

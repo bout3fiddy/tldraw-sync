@@ -479,7 +479,7 @@ export async function canvas_restore(options: Options): Promise<Outcome> {
 
 // The board's own error codes are passed on, each with what to do about it.
 function answer_failure(answer: Answer, scope: Scope | null, session = board_default_id): Outcome {
-  const status_flag = session === board_default_id ? '' : ` --session ${session}`
+  const status_flag = ` --session ${session}`
   const again =
     scope === null
       ? `tldraw-sync status${status_flag} --json`

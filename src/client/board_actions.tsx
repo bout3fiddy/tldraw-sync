@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
-import { board_default_id, board_label, type BoardSession } from '../shared/board_session'
+import { board_label, type BoardSession } from '../shared/board_session'
 import { session_delete } from './board_sessions'
 import { icon_actions, icon_delete, icon_rename } from './icons'
 
@@ -85,7 +85,8 @@ function restore_focus(rail: HTMLElement | null | undefined, button: HTMLButtonE
     if (document.activeElement !== document.body) return
 
     const next = button ?? rail?.querySelector<HTMLAnchorElement>('[aria-current="page"]')
-    next?.focus()
+    const target = next ?? rail?.querySelector<HTMLButtonElement>('.rail__new')
+    target?.focus()
   })
 }
 
@@ -100,8 +101,6 @@ type MenuProps = {
 
 function ActionMenu({ session, trigger, onOutside, onDismiss, onRename, onDelete }: MenuProps) {
   const menu = useRef<HTMLDivElement>(null)
-  const permanent = session.id === board_default_id
-  const explanation = 'permanent-board-note'
   useEffect(() => {
     menu.current?.querySelector('button')?.focus()
   }, [])
@@ -135,13 +134,10 @@ function ActionMenu({ session, trigger, onOutside, onDismiss, onRename, onDelete
       <button
         role="menuitem"
         tabIndex={-1}
-        disabled={permanent}
         onClick={onDelete}
-        aria-describedby={permanent ? explanation : undefined}
       >
         {icon_delete} Delete
       </button>
-      {permanent && <small id={explanation}>The default board is permanent.</small>}
     </div>
   )
 }

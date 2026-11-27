@@ -541,6 +541,43 @@ test('the canvas commands need a binding, and a wrong one reads and opens nothin
   expect(await status_json(directory, session)).toMatchObject({ agent_revision: 0 })
 }, 60_000)
 
+test('implicit capture follows home but an explicit retired target never does', async () => {
+  const directory = directory_create()
+  const port = port_any()
+  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
+  const remove = async (session: string) => {
+    const answer = await fetch(`http://127.0.0.1:${port}/api/sessions/delete`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session }),
+    })
+    expect(answer.status).toBe(200)
+  }
+  const created = await cli(directory, 'session-create', '--json')
+  const id = String((created.json.session as { id: string }).id)
+  const drawn = async () => (await status_json(directory, id)).shapes_count === 1
+  await test_pen_draw(port, 'shape:survivor', drawn, id)
+  const hash = await stage_upload(directory, port, id)
+  await remove('default')
+  const captured = await cli(directory, 'fetch', '--no-open', '--json')
+  expect(captured.json).toMatchObject({ code: 'image_saved', session: id, document_hash: hash })
+  expect(String(captured.json.path)).toContain(path.join('sessions', id))
+  const out = path.join(directory, 'must-not-exist.png')
+  const stale = await cli(directory, 'fetch', '--session', 'default', '--out', out, '--json')
+  expect(stale.json).toMatchObject({ code: 'unknown_session' })
+  expect(fs.existsSync(out)).toBe(false)
+  await remove(id)
+  expect((await cli(directory, 'stop', '--json')).json.code).toBe('stopped')
+  expect((await cli(directory, 'start', '--no-open', '--json')).json.code).toBe('started')
+  expect((await cli(directory, 'session-list', '--json')).json.sessions).toEqual([])
+  expect((await cli(directory, 'status', '--json')).json.code).toBe('no_boards')
+  expect((await cli(directory, 'status', '--session', 'default', '--json')).json.code)
+    .toBe('unknown_session')
+  const next = await cli(directory, 'session-create', '--json')
+  const next_id = String((next.json.session as { id: string }).id)
+  expect(next_id).not.toBe(id)
+  expect((await cli(directory, 'status', '--json')).json.session).toBe(next_id)
+}, 60_000)
+
 // Boards as an agent addresses them: each command names its board with --session and writes
 // where no other board writes.
 test('boards: list, create, rename, and --session on every board command', async () => {

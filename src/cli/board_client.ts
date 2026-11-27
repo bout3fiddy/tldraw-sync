@@ -2,7 +2,7 @@
 // which port to ask; the board's own answer is what says it is running.
 
 import { assert } from '../shared/assert'
-import { board_query } from '../shared/board_session'
+import { board_id_pattern, board_query } from '../shared/board_session'
 import {
   document_hash_pattern,
   fetch_wait_ms_max,
@@ -12,12 +12,12 @@ import {
   path_status,
   status_timeout_ms,
 } from '../shared/constants'
-import type { BoardStatus } from '../server/http'
+import type { DaemonStatus } from '../server/http'
 import type { Pairing } from '../server/pairing'
 import { process_alive, server_state_read, type ServerState } from '../server/server_state'
 
 export type Found =
-  | { kind: 'running'; status: BoardStatus }
+  | { kind: 'running'; status: DaemonStatus }
   | { kind: 'not_running' }
   // A live process holds the data directory but does not answer: starting, or stuck.
   | { kind: 'not_responding'; state: ServerState }
@@ -25,6 +25,7 @@ export type Found =
 export type ImageFetched =
   | { kind: 'image'; bytes: Uint8Array; document_hash: string }
   | { kind: 'empty' }
+  | { kind: 'unknown_session' }
   | { kind: 'stale' }
   | { kind: 'unreachable' }
 
@@ -37,16 +38,17 @@ export async function board_find(data_directory: string): Promise<Found> {
   return { kind: 'not_running' }
 }
 
-async function status_get(port: number): Promise<BoardStatus | null> {
+async function status_get(port: number): Promise<DaemonStatus | null> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}${path_status}`, {
+    const response = await fetch(`http://127.0.0.1:${port}${path_status}?server=1`, {
       signal: AbortSignal.timeout(status_timeout_ms),
     })
     if (!response.ok) return null
-    const status = await response.json() as BoardStatus
+    const status = await response.json() as DaemonStatus
     // Another program could hold a port the board once used.
     if (status.app !== 'tldraw-sync' || status.port !== port) return null
-    assert(Number.isInteger(status.pid), 'a board reports its pid')
+    if (!Number.isSafeInteger(status.pid) || status.pid <= 0) return null
+    if (status.session !== null && !board_id_pattern.test(status.session)) return null
     return status
   } catch {
     return null
@@ -109,7 +111,10 @@ export async function image_fetch(port: number, session: string): Promise<ImageF
   } catch {
     return { kind: 'unreachable' }
   }
-  if (response.status === 404) return { kind: 'empty' }
+  if (response.status === 404) {
+    const json = response.headers.get('content-type')?.startsWith('application/json')
+    return { kind: json ? 'unknown_session' : 'empty' }
+  }
   if (response.status !== 200) return { kind: 'stale' }
 
   const document_hash = response.headers.get(header_document_hash) ?? ''

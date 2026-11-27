@@ -4,7 +4,7 @@
 // between writing the temporary file and renaming it.
 
 import { assert } from '../shared/assert'
-import { file_names, type Disk, type FileName } from '../server/storage'
+import { board_file_names, file_names, type Disk, type FileName } from '../server/storage'
 
 export class SimulatedCrash extends Error {}
 
@@ -12,6 +12,10 @@ export class SimulatedDisk implements Disk {
   private readonly files = new Map<FileName, Uint8Array>()
   write_fault_armed = false
   on_write: (name: FileName, bytes: Uint8Array) => void = () => undefined
+
+  remove_board_files(): void {
+    for (const name of board_file_names) this.files.delete(name)
+  }
 
   read(name: FileName): Uint8Array | null {
     assert(file_names.includes(name), 'file name is known')

@@ -18,6 +18,7 @@ import {
 import { api_request, type ApiAnswer } from './board_client'
 import { browser_open } from './board_process'
 import { canvas_preview, canvas_publish, canvas_snapshot } from './canvas_commands'
+import { board_port } from './session_commands'
 import { session_find, start, type Options } from './commands'
 import { failure, success, type Outcome } from './output'
 import { binding_directory, binding_install, binding_read } from './whiteboard_file'
@@ -114,7 +115,7 @@ async function link(options: Options): Promise<Outcome> {
   if (running.kind === 'failure') return running
 
   const port = Number(running.data.port)
-  const status = await api_request(port, '/api/status', null)
+  const status = await api_request(port, '/api/status?server=1', null)
 
   if (status.kind !== 'answer' || status.status !== 200) return refusal(status)
 
@@ -193,9 +194,9 @@ async function link_binding(
 }
 
 async function delivery(command: string, binding: Binding, options: Options): Promise<Outcome> {
-  const found = await session_find(null)
+  const port = await board_port()
 
-  if ('kind' in found) return found
+  if (typeof port !== 'number') return port
 
   const ack = command === 'whiteboard-ack'
 
@@ -214,7 +215,7 @@ async function delivery(command: string, binding: Binding, options: Options): Pr
   const body = ack
     ? JSON.stringify({ event: options.event, state: options.state, message: options.message })
     : null
-  const answer = await api_request(found.port, route, body, binding_headers(binding))
+  const answer = await api_request(port, route, body, binding_headers(binding))
 
   if (answer.kind !== 'answer' || answer.status !== 200) return refusal(answer)
 

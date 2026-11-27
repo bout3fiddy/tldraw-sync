@@ -72,7 +72,7 @@ test('session cleanup never follows directory links or recursively removes unkno
     fs.symlinkSync(root, directory)
     expect(() => storage.disk_remove(id)).toThrow('Unsafe board directory')
     fs.unlinkSync(directory)
-    expect(() => storage.disk_remove('default')).toThrow()
+    expect(() => storage.disk_board('default')).toThrow()
     expect(() => storage.disk_remove('../')).toThrow()
     storage.disk_board(id).write_atomic('cleaned.state', encoded)
     fs.symlinkSync(original, path.join(directory, 'board.snapshot'))

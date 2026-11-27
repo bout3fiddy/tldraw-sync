@@ -16,7 +16,7 @@ const name_problem = `Send a name of 1 to ${board_name_length_max} characters on
 
 export function sessions_list_response(registry: BoardRegistry): Response {
   const sessions = registry.list()
-  assert(sessions.length > 0, 'the default board is always listed')
+  assert(registry.open_count() <= sessions.length, 'open boards appear in the list')
   assert(sessions.length <= board_sessions_count_max, 'sessions are bounded')
   return json_no_store({
     sessions,
@@ -116,10 +116,6 @@ export async function session_delete_route(request: Request, registry: BoardRegi
   const result = registry.remove(id)
 
   if (result === 'not_found') return lookup_error({ kind: 'not_found' })
-
-  if (result === 'permanent') {
-    return json_error(409, 'permanent_board', 'The default board cannot be deleted.')
-  }
 
   assert(result === 'removed', 'cleanup completed before the acknowledgement')
   assert(registry.board_open(id) === null, 'the deleted room is closed')

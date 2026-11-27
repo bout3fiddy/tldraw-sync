@@ -23,8 +23,7 @@ export const path_cleaned_restore = '/api/cleaned/restore'
 export const path_preview_json = '/api/preview.json'
 export const path_preview_png = '/api/preview.png'
 
-// Board sessions: the list, a new one, and a rename. Every board route takes `?session=<id>`;
-// without it, a route serves the default board, which is the board from before sessions.
+// Board management routes. Board-scoped requests name their stable id with `?session=<id>`.
 export const path_sessions = '/api/sessions'
 export const path_sessions_rename = '/api/sessions/rename'
 export const path_sessions_delete = '/api/sessions/delete'

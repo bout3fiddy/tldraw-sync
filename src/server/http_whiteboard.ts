@@ -67,6 +67,13 @@ export async function whiteboard_route(
   if (!local || origin !== null) return denied(request)
 
   if (action === 'link' && request.method === 'POST' && authorized(request, key)) {
+
+    // Link finds or creates an owner's own board. Never ignore an explicit board target.
+    if (url.searchParams.has('session')) {
+      await body_discard(request)
+      return invalid()
+    }
+
     return link_route(request, registry, key)
   }
 

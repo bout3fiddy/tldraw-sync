@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { assert } from '../shared/assert'
-import { board_default_id, board_id_pattern, type BoardSession } from '../shared/board_session'
+import { board_id_pattern, type BoardSession } from '../shared/board_session'
 import {
   board_sessions_count_max,
   board_sessions_poll_interval_ms,
@@ -120,7 +120,7 @@ function sessions_parse(text: string): BoardSession[] | null {
 
   if (!Array.isArray(sessions) || sessions.length > board_sessions_count_max) return null
 
-  if (!sessions.every(session_valid) || sessions[0]?.id !== board_default_id) return null
+  if (!sessions.every(session_valid)) return null
 
   const ids = new Set(sessions.map((session) => session.id))
   return ids.size === sessions.length ? sessions : null

@@ -2,7 +2,8 @@
 // before it reaches the board, which only asserts.
 //
 // Every board route names its board with `?session=<id>`; without it, a route serves the
-// default board, so every address from before sessions works as it did. The server has no
+// home board for reads. Legacy unscoped writes and sync connections only reach the original
+// board: an old page reconnecting must never send its ink to a successor. The server has no
 // active board: two pages, or a page and an agent, can each work on a board of their own.
 
 import fs from 'node:fs'
@@ -92,6 +93,11 @@ export type BoardStatus = {
   readonly cleaned_stale: boolean
 }
 
+// Discovery is about the daemon even when it has no board (or home cannot open).
+export type DaemonStatus = Pick<BoardStatus,
+  'app' | 'pid' | 'port' | 'protocol' | 'draw_url' | 'stage_url' | 'stage_connected'
+> & { readonly session: string | null }
+
 // `session_id` is the sync library's id for one page's connection; `board` is the board session
 // the connection draws on or presents.
 type SocketData = { session_id: string; role: Role; board: string }
@@ -178,10 +184,20 @@ function route(request: Request, server: Server<SocketData>, options: ServerOpti
   }
 
   if (pathname.startsWith('/api/') || pathname === path_sync) {
-    const id = board_param(url)
-    if (id === null) {
+    const target = url.searchParams.get('session')
+    if (target !== null && !board_id_pattern.test(target)) {
       return json_error(400, 'malformed_session', 'A session id is 16 hex digits, or default.')
     }
+    const home = options.registry.list()[0]?.id ?? null
+    const reading = request.method === 'GET' && pathname !== path_sync
+    if (reading && target === null) {
+      if (pathname === path_status && url.searchParams.get('server') === '1') {
+        return daemon_status(options, server.port, home)
+      }
+      if (pathname === path_pairing) return json_no_store(options.pairing)
+    }
+    const id = target ?? (reading ? home : board_default_id)
+    if (id === null) return json_error(404, 'no_boards', 'Create a board to get started.')
     return board_route(request, url, id, server, options)
   }
 
@@ -190,12 +206,16 @@ function route(request: Request, server: Server<SocketData>, options: ServerOpti
   return static_response(options.static_files, page)
 }
 
-// The board a request names, the default one when it names none, or null when it is malformed.
-function board_param(url: URL): string | null {
-  const id = url.searchParams.get('session') ?? board_default_id
-  if (!board_id_pattern.test(id)) return null
-  assert(id.length > 0, 'a valid board id is not empty')
-  return id
+function daemon_status(options: ServerOptions, port: number | undefined, home: string | null) {
+  assert(port !== undefined && port > 0, 'discovery names the listening port')
+  const room = home === null ? null : options.registry.board_open(home)
+  assert(room === null || room.session === home, 'only the home stage is advertised')
+  const status: DaemonStatus = {
+    app: 'tldraw-sync', pid: process.pid, port, protocol: whiteboard_protocol, session: home,
+    draw_url: options.pairing.url, stage_url: `http://localhost:${port}`,
+    stage_connected: (room?.sessions_count('stage') ?? 0) > 0,
+  }
+  return json_no_store(status)
 }
 
 async function sessions_route(request: Request, registry: BoardRegistry): Promise<Response> {
@@ -257,16 +277,7 @@ function board_route(
     return text(405, 'Use POST to restore a cleaned revision.')
   }
   if (method !== 'GET') return text(405, 'Method not allowed.')
-  if (pathname === path_pairing) {
-    if (registry.find(id) === null) return lookup_error({ kind: 'not_found' })
-    const page = board_draw_path(id)
-    if (local && owner && options.machine_key && request.headers.get('x-board-stage') === 'qr') {
-      const token = scoped_key(options.machine_key, 'event', id, owner)
-      const paired = pairing_board(options.pairing, `${page}#pair=${token}`)
-      return json_no_store({ ...paired, url: paired.url.split('#')[0] })
-    }
-    return json_no_store(pairing_board(options.pairing, page))
-  }
+  if (pathname === path_pairing) return board_pairing(options, id, owner, local, request)
   return board_with(registry, id, (board) => {
     if (pathname === path_drawing_json) return Response.json(board.shapes())
     if (pathname === path_cleaned_json || pathname === path_cleaned_status) {
@@ -277,9 +288,26 @@ function board_route(
       if (pathname === path_cleaned_json) return json_no_store(board.cleaned_document())
       return public_canvas_status(board, owner !== null)
     }
-    if (pathname === path_status) return Response.json(status_read(options, board, server.port))
+    if (pathname === path_status) {
+      const home = !url.searchParams.has('session')
+      return json_no_store(status_read(options, board, server.port, home))
+    }
     return text(404, 'Not found.')
   })
+}
+
+function board_pairing(
+  options: ServerOptions, id: string, owner: string | null, local: boolean, request: Request,
+): Response {
+  if (options.registry.find(id) === null) return lookup_error({ kind: 'not_found' })
+
+  const page = board_draw_path(id)
+  if (local && owner && options.machine_key && request.headers.get('x-board-stage') === 'qr') {
+    const token = scoped_key(options.machine_key, 'event', id, owner)
+    const paired = pairing_board(options.pairing, `${page}#pair=${token}`)
+    return json_no_store({ ...paired, url: paired.url.split('#')[0] })
+  }
+  return json_no_store(pairing_board(options.pairing, page))
 }
 
 function public_canvas_status(board: Board, linked: boolean) {
@@ -379,22 +407,23 @@ function sync_upgrade(
   return upgraded ? undefined : text(400, 'Expected a WebSocket connection.')
 }
 
-function status_read(options: ServerOptions, board: Board, port: number | undefined): BoardStatus {
+function status_read(
+  options: ServerOptions, board: Board, port: number | undefined, home: boolean,
+): BoardStatus {
   assert(port !== undefined, 'a listening server has a port')
   assert(port > 0, 'the port is known once listening')
   const id = board.session
   const state = board.document_state()
   const cleaned = board.cleaned_status()
-  const stage_path = board_stage_path(id)
+  const stage_path = home ? '' : board_stage_path(id)
   return {
     app: 'tldraw-sync',
     pid: process.pid,
     port,
     session: id,
     session_name: options.registry.find(id)?.name ?? null,
-    draw_url: pairing_board(options.pairing, board_draw_path(id)).url,
-    // The default board's address is the bare origin, as it always was.
-    stage_url: `http://localhost:${port}${stage_path === '/' ? '' : stage_path}`,
+    draw_url: home ? options.pairing.url : pairing_board(options.pairing, board_draw_path(id)).url,
+    stage_url: `http://localhost:${port}${stage_path}`,
     pen_connected: board.sessions_count('draw') > 0,
     stage_connected: board.sessions_count('stage') > 0,
     shapes_count: state.shapes_count,
