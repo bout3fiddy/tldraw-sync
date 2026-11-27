@@ -9,6 +9,7 @@ import { ArrowUUpRight } from '@phosphor-icons/react/dist/csr/ArrowUUpRight'
 import { Bell } from '@phosphor-icons/react/dist/csr/Bell'
 import { ChatCircle } from '@phosphor-icons/react/dist/csr/ChatCircle'
 import { Cursor } from '@phosphor-icons/react/dist/csr/Cursor'
+import { DotsThreeVertical } from '@phosphor-icons/react/dist/csr/DotsThreeVertical'
 import { Eraser } from '@phosphor-icons/react/dist/csr/Eraser'
 import { PencilSimpleLine } from '@phosphor-icons/react/dist/csr/PencilSimpleLine'
 import { Pen } from '@phosphor-icons/react/dist/csr/Pen'
@@ -36,6 +37,8 @@ export const icon_boards = glyph(SidebarSimple)
 export const icon_plus = glyph(Plus, 20)
 export const icon_close = glyph(X)
 export const icon_pin = glyph(PushPin)
+export const icon_actions = glyph(DotsThreeVertical)
+export const icon_delete = glyph(Trash, 20)
 export const icon_rename = glyph(PencilSimpleLine, 20)
 export const icon_chat = glyph(ChatCircle)
 export const icon_bell = glyph(Bell)

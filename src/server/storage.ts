@@ -4,7 +4,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { assert } from '../shared/assert'
+import { assert, AssertionError } from '../shared/assert'
+import { board_default_id, board_id_pattern } from '../shared/board_session'
 
 export type Disk = {
   read(name: FileName): Uint8Array | null
@@ -32,6 +33,8 @@ export type Decoded = { ok: true; envelope: Envelope } | { ok: false; reason: st
 
 const magic = 'tldraw-sync'
 const version = 1
+// 64 named boards, their owners, legacy ids, and a single pending deletion fit comfortably.
+const registry_size_bytes_max = 128 * 1024
 const header_size_bytes_max = 256
 const payload_size_bytes_max = 1024 * 1024 * 1024
 const newline = 0x0a
@@ -101,7 +104,14 @@ export function disk_open(directory: string): Disk {
       const file = path.join(directory, name)
       assert(path.dirname(file) === directory, 'files live directly in the data directory')
       if (name === 'whiteboard.key') return key_read(file)
-      if (!fs.existsSync(file)) return null
+      if (name === 'sessions.registry') {
+        const stat = fs.lstatSync(file, { throwIfNoEntry: false })
+        if (!stat) return null
+        if (!stat.isFile() || stat.size > registry_size_bytes_max) {
+          throw new StorageError('Invalid board registry file.')
+        }
+      } else if (!fs.existsSync(file)) return null
+
       if (name.endsWith('.state') || name.endsWith('.archive')) {
         // Nine normalized canvas versions, or sixty-four events including ACK messages.
         const max_bytes = name === 'events.state' ? 2 * 1024 * 1024 : 32 * 1024 * 1024
@@ -137,6 +147,58 @@ export function disk_open(directory: string): Disk {
       assert(fs.statSync(file).size === bytes.byteLength, 'the whole file was written')
       assert(!fs.existsSync(file_temporary), 'the temporary file was renamed away')
     },
+  }
+}
+
+// Only registered board files under real session directories are ours. Never recurse or
+// follow a directory symlink, and leave unrelated contents in place. The daemon exclusively
+// owns the storage tree. A crash may leave any prefix of the unlinks already completed.
+export function session_storage(root: string) {
+  assert(path.isAbsolute(root), 'session storage has an absolute root')
+  const parent = path.join(root, 'sessions')
+  const location = (id: string) => {
+    assert(board_id_pattern.test(id) && id !== board_default_id, 'a separate session id')
+    for (const directory of [parent, path.join(parent, id)]) {
+      const stat = fs.lstatSync(directory, { throwIfNoEntry: false })
+      if (stat && !stat.isDirectory()) throw new StorageError('Unsafe board directory.')
+    }
+    return path.join(parent, id)
+  }
+
+  return {
+    disk_board: (id: string) => disk_open(location(id)),
+    disk_exists: (id: string) => fs.existsSync(location(id)),
+    disk_remove(id: string) {
+      const directory = location(id)
+      assert(path.dirname(directory) === parent, 'cleanup stays in the session namespace')
+      try {
+        if (fs.existsSync(directory)) session_files_remove(directory)
+        if (fs.existsSync(parent)) directory_sync(parent)
+      } catch (error) {
+        if (error instanceof AssertionError) throw error
+        throw new StorageError('Cannot finish deleted board cleanup. Check session storage.')
+      }
+    },
+  }
+}
+
+function session_files_remove(directory: string): void {
+  for (const name of file_names) {
+    if (name === 'sessions.registry' || name === 'whiteboard.key') continue
+    for (const suffix of ['', '.tmp']) {
+      const file = path.join(directory, name + suffix)
+      assert(path.dirname(file) === directory, 'only direct board files are removed')
+      if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isDirectory()) {
+        fs.rmSync(file, { force: true })
+      }
+    }
+  }
+
+  directory_sync(directory)
+  try {
+    fs.rmdirSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw error
   }
 }
 

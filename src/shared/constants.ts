@@ -27,6 +27,7 @@ export const path_preview_png = '/api/preview.png'
 // without it, a route serves the default board, which is the board from before sessions.
 export const path_sessions = '/api/sessions'
 export const path_sessions_rename = '/api/sessions/rename'
+export const path_sessions_delete = '/api/sessions/delete'
 
 // The response header that names the document an image shows.
 export const header_document_hash = 'x-document-hash'

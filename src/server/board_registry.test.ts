@@ -250,6 +250,130 @@ test('the number of boards is bounded, and names are plain text on one line', ()
   registry.destroy()
 })
 
+test('deleting a linked room closes its socket and recovery finishes only its cleanup', () => {
+
+  // One cut before the intent, one after the rename, one during cleanup, one at completion.
+  for (const cut of ['before', 'renamed', 'cleanup', 'completion'] as const) {
+    const env = environment()
+    env.id_create = () => '1234567890abcdef'
+    const registry = BoardRegistry.open(env)
+    const peer = board_create(registry, env, 'Peer')
+    const link = registry.link('test-owner')
+
+    if (link.kind !== 'created') throw new Error('test link failed')
+
+    const id = link.session.id
+    let closed = false
+    board_of(registry, id).session_open('pen', 'draw', {
+      ...socket_idle,
+      close: () => {
+        closed = true
+      },
+    })
+    const reset = deletion_fault(env, cut, id)
+
+    const attempt = () => registry.remove(id)
+
+    if (cut === 'renamed') {
+      expect(attempt).toThrow('failed registry commit left the old file intact')
+    } else {
+      expect(attempt).toThrow()
+    }
+
+    if (cut === 'before') {
+      expect(registry.owner(id)).toBe('test-owner')
+      expect(closed).toBe(false)
+    } else if (cut !== 'renamed') {
+      expect(closed).toBe(true)
+      expect(registry.board(id)).toEqual({ kind: 'not_found' })
+    }
+
+    registry.destroy()
+    reset()
+    const reopened = BoardRegistry.open(env)
+
+    if (cut === 'before') {
+      expect(reopened.owner(id)).toBe('test-owner')
+      expect(reopened.remove(id)).toBe('removed')
+    }
+
+    expect(reopened.find(id)).toBeNull()
+    expect(reopened.owner(id)).toBeNull()
+    expect(env.disks.has(id)).toBe(false)
+    expect(reopened.remove(board_default_id)).toBe('permanent')
+    expect(board_of(reopened, peer).shapes()).toHaveLength(1)
+    expect(board_of(reopened, board_default_id).shapes()).toHaveLength(1)
+    const relink = reopened.link('test-owner')
+
+    if (relink.kind !== 'created') throw new Error('relink failed')
+
+    expect(relink.session.id).not.toBe(id)
+    expect(reopened.rename(id, 'Late')).toEqual({ kind: 'not_found' })
+    expect(board_of(reopened, relink.session.id).shapes()).toHaveLength(0)
+    reopened.close()
+  }
+})
+
+function deletion_fault(env: SimulatedRegistryEnvironment, cut: string, id: string) {
+  const remove = env.disk_remove
+  env.disk_remove = (target) => {
+    expect(target).toBe(id)
+
+    if (cut === 'cleanup') throw new StorageError('interrupted cleanup')
+
+    remove(target)
+
+    if (cut === 'completion') env.disk.write_fault_armed = true
+  }
+  env.disk.write_fault_armed = cut === 'before'
+
+  if (cut === 'renamed')
+    env.disk.on_write = () => {
+      throw new SimulatedCrash()
+    }
+
+  return () => {
+    env.disk_remove = remove
+    env.disk.on_write = () => {}
+  }
+}
+
+test('migration permanently reserves a legacy id even when the allocator repeats it', () => {
+  const env = environment()
+  const id = 'abcdabcdab000001'
+  const first = BoardRegistry.open(env)
+  const legacy = { id, name: 'Legacy', named_by: 'person', created_at_ms: 0 }
+  const state = {
+    format: 'tldraw-sync.sessions.v1',
+    sessions: [...first.list(), legacy],
+    owners: { [id]: 'old-owner' },
+  }
+  first.close()
+  env.disk.write_atomic(
+    'sessions.registry',
+    envelope_encode({
+      kind: 'registry',
+      label: '-',
+      payload: new TextEncoder().encode(JSON.stringify(state)),
+    }),
+  )
+  env.id_create = () => id
+  const migrated = BoardRegistry.open(env)
+  expect(migrated.owner(id)).toBe('old-owner')
+  expect(migrated.remove(id)).toBe('removed')
+  migrated.close()
+
+  const restarted = BoardRegistry.open(env)
+
+  // The first candidate collides with the retired legacy id, the next with unrelated data.
+  env.disk_board('abcdabcdab000002')
+  const next = restarted.link('old-owner')
+  expect(next).toMatchObject({ kind: 'created', session: { id: 'abcdabcdab000003' } })
+  expect(restarted.board(id)).toEqual({ kind: 'not_found' })
+  expect(env.disk_exists('abcdabcdab000002')).toBe(true)
+  restarted.close()
+})
+
 test('a damaged registry stops the start; a damaged board is refused alone', () => {
   const env = environment()
   const registry = BoardRegistry.open(env)
@@ -300,6 +424,7 @@ function byte_flip(bytes: Uint8Array, index: number): void {
 type Model = Map<string, { name: string | null; named_by: string | null; revision: number }>
 type Counts = {
   created: number
+  removed: number
   renamed: number
   published: number
   titled: number
@@ -315,6 +440,7 @@ function seed_run(seed: number): Counts {
   const model: Model = new Map([[board_default_id, { name: null, named_by: null, revision: 0 }]])
   const counts: Counts = {
     created: 0,
+    removed: 0,
     renamed: 0,
     published: 0,
     titled: 0,
@@ -342,6 +468,10 @@ function seed_run(seed: number): Counts {
         registry.rename(id, `Named ${step}`)
         model.set(id, { ...model.get(id)!, name: `Named ${step}`, named_by: 'person' })
         counts.renamed += 1
+      } else if (choice === 8 && id !== board_default_id) {
+        expect(registry.remove(id)).toBe('removed')
+        model.delete(id)
+        counts.removed += 1
       } else if (choice < 9) {
         step_publish(registry, model, counts, id, source, prng.chance(0.6) ? `Title ${step}` : null)
       } else {

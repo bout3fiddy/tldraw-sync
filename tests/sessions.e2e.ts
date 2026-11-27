@@ -218,6 +218,116 @@ test('boards: make, switch, present two at once, publish to each, rename, restar
   }
 })
 
+test('row actions preserve native links, confirm the exact target and isolate other pages', async ({
+  page,
+  context,
+}) => {
+  const origin = `http://127.0.0.1:${port}`
+  const create = async (name: string) => {
+    const response = await page.request.post(`${origin}/api/sessions`, { data: { name } })
+    expect(response.ok()).toBe(true)
+    return String((await response.json()).session.id)
+  }
+  const first = await create('Current sketch')
+  const second = await create('Review sketch')
+  const peer = await context.newPage()
+  await peer.goto(`${origin}/s/${second}`)
+  await expect(peer).toHaveTitle('Review sketch · Board')
+  await page.goto(`${origin}/s/${first}/draw`)
+  await rail_open(page)
+  const list = rail(page)
+  await rename_inactive(page, peer)
+  const options = (name: string) => list.getByRole('button', { name: `Actions for ${name}` })
+  await expect(page).toHaveURL(`${origin}/s/${first}/draw`)
+  await options('Revised sketch').click()
+  await list.getByRole('menuitem', { name: 'Delete' }).click()
+  const confirm = page.getByRole('dialog', { name: 'Delete “Revised sketch”?' })
+  await expect(confirm.getByText(/cannot be undone/)).toBeVisible()
+  await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused()
+  await confirm.getByRole('button', { name: 'Cancel' }).click()
+  await expect(options('Revised sketch')).toBeFocused()
+  expect(await status(second)).toMatchObject({ session_name: 'Revised sketch' })
+  expect(await status(first)).toMatchObject({ session_name: 'Current sketch' })
+
+  await options('Revised sketch').click()
+  await list.getByRole('menuitem', { name: 'Delete' }).click()
+  const rename = await peer.request.post(`${origin}/api/sessions/rename`, {
+    data: { session: second, name: 'Final review' },
+  })
+  expect(rename.ok()).toBe(true)
+  await confirm.getByRole('button', { name: 'Delete board' }).click()
+  await expect(list.getByText(/Deletion not confirmed/)).toBeVisible()
+  expect(await status(second)).toMatchObject({ session_name: 'Final review' })
+  await options('Final review').click()
+  await list.getByRole('menuitem', { name: 'Delete' }).click()
+  await page
+    .getByRole('dialog', { name: 'Delete “Final review”?' })
+    .getByRole('button', { name: 'Delete board' })
+    .click()
+  await expect(options('Final review')).toHaveCount(0)
+  await expect(list.getByRole('link', { name: 'Current sketch' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  )
+  await peer.bringToFront()
+  await expect(peer).toHaveURL(`${origin}/`)
+  await page.bringToFront()
+  await delete_current(page, origin)
+
+  for (const id of [first, second]) {
+    expect((await page.request.get(`${origin}/api/status?session=${id}`)).status()).toBe(404)
+    expect(fs.existsSync(path.join(data_directory, 'sessions', id))).toBe(false)
+  }
+})
+
+async function rename_inactive(page: Page, peer: Page) {
+  const list = rail(page)
+  const link = list.getByRole('link', { name: 'Review sketch' })
+
+  // Right click stays a native link action, not an alternate trigger for the app menu.
+  await link.click({ button: 'right' })
+  expect(
+    await link.evaluate((a) =>
+      a.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+        }),
+      ),
+    ),
+  ).toBe(true)
+  await expect(list.getByRole('menu')).toHaveCount(0)
+  const options = (name: string) => list.getByRole('button', { name: `Actions for ${name}` })
+  await options('Review sketch').press('Space')
+  await expect(list.getByRole('menuitem', { name: 'Rename' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(options('Review sketch')).toBeFocused()
+  await options('Review sketch').press('Enter')
+  await list.getByRole('menuitem', { name: 'Rename' }).click()
+  const field = list.getByRole('textbox', { name: 'Board name' })
+  await field.fill('Revised sketch')
+  await field.press('Enter')
+  await peer.bringToFront()
+  await expect(peer).toHaveTitle('Revised sketch · Board')
+  await page.bringToFront()
+}
+
+async function delete_current(page: Page, origin: string) {
+  const list = rail(page)
+  await list.getByRole('button', { name: 'Actions for Current sketch' }).click()
+  await list.getByRole('menuitem', { name: 'Delete' }).click()
+  await page
+    .getByRole('dialog', { name: 'Delete “Current sketch”?' })
+    .getByRole('button', { name: 'Delete board' })
+    .click()
+  await expect(page).toHaveURL(`${origin}/draw`)
+  const permanent = list.locator('li', { has: page.locator('a[href="/draw"]') })
+  await permanent.getByRole('button').click()
+  await expect(permanent.getByRole('menuitem', { name: 'Delete' })).toBeDisabled()
+  await expect(permanent.getByText('The default board is permanent.')).toBeVisible()
+}
+
 // The default board first, at its old address; then two new boards from the rail and the CLI.
 async function boards_make_and_switch(ipad: Page): Promise<[string, string]> {
   const origin = `http://127.0.0.1:${port}`
@@ -359,7 +469,8 @@ async function rename_beats_title(ipad: Page, host: Host): Promise<void> {
   await expect(rail(ipad)).toBeHidden()
   await rail_open(ipad)
   const active = rail(ipad).locator('li', { has: ipad.locator('[aria-current="page"]') })
-  await active.getByRole('button', { name: /^Rename/ }).click()
+  await active.getByRole('button', { name: /^Actions for / }).click()
+  await active.getByRole('menuitem', { name: 'Rename' }).click()
   const field = rail(ipad).getByRole('textbox', { name: 'Board name' })
   await field.fill('Mine')
   await field.press('Enter')

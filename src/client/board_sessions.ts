@@ -5,12 +5,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { assert } from '../shared/assert'
-import { board_id_pattern, type BoardSession } from '../shared/board_session'
+import { board_default_id, board_id_pattern, type BoardSession } from '../shared/board_session'
 import {
   board_sessions_count_max,
   board_sessions_poll_interval_ms,
   path_sessions,
   path_sessions_rename,
+  path_sessions_delete,
 } from '../shared/constants'
 
 export type SessionsState = {
@@ -20,7 +21,8 @@ export type SessionsState = {
 
   // The board did not answer the last request for the list.
   readonly failed: boolean
-  merge(session: BoardSession): void
+  merge(session: BoardSession, created?: boolean): void
+  remove(id: string): void
 }
 
 export type CreateOutcome =
@@ -41,6 +43,7 @@ export function use_sessions(): SessionsState {
     let stopped = false
     let timer = 0
     let text_shown = ''
+    let shown_generation = -1
 
     // One poll. A hidden page asks only for its first list, and catches up once shown.
     const poll = async (): Promise<void> => {
@@ -52,7 +55,10 @@ export function use_sessions(): SessionsState {
         const sessions = text === null ? null : sessions_parse(text)
         failed_set(sessions === null)
 
-        if (sessions !== null && text !== text_shown && merges.current === merges_before) {
+        const changed = text !== text_shown || shown_generation !== merges_before
+
+        if (sessions !== null && changed && merges.current === merges_before) {
+          shown_generation = merges_before
           text_shown = text as string
           list_set(sessions)
         }
@@ -67,20 +73,25 @@ export function use_sessions(): SessionsState {
     }
   }, [])
 
-  const merge = useCallback((session: BoardSession) => {
+  const merge = useCallback((session: BoardSession, created = false) => {
     assert(board_id_pattern.test(session.id), 'a merged board has a valid id')
     merges.current += 1
     list_set((previous) => {
       const others = (previous ?? []).filter((candidate) => candidate.id !== session.id)
       const index = (previous ?? []).findIndex((candidate) => candidate.id === session.id)
 
-      if (index < 0) return [...others, session]
+      if (index < 0) return created ? [...others, session] : previous
 
       return [...others.slice(0, index), session, ...others.slice(index)]
     })
   }, [])
 
-  return { list, failed, merge }
+  const remove = useCallback((id: string) => {
+    merges.current += 1
+    list_set((previous) => previous?.filter((session) => session.id !== id) ?? null)
+  }, [])
+
+  return { list, failed, merge, remove }
 }
 
 async function list_get(): Promise<string | null> {
@@ -109,8 +120,10 @@ function sessions_parse(text: string): BoardSession[] | null {
 
   if (!Array.isArray(sessions) || sessions.length > board_sessions_count_max) return null
 
-  const valid = sessions.every((session) => session_valid(session))
-  return valid ? (sessions as BoardSession[]) : null
+  if (!sessions.every(session_valid) || sessions[0]?.id !== board_default_id) return null
+
+  const ids = new Set(sessions.map((session) => session.id))
+  return ids.size === sessions.length ? sessions : null
 }
 
 function session_valid(value: unknown): value is BoardSession {
@@ -150,6 +163,11 @@ export async function session_rename(id: string, name: string): Promise<RenameOu
   if (!response.ok || !session_valid(session)) return { kind: 'failed' }
 
   return { kind: 'renamed', session }
+}
+
+export async function session_delete(session: BoardSession): Promise<boolean> {
+  const response = await post(path_sessions_delete, { session: session.id, name: session.name })
+  return response?.ok === true && (response.body as { deleted?: unknown }).deleted === session.id
 }
 
 type Posted = { ok: boolean; status: number; body: object }

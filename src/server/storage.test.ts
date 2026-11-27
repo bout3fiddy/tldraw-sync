@@ -5,7 +5,7 @@ import { expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { disk_open, envelope_decode, envelope_encode } from './storage'
+import { disk_open, envelope_decode, envelope_encode, session_storage } from './storage'
 
 const payload = new TextEncoder().encode('{"documents":[]}')
 const encoded = envelope_encode({ kind: 'board', label: '-', payload })
@@ -54,6 +54,39 @@ test('a file of the wrong kind is refused', () => {
 test('garbage is refused without throwing', () => {
   expect(envelope_decode(new Uint8Array(0), 'board').ok).toBe(false)
   expect(envelope_decode(new Uint8Array(1000).fill(0x41), 'board').ok).toBe(false)
+})
+
+test('session cleanup never follows directory links or recursively removes unknown files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'board-cleanup-'))
+  try {
+    const storage = session_storage(root)
+    const id = '1111111111111111'
+    const parent = path.join(root, 'sessions')
+    const directory = path.join(parent, id)
+    const original = path.join(root, 'board.snapshot')
+    fs.writeFileSync(original, 'default ink')
+    fs.symlinkSync(root, parent)
+    expect(() => storage.disk_remove(id)).toThrow('Unsafe board directory')
+    fs.unlinkSync(parent)
+    fs.mkdirSync(parent)
+    fs.symlinkSync(root, directory)
+    expect(() => storage.disk_remove(id)).toThrow('Unsafe board directory')
+    fs.unlinkSync(directory)
+    expect(() => storage.disk_remove('default')).toThrow()
+    expect(() => storage.disk_remove('../')).toThrow()
+    storage.disk_board(id).write_atomic('cleaned.state', encoded)
+    fs.symlinkSync(original, path.join(directory, 'board.snapshot'))
+    const unrelated = path.join(directory, 'other')
+    fs.mkdirSync(unrelated)
+    fs.writeFileSync(path.join(unrelated, 'board.snapshot'), 'not board data')
+    storage.disk_remove(id)
+    storage.disk_remove(id)
+    expect(fs.readdirSync(directory)).toEqual(['other'])
+    expect(fs.readFileSync(original, 'utf8')).toBe('default ink')
+    expect(fs.readFileSync(path.join(unrelated, 'board.snapshot'), 'utf8')).toBe('not board data')
+  } finally {
+    fs.rmSync(root, { recursive: true })
+  }
 })
 
 test('the real disk replaces a file whole and leaves no temporary file behind', () => {

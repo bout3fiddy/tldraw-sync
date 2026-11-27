@@ -18,7 +18,8 @@ import {
 } from '../shared/board_session'
 import { board_name_length_max, type Role } from '../shared/constants'
 import { session_create, session_rename, type SessionsState } from './board_sessions'
-import { icon_boards, icon_close, icon_pin, icon_plus, icon_rename } from './icons'
+import { icon_boards, icon_close, icon_pin, icon_plus } from './icons'
+import { BoardActions } from './board_actions'
 
 type ShellProps = {
   role: Role
@@ -129,7 +130,7 @@ function Rail({ role, sessions, active, docked, wide, onChoose, onPin, onClose }
 
     if (outcome.kind === 'failed') return problem_set('The Mac did not answer. Try again.')
 
-    sessions.merge(outcome.session)
+    sessions.merge(outcome.session, true)
     onChoose(outcome.session.id)
   }
 
@@ -220,6 +221,7 @@ function RailList({ role, sessions, active, onChoose }: ListProps) {
             active={session.id === active}
             onChoose={onChoose}
             onRenamed={sessions.merge}
+            onRemoved={sessions.remove}
           />
         ))}
       </ul>
@@ -233,9 +235,11 @@ type ItemProps = {
   active: boolean
   onChoose: (id: string) => void
   onRenamed: (session: BoardSession) => void
+  onRemoved: (id: string) => void
 }
 
-function RailItem({ role, session, active, onChoose, onRenamed }: ItemProps) {
+function RailItem({ role, session, active, onChoose, onRenamed, onRemoved }: ItemProps) {
+  const row = useRef<HTMLLIElement>(null)
   const [editing, editing_set] = useState(false)
   const [problem, problem_set] = useState<string | null>(null)
   const label = board_label(session)
@@ -251,6 +255,10 @@ function RailItem({ role, session, active, onChoose, onRenamed }: ItemProps) {
             problem_set(renamed === 'failed' ? 'Not renamed: the Mac did not answer.' : null)
 
             if (renamed !== null && renamed !== 'failed') onRenamed(renamed)
+
+            window.requestAnimationFrame(() => {
+              if (document.activeElement === document.body) row.current?.querySelector('a')?.focus()
+            })
           }}
         />
       </li>
@@ -258,7 +266,7 @@ function RailItem({ role, session, active, onChoose, onRenamed }: ItemProps) {
   }
 
   return (
-    <li className="rail__item" data-active={active}>
+    <li ref={row} className="rail__item" data-active={active}>
       <a
         className="rail__link"
         href={href}
@@ -280,17 +288,16 @@ function RailItem({ role, session, active, onChoose, onRenamed }: ItemProps) {
         {session.name === null && session.id !== board_default_id && (
           <span className="rail__meta">{created_text(session.created_at_ms)}</span>
         )}
-        {problem !== null && <span className="rail__meta rail__meta--problem">{problem}</span>}
+        {problem !== null && (
+          <span className="rail__meta rail__meta--problem" role="status">{problem}</span>
+        )}
       </a>
-      <button
-        type="button"
-        className="rail__rename"
-        aria-label={`Rename ${label}`}
-        title="Rename"
-        onClick={() => editing_set(true)}
-      >
-        {icon_rename}
-      </button>
+      <BoardActions
+        session={session}
+        onRename={() => editing_set(true)}
+        onRemove={onRemoved}
+        onError={() => problem_set('Deletion not confirmed. Check the list and try again.')}
+      />
     </li>
   )
 }

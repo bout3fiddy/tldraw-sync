@@ -131,6 +131,36 @@ test('event authority cannot poll, ack, preview or publish; a request survives',
   reopened.close()
 })
 
+test('an authorized send awaiting its body cannot cross deletion and relinking', async () => {
+  const owner = 'same-owner'
+  const { registry, session, host, event_key, run } = await linked(owner)
+  const poll = request(`poll?protocol=${protocol}`, host, owner)
+  const { sketch_hash } = await (await run(poll)).json()
+  const body = {
+    kind: 'sketch_notify',
+    sketch_hash,
+    request_id: '00000000-0000-7aaa-8000-000000000001',
+  }
+
+  // The route checks the credential synchronously, then yields while reading the request.
+  const waiting = run(request('event/v2', event_key, owner, body))
+  expect(registry.remove(session)).toBe('removed')
+  const next = registry.link(owner)
+
+  if (next.kind !== 'created') throw new Error('test owner could not relink')
+
+  expect(next.session.id).not.toBe(session)
+  expect((await waiting).status).toBe(404)
+  expect((await run(poll)).status).toBe(403)
+  expect((await whiteboard_route(poll, registry, next.session.id, key, true)).status).toBe(403)
+  const lookup = registry.board(next.session.id)
+
+  if (lookup.kind !== 'board') throw new Error('new room did not open')
+
+  expect(lookup.board.events.latest()).toBeUndefined()
+  registry.close()
+})
+
 // A Send is a conversation until the agent decides otherwise: it is queued, handed to the
 // host, acknowledged to its end, and through all of it the Agent canvas is not written.
 test('a Send with a note is delivered and answered without anything being published', async () => {

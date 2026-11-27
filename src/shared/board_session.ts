@@ -7,7 +7,7 @@ import { path_draw, type Role } from './constants'
 
 export const board_default_id = 'default'
 
-// Ids are made by the board, never chosen by a caller: sixteen hex digits of randomness.
+// Ids are made by the board, never chosen by a caller. Old and new links use sixteen hex digits.
 export const board_id_pattern = /^(default|[0-9a-f]{16})$/
 
 // Who gave a board its name. A person's name always wins over an agent's title.

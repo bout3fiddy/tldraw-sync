@@ -32,6 +32,7 @@ import {
   path_preview_png,
   path_sessions,
   path_sessions_rename,
+  path_sessions_delete,
   path_status,
   path_sync,
   roles,
@@ -45,6 +46,7 @@ import { body_discard, cleaned_restore_route, json_error, lookup_error } from '.
 import {
   json_no_store,
   session_create_route,
+  session_delete_route,
   session_rename_route,
   sessions_list_response,
 } from './http_sessions'
@@ -168,8 +170,11 @@ function route(request: Request, server: Server<SocketData>, options: ServerOpti
   const pathname = url.pathname
   assert(pathname.startsWith('/'), 'a request path is absolute')
 
-  if (pathname === path_sessions || pathname === path_sessions_rename) {
-    return sessions_route(request, options.registry)
+  if ([path_sessions, path_sessions_rename, path_sessions_delete].includes(pathname)) {
+    return sessions_route(request, options.registry).catch((error) => {
+      if (error instanceof AssertionError) options.on_fatal(error)
+      return json_error(503, 'storage_failure', 'Board operation failed. Check storage and retry.')
+    })
   }
 
   if (pathname.startsWith('/api/') || pathname === path_sync) {
@@ -193,15 +198,17 @@ function board_param(url: URL): string | null {
   return id
 }
 
-function sessions_route(request: Request, registry: BoardRegistry): Route {
+async function sessions_route(request: Request, registry: BoardRegistry): Promise<Response> {
   const pathname = new URL(request.url).pathname
-  assert(pathname === path_sessions || pathname === path_sessions_rename, 'a sessions route')
+  if (pathname === path_sessions_delete && request.method === 'POST') {
+    return session_delete_route(request, registry)
+  }
   if (request.method === 'POST') {
     if (pathname === path_sessions) return session_create_route(request, registry)
     return session_rename_route(request, registry)
   }
   if (request.method !== 'GET' || pathname !== path_sessions) {
-    return text(405, 'Use GET to list boards, and POST to create or rename one.')
+    return text(405, 'Use GET to list boards, and POST to change one.')
   }
   return sessions_list_response(registry)
 }

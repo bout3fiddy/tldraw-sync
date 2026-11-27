@@ -41,6 +41,9 @@ export type RegistryEnvironment = {
   // The directory of a board other than the default one. Called only when it is opened.
   disk_board(id: string): Disk
 
+  disk_remove(id: string): void
+  disk_exists(id: string): boolean
+
   // A new random id of sixteen hex digits. Replaceable, so a simulation can be replayed.
   id_create(): string
 }
@@ -59,9 +62,15 @@ export type RegistryPublish = (PublishResult & { title_applied: boolean }) | Boa
 export type RegistryPreview = PreviewResult | BoardLookupFailure
 
 const file_name = 'sessions.registry'
-const registry_format = 'tldraw-sync.sessions.v1'
+const registry_format = 'tldraw-sync.sessions.v2'
+const legacy_format = 'tldraw-sync.sessions.v1'
 const label = '-'
-const id_attempts_count_max = 4
+
+// Ten random hex digits plus a non-repeating allocation number. Addresses are public;
+// host and event credentials remain separate secrets. Never wrap the allocation number.
+const allocation_max = 0xffffff
+type Allocation = { serial: number; legacy: readonly string[] }
+const allocation_initial = (): Allocation => ({ serial: 0, legacy: [] })
 
 export class BoardRegistry {
 
@@ -72,6 +81,9 @@ export class BoardRegistry {
     private readonly environment: RegistryEnvironment,
     private sessions: readonly BoardSession[],
     private owners: ReadonlyMap<string, string>,
+    private allocation: Allocation,
+    private pending: string | null,
+    private saved: Uint8Array | null,
   ) {}
 
   // Reads the registry and opens the default board. Damage to either is a StorageError: the
@@ -80,9 +92,22 @@ export class BoardRegistry {
     const bytes = environment.disk.read(file_name)
     const state =
       bytes === null
-        ? { sessions: [session_default()], owners: new Map<string, string>() }
+        ? {
+            sessions: [session_default()],
+            owners: new Map(),
+            allocation: allocation_initial(),
+            pending: null,
+          }
         : registry_read(bytes)
-    const registry = new BoardRegistry(environment, state.sessions, state.owners)
+    const registry = new BoardRegistry(
+      environment,
+      state.sessions,
+      state.owners,
+      state.allocation,
+      state.pending,
+      bytes,
+    )
+    registry.cleanup()
     const board = Board.open({ time: environment.time, disk: environment.disk })
     registry.boards.set(board_default_id, board)
 
@@ -130,7 +155,11 @@ export class BoardRegistry {
 
     if (this.sessions.length === board_sessions_count_max) return { kind: 'full' }
 
-    const id = this.id_unused()
+    const next = this.id_unused()
+
+    if (next === null) throw new StorageError('No unused board address could be allocated.')
+
+    const { id, serial } = next
     const session: BoardSession = {
       id,
       name,
@@ -138,7 +167,7 @@ export class BoardRegistry {
       created_at_ms: this.environment.time.now_ms(),
     }
     const owners = owner === undefined ? this.owners : new Map(this.owners).set(id, owner)
-    this.commit([...this.sessions, session], owners)
+    this.commit([...this.sessions, session], owners, this.pending, { ...this.allocation, serial })
     assert(this.find(id) === session, 'a created board is listed')
     assert(this.sessions.length <= board_sessions_count_max, 'sessions are bounded')
     return { kind: 'created', session }
@@ -155,6 +184,44 @@ export class BoardRegistry {
     this.commit(this.sessions.map((candidate) => (candidate.id === id ? session : candidate)))
     assert(this.find(id)?.name === name, 'the new name is listed')
     return { kind: 'renamed', session }
+  }
+
+  remove(id: string): 'removed' | 'not_found' | 'permanent' {
+    if (id === board_default_id) return 'permanent'
+
+    // Retry the previous cleanup before recording another. One durable slot bounds recovery.
+    const retry = this.pending === id
+
+    if (!retry && this.find(id) === null) return 'not_found'
+
+    this.cleanup()
+
+    if (retry) return 'removed'
+
+    const owners = new Map(this.owners)
+    owners.delete(id)
+    this.commit(
+      this.sessions.filter((session) => session.id !== id),
+      owners,
+      id,
+    )
+    const board = this.boards.get(id)
+    this.boards.delete(id)
+    board?.destroy()
+    this.cleanup()
+    assert(this.find(id) === null, 'a deleted board cannot reopen')
+    assert(this.owner(id) === null, 'a deleted link no longer authorizes anything')
+    return 'removed'
+  }
+
+  private cleanup(): void {
+    if (this.pending === null) return
+
+    assert(this.find(this.pending) === null, 'cleanup only touches a retired board')
+    assert(this.pending !== board_default_id, 'never remove default storage')
+    assert(!this.boards.has(this.pending), 'no socket or timer can write during cleanup')
+    this.environment.disk_remove(this.pending)
+    this.commit(this.sessions, this.owners, null)
   }
 
   // The open board for this id, opening it if it is listed and there is room.
@@ -306,40 +373,85 @@ export class BoardRegistry {
     return false
   }
 
-  private id_unused(): string {
-    for (let attempt = 0; attempt < id_attempts_count_max; attempt += 1) {
-      const id = this.environment.id_create()
-      assert(board_id_pattern.test(id) && id !== board_default_id, 'a new id is random hex')
+  private id_unused(): { id: string; serial: number } | null {
 
-      if (this.find(id) === null) return id
+    // Even a repeated random value after restart cannot revive a bookmark or credential.
+    // Pre-upgrade random ids (at most one registry full) remain reserved independently.
+    for (let step = 1; step <= board_sessions_count_max; step += 1) {
+      const serial = this.allocation.serial + step
+
+      if (serial > allocation_max) break
+
+      const prefix = this.environment.id_create().slice(0, 10)
+      const id = prefix + serial.toString(16).padStart(6, '0')
+      assert(board_id_pattern.test(id), 'a generated id is sixteen hex digits')
+
+      if (this.allocation.legacy.includes(id) || this.environment.disk_exists(id)) continue
+
+      assert(this.find(id) === null, 'a new allocation has never been listed')
+      return { id, serial }
     }
 
-    throw new AssertionError('sixty-four random bits collided again and again')
+    return null
   }
 
-  // Write first, then swap. A throwing disk leaves the registry, and its file, as they were.
-  private commit(sessions: readonly BoardSession[], owners = this.owners): void {
+  // Write first, then swap. Only a provably uncommitted write is recoverable in-process.
+  private commit(
+    sessions: readonly BoardSession[],
+    owners = this.owners,
+    pending = this.pending,
+    allocation = this.allocation,
+  ): void {
     assert(sessions.length <= board_sessions_count_max, 'sessions are bounded')
     assert(sessions[0]?.id === board_default_id, 'the default board stays first')
-    const state = { format: registry_format, sessions, owners: Object.fromEntries(owners) }
-    const payload = new TextEncoder().encode(JSON.stringify(state))
-    this.environment.disk.write_atomic(
-      file_name,
-      envelope_encode({
-        kind: 'registry',
-        label,
-        payload,
-      }),
-    )
+    assert(allocation.serial >= this.allocation.serial, 'issued board identities never roll back')
 
-    // Pair assertion: the file now on disk reads back as the registry about to be served.
-    const written = this.environment.disk.read(file_name)
-    assert(written !== null, 'the registry was written')
-    const read = registry_read(written)
-    assert(read.sessions.length === sessions.length, 'the written registry reads back')
-    assert(read.owners.size === owners.size, 'every link was saved')
+    if (pending !== null) {
+      assert(!owners.has(pending), 'a retired board has no owner')
+      assert(!sessions.some((board) => board.id === pending), 'a retired board is not listed')
+    }
+
+    const state = {
+      format: registry_format,
+      sessions,
+      owners: Object.fromEntries(owners),
+      allocation,
+      pending,
+    }
+    const payload = new TextEncoder().encode(JSON.stringify(state))
+    const next = envelope_encode({ kind: 'registry', label, payload })
+
+    try {
+      this.environment.disk.write_atomic(file_name, next)
+    } catch (error) {
+      if (error instanceof AssertionError) throw error
+
+      // An I/O failure after rename is ambiguous. Never let a later commit overwrite a
+      // deletion using pre-deletion memory. Restart from the actual durable state instead.
+      assert(this.saved_matches(this.saved), 'failed registry commit left the old file intact')
+      throw error
+    }
+
+    assert(this.saved_matches(next), 'the complete new registry is durable before it is served')
+    this.saved = next
     this.sessions = sessions
     this.owners = owners
+    this.allocation = allocation
+    this.pending = pending
+  }
+
+  private saved_matches(expected: Uint8Array | null): boolean {
+    try {
+      const actual = this.environment.disk.read(file_name)
+
+      if (actual === null || expected === null) return actual === expected
+
+      return Buffer.compare(actual, expected) === 0
+    } catch (error) {
+      if (error instanceof AssertionError) throw error
+
+      return false
+    }
   }
 }
 
@@ -365,9 +477,9 @@ function registry_read(bytes: Uint8Array) {
     throw new StorageError(`${file_name} is damaged: it is not JSON`)
   }
 
-  const json = parsed as { format?: unknown; sessions?: unknown; owners?: unknown } | null
+  const json = parsed as Record<string, unknown> | null
   const list =
-    typeof json === 'object' && json !== null && json.format === registry_format
+    json && (json.format === registry_format || json.format === legacy_format)
       ? json.sessions
       : null
 
@@ -413,7 +525,49 @@ function registry_read(bytes: Uint8Array) {
 
   assert(owners.size < sessions.length, 'there is at least one unbound board')
   assert(used.size === owners.size, 'each owner links to one board')
-  return { sessions, owners }
+  const { pending, allocation } = lifecycle_read(json!, ids)
+  return { sessions, owners, pending, allocation }
+}
+
+function lifecycle_read(json: Record<string, unknown>, ids: Set<string>) {
+
+  // v1 files predate deletion; their ids are the whole legacy set at migration.
+  if (json.format === legacy_format) {
+    const legacy = [...ids].filter((id) => id !== board_default_id)
+    return { allocation: { serial: 0, legacy }, pending: null }
+  }
+
+  const pending = json.pending
+  const valid_id = (id: unknown): id is string =>
+    typeof id === 'string' && id !== board_default_id && board_id_pattern.test(id)
+
+  if (pending !== null && (!valid_id(pending) || ids.has(pending))) {
+    throw new StorageError('Invalid pending board cleanup.')
+  }
+
+  const { serial, legacy } = (json.allocation ?? {}) as Partial<Allocation>
+
+  if (
+    typeof serial !== 'number' ||
+    !Number.isInteger(serial) ||
+    serial < 0 ||
+    serial > allocation_max ||
+    !Array.isArray(legacy) ||
+    legacy.length >= board_sessions_count_max ||
+    !legacy.every(valid_id)
+  ) {
+    throw new StorageError('Invalid board allocation history.')
+  }
+
+  for (const id of [...ids, pending]) {
+    if (!id || id === board_default_id || legacy.includes(id)) continue
+
+    const issued = parseInt(id.slice(-6), 16)
+
+    if (issued < 1 || issued > serial) throw new StorageError('Unissued board id.')
+  }
+
+  return { allocation: { serial, legacy }, pending }
 }
 
 function session_read(value: unknown): BoardSession {

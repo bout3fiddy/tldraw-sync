@@ -12,7 +12,7 @@ import { server_start, static_files_load } from './http'
 import { pairing_create, pairing_host, type Pairing } from './pairing'
 import { server_state_claim, server_state_release, type ServerState } from './server_state'
 import { machine_key } from './whiteboard_keys'
-import { disk_open } from './storage'
+import { disk_open, session_storage } from './storage'
 
 export type ServerRunOptions = {
   readonly port: number
@@ -57,8 +57,7 @@ function board_serve(options: ServerRunOptions): ServerRunResult {
     registry = BoardRegistry.open({
       time: time_real,
       disk,
-      // Each other board in a directory of its own, made when the board first opens.
-      disk_board: (id) => disk_open(path.join(options.data_directory, 'sessions', id)),
+      ...session_storage(options.data_directory),
       id_create: board_id_random,
     })
   } catch (error) {

@@ -34,6 +34,10 @@ export function registry_environment_simulated(
       disks.set(id, created)
       return created
     },
+    disk_exists: (id) => disks.has(id),
+    disk_remove(id) {
+      disks.delete(id)
+    },
     id_create() {
       ids_count += 1
       const id = ids_count.toString(16).padStart(16, 'a')

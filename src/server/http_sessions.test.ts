@@ -93,6 +93,36 @@ test('boards are listed, made and renamed; names are plain text and bounded', as
   ])
 })
 
+test('delete is scoped, origin checked, and refuses stale names and reconnects', async () => {
+  const endpoint = '/api/sessions/delete'
+  const id = await board_new('Selected')
+  const peer = await board_new('Peer')
+  const body = { session: id, name: 'Selected' }
+
+  for (const site of ['null', 'http://elsewhere.test']) {
+    const denied = await fetch(origin + endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: site },
+      body: JSON.stringify(body),
+    })
+    expect(denied.status).toBe(403)
+  }
+
+  expect((await fetch(origin + endpoint)).status).toBe(405)
+  expect((await post(endpoint, { session: '../' })).status).toBe(400)
+  expect((await post(endpoint, { session: 'default' })).status).toBe(409)
+  expect((await post(endpoint, { ...body, name: 'Old label' })).status).toBe(409)
+  expect(await get(`/api/status?session=${id}`)).toMatchObject({ session_name: 'Selected' })
+
+  expect(await json(await post(endpoint, body))).toEqual({ deleted: id })
+  expect((await post(endpoint, body)).status).toBe(404)
+  expect((await post('/api/sessions/rename', { session: id, name: 'Late' })).status).toBe(404)
+  expect((await fetch(`${origin}/sync?session=${id}&sessionId=old&role=draw`)).status).toBe(404)
+  expect((await fetch(`${origin}/api/status?session=${id}`)).status).toBe(404)
+  expect(await get(`/api/status?session=${peer}`)).toMatchObject({ session_name: 'Peer' })
+  expect(await get('/api/status')).toMatchObject({ session: 'default' })
+})
+
 test('every board has its own address, and old addresses are the default board', async () => {
   const id = await board_new()
 

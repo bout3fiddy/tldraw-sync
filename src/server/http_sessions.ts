@@ -10,7 +10,7 @@ import {
   session_request_size_bytes_max,
 } from '../shared/constants'
 import type { BoardRegistry } from './board_registry'
-import { body_read, json_error } from './http_canvas'
+import { body_discard, body_read, json_error, lookup_error } from './http_canvas'
 
 const name_problem = `Send a name of 1 to ${board_name_length_max} characters on one line.`
 
@@ -81,6 +81,49 @@ export async function session_rename_route(
 
   assert(result.session.named_by === 'person', 'a rename is a person naming the board')
   return json_no_store({ session: result.session })
+}
+
+export async function session_delete_route(request: Request, registry: BoardRegistry) {
+  const origin = request.headers.get('origin')
+  const site = request.headers.get('sec-fetch-site')
+
+  if (
+    (origin !== null && origin !== new URL(request.url).origin) ||
+    site === 'cross-site' ||
+    site === 'same-site'
+  ) {
+    await body_discard(request)
+    return json_error(403, 'wrong_origin', 'Delete a board from its own site.')
+  }
+
+  const body = await body_read(request, session_request_size_bytes_max)
+
+  if (!body.ok) return body.response
+
+  const value = object_read(body.value)
+  const id = value?.session
+
+  if (typeof id !== 'string' || !board_id_pattern.test(id)) {
+    return json_error(400, 'malformed_session', 'Name the board with a session id.')
+  }
+
+  const session = registry.find(id)
+
+  if (session && value && 'name' in value && session.name !== value.name) {
+    return json_error(409, 'name_changed', 'The board was renamed. Check the name and try again.')
+  }
+
+  const result = registry.remove(id)
+
+  if (result === 'not_found') return lookup_error({ kind: 'not_found' })
+
+  if (result === 'permanent') {
+    return json_error(409, 'permanent_board', 'The default board cannot be deleted.')
+  }
+
+  assert(result === 'removed', 'cleanup completed before the acknowledgement')
+  assert(registry.board_open(id) === null, 'the deleted room is closed')
+  return json_no_store({ deleted: id })
 }
 
 function object_read(value: unknown): Record<string, unknown> | null {

@@ -1206,7 +1206,7 @@ button {
 }
 
 .rail__icon,
-.rail__rename {
+.rail__options {
   display: grid;
   flex: none;
   place-items: center;
@@ -1273,6 +1273,7 @@ button {
 
 .rail__item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   border-radius: var(--radius-inner);
 }
@@ -1284,6 +1285,8 @@ button {
 }
 
 .rail__link {
+  /* Keep Safari's native long-press link actions outside the drawing surface. */
+  -webkit-touch-callout: default;
   flex: 1;
   min-width: 0;
   padding: 10px 10px 11px 12px;
@@ -1325,30 +1328,90 @@ button {
   font-weight: 600;
 }
 
-.rail__item[data-active='true'] .rail__rename {
+.rail__item[data-active='true'] .rail__options {
   color: var(--vellum);
 }
 
 /* On solid ink the focus ring is drawn inside, in paper. */
-.rail__item[data-active='true'] :focus-visible {
+.rail__item[data-active='true'] > :focus-visible {
   outline-color: var(--vellum);
   outline-offset: -4px;
 }
 
-/* Rename stays quiet until the board is pointed at, focused or shown. */
-.rail__rename {
-  opacity: 0;
+/* Visible even without hover. The full control remains a touch target. */
+.rail__options {
+  opacity: 0.65;
 }
 
-.rail__item:focus-within .rail__rename,
-.rail__item[data-active='true'] .rail__rename {
+.rail__item:focus-within .rail__options,
+.rail__item[data-active='true'] .rail__options {
   opacity: 1;
 }
 
-@media (hover: none) {
-  .rail__rename {
-    opacity: 0.6;
-  }
+.rail__menu,
+.rail__confirm {
+  box-sizing: border-box;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-inner);
+  background: var(--sheet);
+  color: var(--ink);
+}
+
+.rail__menu {
+  display: flex;
+  flex: 0 0 100%;
+  flex-direction: column;
+  padding: 4px;
+}
+
+.rail__menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rail__menu button:enabled:is(:hover, :focus-visible) {
+  background: var(--wash);
+  outline-color: var(--ink);
+}
+
+.rail__menu button:disabled,
+.rail__menu small {
+  color: var(--lead);
+}
+
+.rail__menu small {
+  padding: 0 10px 6px;
+}
+
+.rail__confirm {
+  width: min(24rem, calc(100vw - 32px));
+  padding: 20px;
+  overflow-wrap: anywhere;
+}
+
+.rail__confirm h3 {
+  margin: 0;
+}
+
+.rail__confirm-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rail__confirm-buttons button:last-child:not(:disabled) {
+  background: var(--ink);
+  color: var(--sheet);
 }
 
 .rail__rename-form {
@@ -1387,7 +1450,7 @@ button {
   .dock__button:not([aria-expanded='true']):hover,
   .pair__button:not([aria-expanded='true']):hover,
   .rail__icon:not([aria-pressed='true']):hover,
-  .rail__rename:hover,
+  .rail__options:hover,
   .rail__item:not([data-active='true']):hover {
     background: var(--wash);
   }
@@ -1398,11 +1461,11 @@ button {
     background: var(--blotter);
   }
 
-  .rail__item[data-active='true'] .rail__rename:hover {
+  .rail__item[data-active='true'] .rail__options:hover {
     background: rgb(246 247 244 / 0.14);
   }
 
-  .rail__item:hover .rail__rename {
+  .rail__item:hover .rail__options {
     opacity: 1;
   }
 }
