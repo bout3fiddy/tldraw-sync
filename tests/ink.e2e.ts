@@ -149,7 +149,7 @@ test('ink written and shown far zoomed out is never a hairline', async ({ browse
     await stroke_draw(ipad, 500, 400)
     const first_ink = stage.locator('.surface .tl-shape[data-shape-type="draw"]').first()
     await expect_framed(first_ink)
-    await expect(stage.getByRole('button', { name: 'Fit board' })).toHaveCount(0)
+    await expect(stage.getByRole('button', { name: 'Recenter board' })).toHaveCount(0)
     const scales = async () => (await strokes()).map((stroke) => Math.round(stroke.props.scale))
     await expect.poll(scales).toEqual([1])
     const normal = await grid_contrast(ipad, info.outputPath('grid-normal.png'))

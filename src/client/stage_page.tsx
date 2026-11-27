@@ -11,7 +11,7 @@ import { ChatButton, ChatDrawer, use_chat_open } from './chat_drawer'
 import { ChatPane } from './chat_pane'
 import { use_board_chat, use_stage_token } from './chat_state'
 import { use_cleaned } from './cleaned_state'
-import { icon_pair } from './icons'
+import { icon_pair, icon_recenter } from './icons'
 import { Notice } from './notice'
 import { PreviewBench } from './preview_bench'
 import { StageTap } from './inspect'
@@ -60,8 +60,8 @@ export function StagePage({ session, title }: { session: string; title: string }
           <PrintNotice />
         </PrintProvider>
       </ViewChoiceProvider>
-      <StageFit following={following} editor={editor} />
       <div className="corner">
+        <StageFit following={following} editor={editor} />
         <StagePair key={session} session={session} />
         <ChatButton
           open={chat_open}
@@ -96,9 +96,17 @@ function StageFit({ following, editor }: { following: Atom<boolean>; editor: Edi
     editor?.focus()
   }
   return (
-    <button type="button" className="stage-fit" onClick={resume}>
-      Fit board
-    </button>
+    <div className="pair__frame">
+      <button
+        type="button"
+        className="pair__button"
+        title="Recenter board"
+        aria-label="Recenter board"
+        onClick={resume}
+      >
+        {icon_recenter}
+      </button>
+    </div>
   )
 }
 

@@ -8,6 +8,7 @@ import { ArrowClockwise } from '@phosphor-icons/react/dist/csr/ArrowClockwise'
 import { ArrowUp } from '@phosphor-icons/react/dist/csr/ArrowUp'
 import { ArrowUpRight } from '@phosphor-icons/react/dist/csr/ArrowUpRight'
 import { DotsThreeVertical } from '@phosphor-icons/react/dist/csr/DotsThreeVertical'
+import { FrameCorners } from '@phosphor-icons/react/dist/csr/FrameCorners'
 import { PencilSimpleLine } from '@phosphor-icons/react/dist/csr/PencilSimpleLine'
 import { Plus } from '@phosphor-icons/react/dist/csr/Plus'
 import { PushPin } from '@phosphor-icons/react/dist/csr/PushPin'
@@ -87,6 +88,7 @@ export const icon_actions = glyph(DotsThreeVertical)
 export const icon_delete = glyph(Trash, 20)
 export const icon_rename = glyph(PencilSimpleLine, 20)
 export const icon_pair = glyph(QrCode)
+export const icon_recenter = glyph(FrameCorners)
 
 // The chat's: adding the sketch, a sent sketch's place, sending again, opening the canvas.
 export const icon_sketch = glyph(Scribble)

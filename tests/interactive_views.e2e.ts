@@ -411,7 +411,7 @@ async function switch_arrives({ ipad, stage, session }: Linked, asked: string[],
 
 async function stage_choices({ stage, ipad, cli, session }: Linked) {
   expect(new URL(stage.url()).pathname).toBe(`/s/${session}`)
-  const fit = stage.getByRole('button', { name: 'Fit board' })
+  const fit = stage.getByRole('button', { name: 'Recenter board' })
   const fold = stage.locator('.switch__fold')
   const camera = await camera_of(stage)
   const hash = cli('status', '--session', session).document_hash
@@ -460,7 +460,7 @@ async function stage_choices({ stage, ipad, cli, session }: Linked) {
 
 // A drag beginning on the published shortcut pans; only a click chooses its value.
 async function stage_shortcut(stage: Page, camera: string) {
-  const fit = stage.getByRole('button', { name: 'Fit board' })
+  const fit = stage.getByRole('button', { name: 'Recenter board' })
   const shortcut = print_shape(stage, 'hint')
   const hint = (await shortcut.boundingBox())!
   const x = hint.x + hint.width / 2

@@ -27,7 +27,7 @@ const zoom = (page: Page) =>
   surface(page)
     .locator('.tl-container')
     .evaluate((el) => Number(getComputedStyle(el).getPropertyValue('--tl-zoom')))
-const fit = (page: Page) => page.getByRole('button', { name: 'Fit board', exact: true })
+const fit = (page: Page) => page.getByRole('button', { name: 'Recenter board', exact: true })
 
 async function publish({ root, bound, stage }: Linked, revision: number, x: number) {
   const snap = bound('snapshot', '--out', path.join(root, `print-${revision}`))
@@ -49,7 +49,7 @@ async function capture({ stage, origin, session }: Linked) {
   return { hash, bytes: await response.body() }
 }
 
-test('only navigating content releases the Mac camera; Fit board returns it to follow', async ({
+test('only navigating content releases the Mac camera; recenter returns it to follow', async ({
   browser,
 }) => {
   await board_linked(browser, async (board) => {
@@ -68,6 +68,7 @@ test('only navigating content releases the Mac camera; Fit board returns it to f
     const centered = await camera(stage)
     await stage.mouse.wheel(100, 150)
     await expect(fit(stage)).toBeVisible()
+    await expect_corner(stage)
     expect(await camera(stage)).not.toBe(centered)
     expect(await zoom(stage)).toBe(2)
     await fit(stage).click()
@@ -85,6 +86,22 @@ test('only navigating content releases the Mac camera; Fit board returns it to f
     expect(await camera(ipad)).toBe(pen_camera)
   })
 })
+
+async function expect_corner(stage: Page) {
+  const button = fit(stage)
+  await expect(button).toHaveText('')
+  await expect(button).toHaveAttribute('title', 'Recenter board')
+  const center = (await button.boundingBox())!
+  const pair = (await stage.getByRole('button', { name: 'Pair iPad' }).boundingBox())!
+  const chat = (await stage.locator('.chat-toggle__button').boundingBox())!
+  expect(center.width).toBeGreaterThanOrEqual(44)
+  expect(center.height).toBeGreaterThanOrEqual(44)
+  expect(center.x).toBeGreaterThan(stage.viewportSize()!.width / 2)
+  expect(center.y).toBeLessThan(44)
+  expect(center.y).toBe(pair.y)
+  expect(center.x + center.width).toBeLessThanOrEqual(pair.x)
+  expect(pair.x + pair.width).toBeLessThanOrEqual(chat.x)
+}
 
 async function zoom_limits(stage: Page) {
   await stage.mouse.move(420, 320)
@@ -125,6 +142,7 @@ async function detached_updates(board: Linked) {
   await edge.press('Home')
   await expect(edge).toHaveAttribute('aria-valuenow', '320')
   await stage.setViewportSize({ width: 1260, height: 820 })
+  await expect_corner(stage)
   await expect_marks_clear(stage, 1)
   await sketch_open(stage)
   await publish(board, 2, -18000)

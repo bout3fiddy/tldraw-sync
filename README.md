@@ -53,9 +53,10 @@ that menu also lets you inspect the previous revision and return. Looking back r
 />
 
 The Mac fits incoming ink and agent drawings until you navigate. Drag or scroll to pan; pinch or
-Ctrl-scroll to zoom. Your view then stays put, even as the board changes. Choose **Fit board** to
-see everything and resume following. On an interactive drawing, use its controls or click a shape
-with a shortcut to change the view on the Mac alone. Neither navigation nor a choice edits the
+Ctrl-scroll to zoom. Your view then stays put, even as the board changes. Choose **Recenter board**
+next to the pairing button at the top right to see everything and resume following. On an
+interactive drawing, use its controls or click a shape with a shortcut to change the view on the
+Mac alone. Neither navigation nor a choice edits the
 drawing or moves the iPad’s camera.
 
 On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its view. Drag

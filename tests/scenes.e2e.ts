@@ -540,7 +540,7 @@ async function stage_zoom(stage: Page) {
   const frame = canvas_shape(stage, 'frame')
   const fitted = await at_rest(stage, '.print__shape[data-print-shape="shape:scene-frame"]')
   const bounds = (await surface(stage).boundingBox())!
-  const fit = stage.getByRole('button', { name: 'Fit board' })
+  const fit = stage.getByRole('button', { name: 'Recenter board' })
   await stage.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
   await expect(fit).toHaveCount(0)
   const width = () => frame.evaluate((el) => el.getBoundingClientRect().width)
