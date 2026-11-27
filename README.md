@@ -52,11 +52,15 @@ arrives the key says so, with the one before it a press away. Looking back resto
   them: the request with its sketch and the agent's answer."
 />
 
-The Mac presents the whole board and holds the same chat, so you can keep talking while you look at
-the drawing. On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its
-view. Drag the chat’s left edge, or focus it and use the arrow keys, to choose a width for this
-device. On a narrow or short screen, or when the keyboard leaves too little room, chat takes the
-screen.
+The Mac fits incoming ink and agent drawings until you navigate. Drag or scroll to pan; pinch or
+Ctrl-scroll to zoom. Your view then stays put, even as the board changes. Choose **Fit board** to
+see everything and resume following. On an interactive drawing, use its controls or click a shape
+with a shortcut to change the view on the Mac alone. Neither navigation nor a choice edits the
+drawing or moves the iPad’s camera.
+
+On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its view. Drag
+the chat’s left edge, or focus it and use the arrow keys, to choose a width for this device. On a
+narrow or short screen, or when the keyboard leaves too little room, chat takes the screen.
 
 ## Try it
 

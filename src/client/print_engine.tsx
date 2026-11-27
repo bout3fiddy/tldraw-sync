@@ -64,6 +64,8 @@ export type PrintView = {
   failed: number
 }
 
+export type PrintExtent = Pick<PrintView, 'revision' | 'bounds'>
+
 export type Print = {
   view: PrintView | null
   ghosts: PrintShape[]
@@ -105,8 +107,8 @@ type ProviderProps = {
   // always shown at rest.
   choice?: PrintChoice | null
 
-  // The print's page bounds, for a stage that keeps the whole board in view.
-  bounds: Atom<PrintBox | null>
+  // A local choice changes the shown bounds, but only a new revision triggers stage follow.
+  extent: Atom<PrintExtent | null>
   children: ReactNode
 }
 
@@ -139,7 +141,7 @@ function use_held(document: CleanedDocument | null) {
 // One document to draw, and the name of what it shows.
 type Printed = { key: string; document: CleanedDocument }
 
-export function PrintProvider({ document, choice = null, bounds, children }: ProviderProps) {
+export function PrintProvider({ document, choice = null, extent, children }: ProviderProps) {
   const { held, held_step } = use_held(document)
   const showing_previous = held.showing_previous
   const { view, ghosts, ready } = use_shown(held)
@@ -150,8 +152,8 @@ export function PrintProvider({ document, choice = null, bounds, children }: Pro
   )
 
   useEffect(() => {
-    bounds.set(view?.bounds ?? null)
-  }, [bounds, view])
+    extent.set(view === null ? null : { revision: view.revision, bounds: view.bounds })
+  }, [extent, view])
 
   const print = useMemo<Print>(
     () => ({

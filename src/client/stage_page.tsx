@@ -15,12 +15,15 @@ import { use_cleaned } from './cleaned_state'
 import { icon_pair } from './icons'
 import { Notice } from './notice'
 import { PreviewBench } from './preview_bench'
-import { PrintProvider } from './print_engine'
-import type { PrintBox } from './print_svg'
+import { StageTap } from './inspect'
+import { use_interactive, use_print_choice, ViewChoiceProvider } from './interactive_state'
+import { PrintProvider, type PrintExtent } from './print_engine'
+import { ViewSwitch } from './view_switch'
 import { stage_mount } from './stage_mount'
 import { Surface } from './surface'
 
 type Pairing = { url: string; modules: string[] }
+const offline_notice = 'The board has stopped. Start it again with “tldraw-sync start”.'
 
 // The sketch canvas stays mounted while the chat is open: it renders the image agents fetch.
 // On a linked board the stage also draws an agent's drafts, out of sight, when asked, and
@@ -31,12 +34,18 @@ export function StagePage({ session, title }: { session: string; title: string }
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const pairing = use_pairing(session)
-  const bounds = useMemo(() => atom<PrintBox | null>('print bounds', null), [])
-  const [editor, mount] = use_stage_editor(session, bounds)
+  const extent = useMemo(() => atom<PrintExtent | null>('print extent', null), [])
+  const choice = use_interactive(session, cleaned.document)
+  const print_choice = use_print_choice(choice)
+  const following = useMemo(() => atom('stage following', true), [])
+  const [editor, mount] = use_stage_editor(session, extent, following)
+
   const token = use_stage_token(session, linked)
   const online = board.status === 'synced-remote' && board.connectionStatus !== 'offline'
   const talk = use_board_chat({ session, token, linked, online, editor, viewing: chat_open })
+
   if (board.status === 'loading') return <Notice text="Opening the board" />
+
   if (board.status === 'error') {
     const text = 'The board is not answering. Start it with “tldraw-sync start”, then reload.'
     return <Notice text={text} />
@@ -44,12 +53,17 @@ export function StagePage({ session, title }: { session: string; title: string }
 
   return (
     <main className="board board--stage" data-linked={linked} data-chat={chat_open}>
-      <PrintProvider document={cleaned.document} bounds={bounds}>
-        <Surface store={board.store} onMount={mount}>
-          <StageGuide pairing={pairing} />
-        </Surface>
-        <BoardKey editor={editor} notice="" linked={linked} interactive={false} />
-      </PrintProvider>
+      <ViewChoiceProvider value={choice}>
+        <PrintProvider document={cleaned.document} extent={extent} choice={print_choice}>
+          <Surface store={board.store} onMount={mount}>
+            <StageGuide pairing={pairing} extent={extent} />
+            <StageTap />
+            <ViewSwitch />
+          </Surface>
+          <BoardKey editor={editor} notice="" linked={linked} interactive={false} />
+        </PrintProvider>
+      </ViewChoiceProvider>
+      <StageFit following={following} editor={editor} />
       <div className="corner">
         {linked && <StagePair pairing={pairing} />}
         <ChatButton
@@ -70,13 +84,24 @@ export function StagePage({ session, title }: { session: string; title: string }
         />
       </ChatDrawer>
       {linked && <PreviewBench session={session} />}
-      {board.connectionStatus === 'offline' && (
-        <Notice
-          floating
-          text="The board has stopped. Start it again with “tldraw-sync start”."
-        />
-      )}
+      {board.connectionStatus === 'offline' && <Notice floating text={offline_notice} />}
     </main>
+  )
+}
+
+function StageFit({ following, editor }: { following: Atom<boolean>; editor: Editor | null }) {
+  const follows_board = useValue(following)
+
+  if (follows_board) return null
+
+  const resume = () => {
+    following.set(true)
+    editor?.focus()
+  }
+  return (
+    <button type="button" className="stage-fit" onClick={resume}>
+      Fit board
+    </button>
   )
 }
 
@@ -84,19 +109,20 @@ export function StagePage({ session, title }: { session: string; title: string }
 // sketch is added to a message sent from the Mac.
 function use_stage_editor(
   session: string,
-  print: Atom<PrintBox | null>,
+  print: Atom<PrintExtent | null>,
+  following: Atom<boolean>,
 ): [Editor | null, (editor: Editor) => () => void] {
   const [editor, editor_set] = useState<Editor | null>(null)
   const mount = useCallback(
     (value: Editor) => {
       editor_set(value)
-      const stop = stage_mount(value, session, () => print.get())
+      const stop = stage_mount(value, session, print, following)
       return () => {
         stop()
         editor_set(null)
       }
     },
-    [session, print],
+    [session, print, following],
   )
   return [editor, mount]
 }
@@ -145,19 +171,27 @@ function StagePair({ pairing }: { pairing: Pairing | null }) {
 
 // Shown only while it is useful: large on an empty board, tucked in a corner once there is
 // a drawing, and gone the moment a pen connects.
-function StageGuide({ pairing }: { pairing: Pairing | null }) {
+type GuideProps = { pairing: Pairing | null; extent: Atom<PrintExtent | null> }
+
+function StageGuide({ pairing, extent }: GuideProps) {
   const editor = useEditor()
   const pen_connected = useValue(
     'pen connected',
     () => editor.getCollaborators().some((collaborator) => collaborator.userName === 'draw'),
     [editor],
   )
-  const empty = useValue('empty', () => editor.getCurrentPageShapeIds().size === 0, [editor])
+  const empty = useValue(
+    'empty board',
+    () => editor.getCurrentPageShapeIds().size === 0 && extent.get()?.bounds == null,
+    [editor, extent],
+  )
 
   if (pen_connected) {
     return empty ? <p className="guide guide--hint">Draw on your iPad. It appears here.</p> : null
   }
+
   if (pairing === null) return null
+
   return (
     <aside className={empty ? 'guide guide--card' : 'guide guide--corner'}>
       <QrCode modules={pairing.modules} />

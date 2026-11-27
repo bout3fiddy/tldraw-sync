@@ -63,13 +63,16 @@ export function ViewSwitch() {
 function SwitchPlaced({ editor, choice }: { editor: Editor; choice: ViewChoice }) {
   const measure = useRef<HTMLDivElement>(null)
   const envelope = choice.envelope
-  const room = useValue('switch room', () => switch_room(editor, envelope), [editor, envelope])
-  const size = use_size(measure, room)
-  const place = useValue('switch place', () => switch_place(editor, envelope, size), [
+
+  // One camera subscription per envelope. Measuring the controls during an animated fit
+  // must not replace the subscription that caused the measurement.
+  const seen = useValue('switch envelope', () => envelope_seen(editor, envelope), [
     editor,
     envelope,
-    size,
   ])
+  const room = switch_room(seen)
+  const size = use_size(measure)
+  const place = switch_place(seen, size)
   const words = use_announcement(choice)
   return (
     <>
@@ -112,8 +115,7 @@ function envelope_seen(editor: Editor, envelope: SceneEnvelope | null) {
 
 // How wide the switch may be where it rests: from its left edge to the canvas's right edge.
 // Its controls wrap into lines within that.
-function switch_room(editor: Editor, envelope: SceneEnvelope | null): number {
-  const seen = envelope_seen(editor, envelope)
+function switch_room(seen: ReturnType<typeof envelope_seen>): number {
   const room = seen === null ? 0 : Math.floor(seen.screen.w - edge_px - seen.left)
   return Math.max(room, 0)
 }
@@ -121,13 +123,7 @@ function switch_room(editor: Editor, envelope: SceneEnvelope | null): number {
 // Where the switch goes: on the drawing's top edge, or else under its bottom edge, wherever it
 // fits clear of the board's instruments; folded when it would cover the drawing, or dwarf it;
 // nowhere when the drawing is off screen.
-export function switch_place(
-  editor: Editor,
-  envelope: SceneEnvelope | null,
-  size: Size | null,
-): Place {
-  const seen = envelope_seen(editor, envelope)
-
+function switch_place(seen: ReturnType<typeof envelope_seen>, size: Size | null): Place {
   if (seen === null || size === null) return { kind: 'hidden' }
 
   const { screen, near, far, left } = seen
@@ -148,7 +144,7 @@ export function switch_place(
 
 // The switch's own size, measured on an unseen copy of its inline form laid out in `room`. A
 // control too wide for the room overflows it, and the overflow is measured too.
-function use_size(ref: React.RefObject<HTMLDivElement>, room: number): Size | null {
+function use_size(ref: React.RefObject<HTMLDivElement>): Size | null {
   const [size, size_set] = useState<Size | null>(null)
   useLayoutEffect(() => {
     const element = ref.current
@@ -160,11 +156,12 @@ function use_size(ref: React.RefObject<HTMLDivElement>, room: number): Size | nu
       const h = Math.ceil(Math.max(element.offsetHeight, element.scrollHeight))
       size_set((last) => (last?.w === w && last.h === h ? last : { w, h }))
     }
-    read()
+
+    // ResizeObserver reports the initial box and subsequent reflows before paint.
     const observer = new ResizeObserver(read)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [ref, room])
+  }, [ref])
   return size
 }
 

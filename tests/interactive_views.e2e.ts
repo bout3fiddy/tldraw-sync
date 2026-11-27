@@ -10,7 +10,7 @@
 //
 // Run: bun run build && npx playwright test tests/interactive_views.e2e.ts
 
-import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { at_rest, print_choose, print_fit, published } from './one_canvas'
@@ -80,46 +80,56 @@ test('an interactive drawing switches on this screen only, offline, and the ink 
     await step('the agent publishes the gateway, with the stroke copied in', async () =>
       publish_gateway(board, pen),
     )
-    const mac = await browser.newPage({ viewport: design_screen })
-    mac.setDefaultTimeout(action_ms)
-    mac.setDefaultNavigationTimeout(navigation_ms)
-
-    try {
-      await step('the switch rests on the drawing, at rest, on the iPad only', () =>
-        switch_arrives(board, asked, info),
-      )
-      await step('a finger chooses; the views differ; camera, ink and canvas stay', () =>
-        finger_choices(board, info),
-      )
-      await step('the Pencil writes through the switch and never chooses', () =>
-        pencil_through(board),
-      )
-      await step('offline, a choice still changes the view and sends nothing', () =>
-        offline_choice(board, asked, sent),
-      )
-      await mac.goto(`${board.origin}/s/${board.session}/draw`)
-      await expect(surface(mac)).toBeVisible()
-      await step('the keyboard reaches, moves and leaves the switch; motion is reduced', () =>
-        keyboard_choices(board, mac),
-      )
-      await step('a mouse picks an option, and a dashed hint in the drawing', () =>
-        mouse_choices(board, mac),
-      )
-      await step('a narrow window folds the switch into one button', () => folded(board, info))
-      await step('a new revision and a restore let the choice go', () => transitions(board))
-      await step('the chat opens beside the switch and moves nothing', () =>
-        beside_chat(board, errors, info),
-      )
-      await step('the board is left at rest, with its switch, for review', () =>
-        rest_state(board, info),
-      )
-      expect(sent).toEqual([])
-      await expect(stage.getByRole('radio')).toHaveCount(0)
-    } finally {
-      await mac.close()
-    }
+    await step('both screens show their own controls at rest', () =>
+      switch_arrives(board, asked, info),
+    )
+    await step('the read-only stage changes views without moving the camera or the pen', () =>
+      stage_choices(board),
+    )
+    await step('a finger chooses; the views differ; camera, ink and canvas stay', () =>
+      finger_choices(board, info),
+    )
+    await step('the Pencil writes through the switch and never chooses', () =>
+      pencil_through(board),
+    )
+    await step('offline, a choice still changes the view and sends nothing', () =>
+      offline_choice(board, asked, sent),
+    )
+    await desktop_inputs(board, browser)
+    await soon(ipad.bringToFront())
+    await step('a narrow window folds the switch into one button', () => folded(board, info))
+    await step('a new revision and a restore let the choice go', () => transitions(board))
+    await step('the chat opens beside the switch and moves nothing', () =>
+      beside_chat(board, errors, info),
+    )
+    await step('the board is left at rest, with its switch, for review', () =>
+      rest_state(board, info),
+    )
+    expect(sent).toEqual([])
+    await expect(switch_frame(stage).first()).toBeVisible()
   })
 })
+
+// The mouse and keyboard need a third client only for these steps. Do not leave it rendering
+// new revisions in parallel while measuring the iPad's animated fit after a rotation.
+async function desktop_inputs(board: Linked, browser: Browser) {
+  const mac = await browser.newPage({ viewport: design_screen })
+  mac.setDefaultTimeout(action_ms)
+  mac.setDefaultNavigationTimeout(navigation_ms)
+
+  try {
+    await mac.goto(`${board.origin}/s/${board.session}/draw`)
+    await expect(surface(mac)).toBeVisible()
+    await step('the keyboard reaches, moves and leaves the switch; motion is reduced', () =>
+      keyboard_choices(board, mac),
+    )
+    await step('a mouse picks an option, and a dashed hint in the drawing', () =>
+      mouse_choices(board, mac),
+    )
+  } finally {
+    await mac.close()
+  }
+}
 
 function scene_edit(file: string, change: (scene: Json) => void): Json {
   const scene = JSON.parse(fs.readFileSync(file, 'utf8')) as Json
@@ -394,10 +404,94 @@ async function switch_arrives({ ipad, stage, session }: Linked, asked: string[],
     expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44)
   }
 
-  // The Mac stage presents the drawing at rest, and has no switch.
+  // The stage starts at rest, with its own switch (possibly folded to fit its viewport).
   await view_shown(stage, '2')
-  await expect(stage.getByRole('radio')).toHaveCount(0)
+  await expect(switch_frame(stage).first()).toBeVisible()
   await capture(ipad, info, 'interactive-ipad-rest')
+}
+
+async function stage_choices({ stage, ipad, cli, session }: Linked) {
+  expect(new URL(stage.url()).pathname).toBe(`/s/${session}`)
+  const fit = stage.getByRole('button', { name: 'Fit board' })
+  const fold = stage.locator('.switch__fold')
+  const camera = await camera_of(stage)
+  const hash = cli('status', '--session', session).document_hash
+
+  if (await fold.isVisible()) await fold.click()
+
+  // All controls use the existing local projection, including while the server is unreachable.
+  await stage.context().setOffline(true)
+
+  try {
+    await radio(stage, 'Approved').press('ArrowRight')
+    await view_shown(stage, '2 declined/first/off')
+    await stage.getByRole('button', { name: 'Next: Attempt' }).click()
+    await view_shown(stage, '2 declined/second/off')
+    await stage.getByRole('switch', { name: 'Notes' }).press('Space')
+    await view_shown(stage, '2 declined/second/on')
+    expect(await camera_of(stage)).toBe(camera)
+    await expect(fit).toHaveCount(0)
+    await stage.getByRole('switch', { name: 'Notes' }).click()
+    await stage.getByRole('button', { name: 'Back: Attempt' }).click()
+    await radio(stage, 'Approved').click()
+    await view_shown(stage, '2')
+  } finally {
+    await stage.context().setOffline(false)
+  }
+
+  if (await fold.isVisible()) await fold.click()
+
+  expect(await camera_of(stage)).toBe(camera)
+  await expect(fit).toHaveCount(0)
+
+  await stage_shortcut(stage, camera)
+  expect(cli('status', '--session', session)).toMatchObject({
+    document_hash: hash,
+    agent_revision: 2,
+  })
+  await view_shown(ipad, '2')
+
+  if (await fold.isVisible()) await fold.click()
+
+  await radio(stage, 'Approved').click()
+  await view_shown(stage, '2')
+
+  if (await fold.isVisible()) await fold.click()
+}
+
+// A drag beginning on the published shortcut pans; only a click chooses its value.
+async function stage_shortcut(stage: Page, camera: string) {
+  const fit = stage.getByRole('button', { name: 'Fit board' })
+  const shortcut = print_shape(stage, 'hint')
+  const hint = (await shortcut.boundingBox())!
+  const x = hint.x + hint.width / 2
+  const y = hint.y + hint.height / 2
+  await stage.mouse.move(x, y)
+  await stage.mouse.down()
+
+  try {
+    await stage.mouse.move(x + 60, y + 40)
+
+    // Check the drag itself, before release can start the hand tool's inertial slide.
+    await expect
+      .poll(async () => {
+        const moved = (await shortcut.boundingBox())!
+        return [Math.round(moved.x - hint.x), Math.round(moved.y - hint.y)]
+      })
+      .toEqual([60, 40])
+  } finally {
+    await stage.mouse.up()
+  }
+
+  await expect(fit).toBeVisible()
+  await view_shown(stage, '2')
+  await fit.click()
+  await expect.poll(() => axis_box(stage)).toBe(camera)
+  await stage.mouse.click(x, y)
+  await view_shown(stage, '2 timeout/first/off')
+  await expect(fit).toHaveCount(0)
+  expect(await camera_of(stage)).toBe(camera)
+  await expect(stage.getByRole('dialog', { name: 'Agent shape' })).toHaveCount(0)
 }
 
 async function finger_choices(board: Linked, info: TestInfo) {
@@ -627,27 +721,39 @@ async function transitions({ ipad, stage, bound, cli, root, session }: Linked) {
   await view_shown(stage, '4')
 }
 
-// Where the print's axis rests on the screen: the camera, read from the print as it is shown.
-// Each reading waits for the axis with Playwright's own timeout, so a print that is redrawn
-// or slow to answer is waited for, and one that never comes back fails naming the axis.
-async function camera_of(page: Page): Promise<string> {
-  const axis = page.locator(
-    '.print__shape[data-state="shown"][data-print-shape="shape:scene-axis"]',
+// Read the shown axis and its box in the same layout. A redraw may briefly have no axis;
+// a duplicate axis or a browser error must not be reported as an unsettled camera.
+async function axis_box(page: Page): Promise<string | null> {
+  const selector = '.print__shape[data-state="shown"][data-print-shape="shape:scene-axis"]'
+  return soon(
+    page.evaluate((selector) => {
+      const axes = document.querySelectorAll(selector)
+
+      if (axes.length > 1) throw Error('Only one shown axis should supply the camera reading.')
+
+      const box = axes[0]?.getBoundingClientRect()
+
+      if (!box || box.width <= 0 || box.height <= 0) return null
+
+      return [box.x, box.y, box.width, box.height].map((value) => Math.round(value)).join(' ')
+    }, selector),
   )
-  await expect(axis).toHaveCount(1)
+}
+
+// Compare actual screen geometry, not an editor camera record. Include both samples in a
+// failure so a camera which keeps moving is distinguishable from a print which disappears.
+async function camera_of(page: Page): Promise<string> {
   let last = ''
   await expect
     .poll(async () => {
-      const box = (await axis.count()) === 1 ? await axis.boundingBox().catch(() => null) : null
-      const now =
-        box === null
-          ? ''
-          : [box.x, box.y, box.width, box.height].map((value) => Math.round(value)).join(' ')
-      const still = now !== '' && now === last
-      last = now
-      return still
+      const previous = last
+      last = (await axis_box(page)) ?? ''
+
+      if (last === '') return 'No shown axis with a rendered box.'
+
+      return last === previous ? 'settled' : `${previous} -> ${last}`
     })
-    .toBe(true)
+    .toBe('settled')
   return last
 }
 
@@ -689,7 +795,10 @@ async function chat_beside(ipad: Page, info: TestInfo) {
 
   const edge = ipad.getByRole('separator', { name: 'Chat width' })
 
-  for (const [key, width] of [['Home', '320'], ['End', '720']] as const) {
+  for (const [key, width] of [
+    ['Home', '320'],
+    ['End', '720'],
+  ] as const) {
     await edge.press(key)
     await expect(edge).toHaveAttribute('aria-valuenow', width)
     await switch_inside_canvas(ipad)
@@ -709,10 +818,13 @@ async function switch_inside_canvas(ipad: Page) {
     .poll(async () => {
       const canvas = (await surface(ipad).boundingBox())!
       return forms.evaluateAll((frames, box) => {
-        return frames.length > 0 && frames.every((frame) => {
-          const bounds = frame.getBoundingClientRect()
-          return bounds.left >= box.x - 1 && bounds.right <= box.x + box.width + 1
-        })
+        return (
+          frames.length > 0 &&
+          frames.every((frame) => {
+            const bounds = frame.getBoundingClientRect()
+            return bounds.left >= box.x - 1 && bounds.right <= box.x + box.width + 1
+          })
+        )
       }, canvas)
     })
     .toBe(true)

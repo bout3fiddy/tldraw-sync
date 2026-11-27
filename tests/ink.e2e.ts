@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { child_stop, contexts_close } from './board_child'
+import { expect_framed } from './one_canvas'
 import { pixels_read } from './screen_pixels'
 
 const repo_root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -20,6 +21,7 @@ const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
 const bun = process.env.BUN ?? 'bun'
 const data_directory = fs.mkdtempSync(path.join(os.tmpdir(), 'board-ink-e2e-'))
 const ready_wait_ms = 20_000
+
 // The narrowest ink either page may show, in CSS pixels, with room for rounding.
 const ink_width_min_px = 1.4
 const zoom_floor_tldraw = 0.05
@@ -139,8 +141,15 @@ test('ink written and shown far zoomed out is never a hairline', async ({ browse
     await expect(ipad.getByRole('region', { name: 'Canvas' })).toBeVisible()
     await expect(ipad.getByRole('tab')).toHaveCount(0)
 
+    // Exploring the empty stage cannot lose the first incoming ink, even after a large pan.
+    await stage.mouse.click(300, 240)
+    await stage.mouse.wheel(1500, 1600)
+
     // At full size the nib is the nib.
     await stroke_draw(ipad, 500, 400)
+    const first_ink = stage.locator('.surface .tl-shape[data-shape-type="draw"]').first()
+    await expect_framed(first_ink)
+    await expect(stage.getByRole('button', { name: 'Fit board' })).toHaveCount(0)
     const scales = async () => (await strokes()).map((stroke) => Math.round(stroke.props.scale))
     await expect.poll(scales).toEqual([1])
     const normal = await grid_contrast(ipad, info.outputPath('grid-normal.png'))
@@ -149,7 +158,9 @@ test('ink written and shown far zoomed out is never a hairline', async ({ browse
     // Zoomed all the way out, the stroke written at full size is still a line one can see.
     await ipad.mouse.move(500, 400)
     await ipad.keyboard.down('Control')
+
     for (let step = 0; step < 60; step += 1) await ipad.mouse.wheel(0, 200)
+
     await ipad.keyboard.up('Control')
     await expect.poll(() => zoom_read(ipad)).toBeCloseTo(zoom_floor_tldraw, 5)
     await expect.poll(() => line_width_min_px(ipad)).toBeGreaterThanOrEqual(ink_width_min_px)

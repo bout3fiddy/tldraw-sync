@@ -457,7 +457,7 @@ async function cleanup(board: Linked, info: TestInfo, hash: string): Promise<str
   await scene_capture(ipad, info, 'cleanup-print-ipad', published.shapes_count)
   await scene_capture(stage, info, 'cleanup-print-mac', published.shapes_count)
 
-  await stage_locked(stage)
+  await stage_zoom(stage)
   await viewer_zoom(ipad)
   expect(board.cli('status', '--session', session)).toMatchObject({
     document_hash: hash,
@@ -532,12 +532,16 @@ async function viewer_zoom(page: Page) {
   expect(Math.abs((await gap()) - apart)).toBeLessThanOrEqual(3)
 }
 
-// The stage presents: its camera keeps the whole board in view and does not follow a wheel.
-async function stage_locked(stage: Page) {
+// Zoom on the read-only stage with native inputs. Fit restores the exact ink/print framing.
+async function stage_zoom(stage: Page) {
   const frame = canvas_shape(stage, 'frame')
   const fitted = await at_rest(stage, '.print__shape[data-print-shape="shape:scene-frame"]')
   const bounds = (await surface(stage).boundingBox())!
-  await stage.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  const fit = stage.getByRole('button', { name: 'Fit board' })
+  await stage.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  await expect(fit).toHaveCount(0)
+  const width = () => frame.evaluate((el) => el.getBoundingClientRect().width)
+  const initial = await width()
   await stage.keyboard.down('Control')
 
   try {
@@ -546,7 +550,26 @@ async function stage_locked(stage: Page) {
     await stage.keyboard.up('Control')
   }
 
-  await expect(frame).toBeVisible()
+  await expect.poll(width).toBeGreaterThan(initial)
+  await fit.press('Enter')
+  await expect.poll(width).toBe(initial)
+
+  const input = await stage.context().newCDPSession(stage)
+
+  try {
+    await input.send('Input.synthesizePinchGesture', {
+      x: bounds.x + bounds.width / 2,
+      y: bounds.y + bounds.height / 2,
+      scaleFactor: 1.5,
+      gestureSourceType: 'mouse',
+    })
+    await expect.poll(width).toBeGreaterThan(initial)
+    await expect(fit).toBeVisible()
+  } finally {
+    await input.detach()
+  }
+
+  await fit.click()
   expect(await at_rest(stage, '.print__shape[data-print-shape="shape:scene-frame"]')).toBe(fitted)
 }
 

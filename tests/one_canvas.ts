@@ -3,11 +3,31 @@
 // from the person's ink in the pixels actually painted. Nothing here calls an editor API: every
 // action goes through the screen.
 
-import { expect, type Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 import { pixels_read, type Box, type Pixels } from './screen_pixels'
 import { action_ms, key_agent, print_shape, soon } from './whiteboard_board'
 
 type Json = Record<string, any>
+
+// A fit leaves space on all four sides. Measure the edges, not a transformed element's
+// IntersectionObserver area ratio: Chromium can round that below 1 even without clipping.
+export async function expect_framed(shape: Locator) {
+  await expect(shape).toBeInViewport()
+  await expect
+    .poll(() =>
+      shape.evaluate((element) => {
+        const canvas = element.closest('.tl-canvas')!.getBoundingClientRect()
+        const box = element.getBoundingClientRect()
+        return Math.min(
+          box.left - canvas.left,
+          box.top - canvas.top,
+          canvas.right - box.right,
+          canvas.bottom - box.bottom,
+        )
+      }),
+    )
+    .toBeGreaterThan(0)
+}
 
 // Where something is on the screen, rounded, so two readings a frame apart compare equal.
 export async function box_of(page: Page, selector: string): Promise<string> {

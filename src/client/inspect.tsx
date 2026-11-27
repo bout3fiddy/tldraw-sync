@@ -8,7 +8,7 @@
 // that dot is taken back, so choosing never leaves ink behind.
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { useEditor, useValue, type Editor, type TLShapeId } from 'tldraw'
+import { useEditor, useValue, type Editor, type TLEventInfo, type TLShapeId } from 'tldraw'
 import { assert } from '../shared/assert'
 import type { ViewTap } from '../shared/scene_controls'
 import { icon_chat_small, icon_pen_small } from './icons'
@@ -87,6 +87,49 @@ export function Inspect({ onOutcome, onAsk }: Props) {
       onClose={() => chosen_set(null)}
     />
   )
+}
+
+// On the stage the hand owns the entire gesture. Only a release still in its pointing state
+// (no drag, long press or pinch) can activate a published shortcut. No sketch history or take.
+export function StageTap() {
+  const editor = useEditor()
+  const choice = use_view_choice()
+  const view = use_print()?.view
+
+  useEffect(() => {
+    if (!view || !choice || choice.taps.length === 0) return
+
+    let pointer: number | null = null
+    const press = (event: TLEventInfo) => {
+      if (event.type !== 'pointer' || event.button !== 0) return
+
+      if (event.name === 'pointer_down') {
+        pointer = editor.isIn('hand.idle') ? event.pointerId : null
+        return
+      }
+
+      if (event.name !== 'pointer_up' || event.pointerId !== pointer) return
+
+      pointer = null
+
+      if (!editor.isIn('hand.pointing') || editor.inputs.isPinching) return
+
+      const point = editor.screenToPage(event.point)
+      const hit = print_hit(view.editor, point, editor.getZoomLevel())
+      const tap = hit && tap_find(choice, view.key, hit.chain)
+
+      if (tap) {
+        editor.cancelDoubleClick()
+        choice.choose(tap.control, tap.value)
+      }
+    }
+
+    editor.on('before-event', press)
+    return () => {
+      editor.off('before-event', press)
+    }
+  }, [editor, choice, view])
+  return null
 }
 
 // Taps on the print: each chooses the shape under it, or sets the view its shape names.

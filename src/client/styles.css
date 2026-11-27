@@ -113,14 +113,25 @@ button {
   left: var(--rail-width);
 }
 
-/* Keep the stage presentation passive, except for its instruments and the chat. */
-.board--stage {
+/* The read-only hand reaches the sheet, including through the stage's passive labels. */
+.board--stage .guide,
+.board--stage .key {
   pointer-events: none;
 }
 
-.board--stage .corner,
-.board--stage .drawer {
-  pointer-events: auto;
+.stage-fit {
+  position: absolute;
+  top: 50%;
+  left: calc(env(safe-area-inset-left) + var(--edge));
+  z-index: 400;
+  min-height: var(--control);
+  padding: 0 14px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--vellum);
+  font-family: var(--type);
+  cursor: pointer;
+  transform: translateY(-50%);
 }
 
 /* Ink never thins to a hairline. Zoomed far out, a stroke narrower than a pixel and a half

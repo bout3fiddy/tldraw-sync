@@ -19,8 +19,7 @@ import { use_cleaned } from './cleaned_state'
 import { Inspect } from './inspect'
 import { use_interactive, use_print_choice, ViewChoiceProvider } from './interactive_state'
 import { Notice } from './notice'
-import { PrintProvider, use_print } from './print_engine'
-import type { PrintBox } from './print_svg'
+import { PrintProvider, use_print, type PrintExtent } from './print_engine'
 import { Surface } from './surface'
 import { camera_fit } from './surface_fit'
 import { sketch_hash, take_into_sketch, type TakeOutcome } from './take_apply'
@@ -37,7 +36,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
   const online = board.status === 'synced-remote' && board.connectionStatus !== 'offline'
   const [chat_open, chat_open_set] = use_chat_open('draw')
   const talk = use_board_chat({ session, token, linked, online, editor, viewing: chat_open })
-  const bounds = useMemo(() => atom<PrintBox | null>('print bounds', null), [])
+  const extent = useMemo(() => atom<PrintExtent | null>('print extent', null), [])
   const [notice, notice_show] = use_notice()
   const mount = useCallback((value: Editor) => {
     draw_mount(value)
@@ -46,7 +45,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
   }, [])
 
   const ask = (words: string) => chat_ask(talk.composer, words, () => chat_open_set(true))
-  const show_canvas = use_show_canvas({ editor, bounds, chat_open, chat_open_set })
+  const show_canvas = use_show_canvas({ editor, extent, chat_open, chat_open_set })
 
   // The view of an interactive drawing chosen on this iPad, and the print of it.
   const choice = use_interactive(session, cleaned.document)
@@ -61,7 +60,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
   return (
     <main className="board board--draw" data-linked={linked} data-chat={chat_open}>
       <ViewChoiceProvider value={choice}>
-        <PrintProvider document={cleaned.document} choice={print_choice} bounds={bounds}>
+        <PrintProvider document={cleaned.document} choice={print_choice} extent={extent}>
           <Surface store={board.store} onMount={mount}>
             <ToolStrip />
             <Inspect onOutcome={(outcome) => notice_show(take_notice(outcome))} onAsk={ask} />
@@ -98,7 +97,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
 
 type ShowCanvasInput = {
   editor: Editor | null
-  bounds: Atom<PrintBox | null>
+  extent: Atom<PrintExtent | null>
   chat_open: boolean
   chat_open_set: (open: boolean) => void
 }
@@ -106,17 +105,17 @@ type ShowCanvasInput = {
 // An answer that drew on the canvas leads back to it: the chat closes and the print is
 // brought into view, because the person asked. The fit waits for the closed chat to be laid
 // out, so it is planned for the canvas at its full width.
-function use_show_canvas({ editor, bounds, chat_open, chat_open_set }: ShowCanvasInput) {
+function use_show_canvas({ editor, extent, chat_open, chat_open_set }: ShowCanvasInput) {
   const [fit_pending, fit_pending_set] = useState(false)
 
   useLayoutEffect(() => {
     if (!fit_pending || chat_open) return
 
     fit_pending_set(false)
-    const box = bounds.get()
+    const box = extent.get()?.bounds ?? null
 
     if (editor !== null && box !== null) camera_fit(editor, box)
-  }, [fit_pending, chat_open, editor, bounds])
+  }, [fit_pending, chat_open, editor, extent])
 
   return () => {
     chat_open_set(false)
