@@ -1,7 +1,9 @@
-// A linked board end to end: an iPad paired by the stage QR sends words alone and its sketch
-// from the board's chat, the agent's answers arrive under them, a scene is published to the
-// Agent canvas and shown on both screens, and the person copies it into the sketch and takes
-// that back. Every Send is one kind of request, and none of them writes to a canvas.
+// A linked board end to end on the one canvas: an iPad paired by the stage QR sends words alone
+// and its sketch from the board's chat, the agent's answers arrive under them, and a scene is
+// published and printed in violet under the person's ink on both screens. The pen and eraser
+// touch only the ink. The person chooses one printed shape with a finger, takes it into the
+// sketch exactly where it lies, undoes and redoes that, and replaces the whole sketch from the
+// board's menu. Every Send is one kind of request, and none of them writes to a canvas.
 //
 // Run: bun run build && npx playwright test tests/whiteboard.e2e.ts
 
@@ -10,29 +12,38 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { scene_format } from '../src/shared/scene_types'
 import { whiteboard_protocol } from '../src/shared/whiteboard'
+import { at_rest, board_menu, painted, print_choose, print_fit, published } from './one_canvas'
 import {
   add_sketch,
   answers,
   board_linked,
+  chat_button,
   chat_open,
-  chat_tab,
   draw,
   expect_marks_clear,
   field,
   ipad_landscape,
+  key,
   mine,
+  print_region,
+  print_shape,
   retired_controls,
   send_button,
   sketch_open,
   soon,
   step,
   step_long_ms,
+  stroke,
+  surface,
   type Cli,
+  type Linked,
 } from './whiteboard_board'
 
 // Disposable pairing material belongs neither in traces nor in screenshots. Capture the agent
 // surface only after the paired iPad has removed the QR fragment from its history.
 test.use({ trace: 'off' })
+
+type Json = Record<string, any>
 
 type Target = {
   width: number
@@ -74,92 +85,73 @@ function target_problems(list: Target[], screen: { width: number; height: number
 
 type Shown = { x: number; y: number; width: number; height: number }
 
-// What the iPad's Agent canvas is made of. Replace is the one control at the head of that
-// canvas; the canvas begins under the head and runs to the pane's bottom, which is the bottom
-// of the screen. `footers_count` is every band or rail under the views. `chat` is the Chat tab,
-// the one way to the agent, and `retired_count` every control the board had before it.
-type AgentSeen = {
+// What the iPad's one canvas is made of, as the design draws it: a surface from edge to edge,
+// the board's title and its Boards button at the top left, Chat at the top right, four tools at
+// the left, and the key at the foot. `retired_count` is every tab, layer switch or control the
+// board had before; `footers_count` every band under the canvas.
+type CanvasSeen = {
   screen: { width: number; height: number }
   footers_count: number
   retired_count: number
+  boards: Target[]
   chat: Target[]
-  replace: Target[]
-  replace_pressed: boolean
-  pane: Shown | null
-  head: Shown | null
-  canvas: Shown | null
+  tools: Target[]
+  key: Target | null
+  surface: Shown | null
 }
 
 const edge_px = 0.5
 
-// Everything wrong with the iPad's Agent canvas, in words. The faults are the ones the old
-// band under the views would be: a footer, a canvas that stops short of the screen's bottom,
-// and Replace anywhere but the head. Pure, so that it can be shown to catch each of them.
-function agent_problems(seen: AgentSeen): string[] {
-  const { pane, head, canvas, screen } = seen
-  const problems = target_problems([...seen.chat, ...seen.replace], screen)
+// Everything wrong with the one canvas, in words. Pure, so each fault can be shown to be named.
+function canvas_problems(seen: CanvasSeen): string[] {
+  const { screen, surface } = seen
+  const problems = target_problems([...seen.boards, ...seen.chat, ...seen.tools], screen)
 
-  if (seen.footers_count > 0) problems.push('a band lies under the views')
+  if (seen.footers_count > 0) problems.push('a band lies under the canvas')
 
-  if (seen.retired_count > 0) problems.push('a retired control is back')
+  if (seen.retired_count > 0) problems.push('a tab or a retired control is back')
 
-  if (seen.chat.length !== 1) problems.push(`${seen.chat.length} Chat tabs, not 1`)
+  if (seen.chat.length !== 1) problems.push(`${seen.chat.length} Chat buttons, not 1`)
 
-  for (const tab of seen.chat) {
-    if (screen.width - tab.right > 24) problems.push('Chat is not at the top right')
-
-    if (tab.top > 24) problems.push('Chat is not at the top')
+  for (const chat of seen.chat) {
+    if (screen.width - chat.right > 24 || chat.top > 24) problems.push('Chat is not top right')
   }
 
-  if (seen.replace.length !== 1) problems.push(`${seen.replace.length} Replace buttons, not 1`)
-
-  if (!pane || !head || !canvas) return [...problems, 'the Agent canvas or its head is missing']
-
-  if (Math.abs(pane.y + pane.height - screen.height) > edge_px) {
-    problems.push('the Agent canvas pane stops short of the bottom of the screen')
+  for (const boards of seen.boards) {
+    if (boards.left > 24 || boards.top > 24) problems.push('Boards is not top left')
   }
 
-  if (Math.abs(canvas.y + canvas.height - (pane.y + pane.height)) > edge_px) {
-    problems.push('something lies under the Agent canvas')
+  if (seen.tools.length !== 4) problems.push(`${seen.tools.length} tools, not 4`)
+
+  if (seen.key === null) problems.push('the key is missing')
+  else if (Math.abs((seen.key.left + seen.key.right) / 2 - screen.width / 2) > 2) {
+    problems.push('the key is not centred')
   }
 
-  if (canvas.y < head.y + head.height - edge_px) problems.push('the head lies over the canvas')
+  if (surface === null) return [...problems, 'the canvas is missing']
 
-  for (const button of seen.replace) {
-    const head_bottom = head.y + head.height
-    const in_head = button.top >= head.y - edge_px && button.bottom <= head_bottom + edge_px
-    const over_canvas =
-      button.bottom > canvas.y + edge_px && button.top < canvas.y + canvas.height - edge_px
+  const whole =
+    Math.abs(surface.x) <= edge_px &&
+    Math.abs(surface.y) <= edge_px &&
+    Math.abs(surface.width - screen.width) <= edge_px &&
+    Math.abs(surface.height - screen.height) <= edge_px
 
-    if (!in_head) problems.push('Replace is not in the head')
-
-    if (over_canvas) problems.push('Replace lies over the Agent canvas')
-  }
-
-  if (!seen.replace_pressed) problems.push('a press on Replace lands on something else')
+  if (!whole) problems.push('the canvas does not fill the screen')
 
   return problems
 }
 
-async function agent_seen(ipad: Page): Promise<AgentSeen> {
-  const replace = ipad.locator('.cleaned__replace')
-  const pressed = replace.evaluateAll((buttons) =>
-    buttons.every((button) => {
-      const at = button.getBoundingClientRect()
-      const hit = document.elementFromPoint((at.left + at.right) / 2, (at.top + at.bottom) / 2)
-      return hit !== null && button.contains(hit)
-    }),
-  )
+async function canvas_seen(page: Page): Promise<CanvasSeen> {
+  const keys = await targets(page, '.key')
   return {
-    screen: ipad.viewportSize()!,
-    footers_count: await ipad.locator('footer, .agent-rail').count(),
-    retired_count: await retired_controls(ipad).count(),
-    chat: await targets(ipad, '.tabs__tab[data-view="chat"]'),
-    replace: await targets(ipad, '.cleaned__replace'),
-    replace_pressed: await pressed,
-    pane: await ipad.locator('.views__pane--cleaned').boundingBox(),
-    head: await ipad.locator('.agent-pane__head').boundingBox(),
-    canvas: await ipad.locator('.agent-pane__canvas').boundingBox(),
+    screen: page.viewportSize()!,
+    footers_count: await page.locator('footer, .agent-rail').count(),
+    retired_count: await retired_controls(page).count(),
+    boards: await targets(page, '.rail-toggle'),
+    chat: await targets(page, '.chat-toggle__button'),
+    tools: await targets(page, '.strip > .strip__button, .strip__pen > .strip__button'),
+    key: keys[0] ?? null,
+    surface: await surface(page).boundingBox(),
   }
 }
 
@@ -169,35 +161,34 @@ async function capture(page: Page, info: TestInfo, name: string) {
   await info.attach(name, { path: file, contentType: 'image/png' })
 }
 
-// What the Mac stage is made of. It only presents: its one action, pairing an iPad, is an
-// instrument in the band above the views, and the views run to the bottom of the screen.
+// What the Mac stage is made of. It only presents: the same canvas from edge to edge, and its
+// one action, pairing an iPad, beside Chat at the top right.
 type StageSeen = {
   screen: { width: number; height: number }
   footers_count: number
-  views: Shown | null
+  surface: Shown | null
   pair: Target[]
   pair_pressed: boolean
 }
 
-// Everything wrong with the stage, in words. The faults are the ones the old footer was: a
-// band under the views, views that stop short of the bottom, and Pair iPad down in it. Pure,
-// so that it can be shown to catch each of them.
 function stage_problems(seen: StageSeen): string[] {
-  const { views, screen } = seen
+  const { surface, screen } = seen
   const problems = target_problems(seen.pair, screen)
 
-  if (seen.footers_count > 0) problems.push('a band lies under the views')
+  if (seen.footers_count > 0) problems.push('a band lies under the canvas')
 
   if (seen.pair.length !== 1) problems.push(`${seen.pair.length} Pair iPad buttons, not 1`)
 
-  if (views === null) return [...problems, 'the views are missing']
+  if (surface === null) return [...problems, 'the canvas is missing']
 
-  if (Math.abs(views.y + views.height - screen.height) > edge_px) {
-    problems.push('the views stop short of the bottom of the screen')
+  if (Math.abs(surface.y + surface.height - screen.height) > edge_px) {
+    problems.push('the canvas stops short of the bottom of the screen')
   }
 
   for (const button of seen.pair) {
-    if (button.bottom > views.y + edge_px) problems.push('Pair iPad is not in the band above')
+    if (button.top > 24 || screen.width - button.right > 200) {
+      problems.push('Pair iPad is not at the top right')
+    }
   }
 
   if (!seen.pair_pressed) problems.push('a press on Pair iPad lands on something else')
@@ -217,19 +208,19 @@ async function stage_seen(stage: Page): Promise<StageSeen> {
   return {
     screen: stage.viewportSize()!,
     footers_count: await stage.locator('footer, .agent-rail').count(),
-    views: await stage.locator('.views').boundingBox(),
+    surface: await surface(stage).boundingBox(),
     pair: await targets(stage, '.pair__button'),
     pair_pressed: await pressed,
   }
 }
 
-// The stage has no footer: Pair iPad is in the band above the views, and pressing it shows
-// the QR on a sheet over the board without moving or shrinking anything. Escape puts it away.
+// Pressing Pair iPad shows the QR on a sheet over the canvas without moving or shrinking it.
+// Escape puts it away.
 async function geometry_stage(stage: Page, info: TestInfo, name: string) {
   await expect.poll(async () => stage_problems(await stage_seen(stage))).toEqual([])
   const pair = stage.getByRole('button', { name: 'Pair iPad' })
   const sheet = stage.getByRole('complementary', { name: 'Pair iPad' })
-  const views = await stage.locator('.views').boundingBox()
+  const canvas = await surface(stage).boundingBox()
   await expect(pair).toHaveAttribute('aria-expanded', 'false')
   await expect(sheet).toHaveCount(0)
   await capture(stage, info, name)
@@ -238,9 +229,8 @@ async function geometry_stage(stage: Page, info: TestInfo, name: string) {
   await expect(pair).toHaveAttribute('aria-expanded', 'true')
   await expect(sheet.locator('.guide__code')).toBeVisible()
   await expect(sheet).toContainText('Scan for sketchboard controls')
-  const shown = await targets(stage, '.pair__sheet')
-  expect(target_problems(shown, stage.viewportSize()!)).toEqual([])
-  expect(await stage.locator('.views').boundingBox()).toEqual(views)
+  expect(target_problems(await targets(stage, '.pair__sheet'), stage.viewportSize()!)).toEqual([])
+  expect(await surface(stage).boundingBox()).toEqual(canvas)
   await capture(stage, info, `${name}-pair`)
 
   await stage.keyboard.press('Escape')
@@ -248,27 +238,34 @@ async function geometry_stage(stage: Page, info: TestInfo, name: string) {
   await expect(pair).toHaveAttribute('aria-expanded', 'false')
 }
 
-// The iPad has no rail and no band: the views run to the bottom of the screen, Replace has
-// the head of the Agent canvas, and Chat is one tab at the top right. tldraw's notice is whole
-// and uncovered in the Agent canvas. In the chat every control is a 44px target on the screen.
+// The iPad's one canvas: every instrument where the design puts it, tldraw's notice whole and
+// uncovered, and, with the chat open over the canvas, nothing on the canvas moved and every
+// chat control a 44px target.
 async function geometry_ipad(ipad: Page, info: TestInfo, name: string) {
   const screen = ipad.viewportSize()!
-  await expect.poll(async () => agent_problems(await agent_seen(ipad))).toEqual([])
+  await expect.poll(async () => canvas_problems(await canvas_seen(ipad))).toEqual([])
   await expect_marks_clear(ipad, 1)
   await capture(ipad, info, name)
 
+  const ink = await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')
+  const print = await at_rest(ipad, '.print__shape')
   await chat_open(ipad)
+  expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(ink)
+  expect(await at_rest(ipad, '.print__shape')).toBe(print)
   const controls = await targets(ipad, '.chat__composer button')
   expect(controls).toHaveLength(2)
   expect(target_problems(controls, screen)).toEqual([])
   expect(target_problems(await targets(ipad, '.chat__open'), screen)).toEqual([])
+  expect(target_problems(await targets(ipad, '.chat-toggle__button'), screen)).toEqual([])
+  await expect_marks_clear(ipad, screen.width > 720 ? 1 : 0)
   await capture(ipad, info, `${name}-chat`)
-  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
+  await sketch_open(ipad)
 }
 
-// The checks above are the safeguard against the band coming back. Each fault below is one
-// they must name, and the sound layout, read off the retained design, is one they must pass.
-test('the Agent canvas check passes the modal layout and names the old band', () => {
+// The checks above are the safeguard against tabs, bands and misplaced instruments coming back.
+// Each fault below is one they must name, and the sound layout, read off the One canvas design,
+// is one they must pass.
+test('the one canvas check passes the design and names each old fault', () => {
   const screen = { width: 820, height: 1180 }
   const target = (left: number, top: number, width: number, height: number): Target => ({
     width,
@@ -278,68 +275,57 @@ test('the Agent canvas check passes the modal layout and names the old band', ()
     top,
     bottom: top + height,
   })
-  const sound: AgentSeen = {
+  const tools = [538, 584, 639, 685].map((top) => target(20, top, 44, 44))
+  const sound: CanvasSeen = {
     screen,
     footers_count: 0,
     retired_count: 0,
-    chat: [target(730, 19, 71, 44)],
-    replace: [target(644, 88, 160, 44)],
-    replace_pressed: true,
-    pane: { x: 0, y: 85, width: 820, height: 1095 },
-    head: { x: 0, y: 85, width: 820, height: 52 },
-    canvas: { x: 0, y: 137, width: 820, height: 1043 },
+    boards: [target(20, 20, 44, 44)],
+    chat: [target(688, 20, 112, 44)],
+    tools,
+    key: target(330, 1132, 160, 24),
+    surface: { x: 0, y: 0, width: 820, height: 1180 },
   }
-  expect(agent_problems(sound)).toEqual([])
+  expect(canvas_problems(sound)).toEqual([])
 
-  // The band this design replaced: a footer under the views, holding Replace, with the pane
-  // and its canvas ending above it.
-  const banded: AgentSeen = {
-    ...sound,
-    footers_count: 1,
-    replace: [target(644, 1130, 160, 44)],
-    pane: { x: 0, y: 85, width: 820, height: 1040 },
-    canvas: { x: 0, y: 137, width: 820, height: 988 },
-  }
-  expect(agent_problems(banded)).toEqual([
-    'a band lies under the views',
-    'the Agent canvas pane stops short of the bottom of the screen',
-    'Replace is not in the head',
+  // The tabs this design replaced, and the band that once held Replace.
+  expect(canvas_problems({ ...sound, retired_count: 3 })).toEqual([
+    'a tab or a retired control is back',
   ])
-  expect(agent_problems({ ...sound, canvas: { x: 0, y: 137, width: 820, height: 988 } })).toEqual([
-    'something lies under the Agent canvas',
-  ])
-  expect(agent_problems({ ...sound, canvas: { x: 0, y: 85, width: 820, height: 1095 } })).toEqual([
-    'the head lies over the canvas',
-    'Replace lies over the Agent canvas',
-  ])
-  expect(agent_problems({ ...sound, replace: [target(644, 150, 160, 44)] })).toEqual([
-    'Replace is not in the head',
-    'Replace lies over the Agent canvas',
-  ])
-  expect(agent_problems({ ...sound, replace: [target(644, 90, 160, 40)] })).toEqual([
-    'control 1 is under 44px',
-  ])
+  expect(
+    canvas_problems({
+      ...sound,
+      footers_count: 1,
+      surface: { x: 0, y: 85, width: 820, height: 1040 },
+    }),
+  ).toEqual(['a band lies under the canvas', 'the canvas does not fill the screen'])
 
-  // The two buttons the chat replaced, back by the tools, and Chat moved off its corner.
-  expect(agent_problems({ ...sound, retired_count: 2 })).toEqual(['a retired control is back'])
-  expect(agent_problems({ ...sound, chat: [target(80, 20, 71, 44)] })).toEqual([
-    'Chat is not at the top right',
+  // Clear back on the strip; the tools short of the pen and eraser.
+  expect(canvas_problems({ ...sound, tools: [...tools, target(20, 740, 44, 44)] })).toEqual([
+    '5 tools, not 4',
   ])
-  expect(agent_problems({ ...sound, chat: [target(800, 20, 71, 44)] })).toEqual([
-    'control 0 is off the screen',
+  expect(canvas_problems({ ...sound, tools: tools.slice(1) })).toEqual(['3 tools, not 4'])
+  expect(canvas_problems({ ...sound, chat: [target(80, 20, 112, 44)] })).toEqual([
+    'Chat is not top right',
   ])
-  expect(agent_problems({ ...sound, chat: [] })).toEqual(['0 Chat tabs, not 1'])
-  expect(agent_problems({ ...sound, replace: [] })).toEqual(['0 Replace buttons, not 1'])
-  expect(agent_problems({ ...sound, replace_pressed: false })).toEqual([
-    'a press on Replace lands on something else',
+  expect(canvas_problems({ ...sound, chat: [target(760, 20, 112, 44)] })).toEqual([
+    'control 1 is off the screen',
   ])
-  expect(agent_problems({ ...sound, head: null })).toEqual([
-    'the Agent canvas or its head is missing',
+  expect(canvas_problems({ ...sound, chat: [] })).toEqual(['0 Chat buttons, not 1'])
+  expect(canvas_problems({ ...sound, boards: [target(400, 20, 44, 44)] })).toEqual([
+    'Boards is not top left',
   ])
+  expect(canvas_problems({ ...sound, boards: [target(20, 20, 40, 40)] })).toEqual([
+    'control 0 is under 44px',
+  ])
+  expect(canvas_problems({ ...sound, key: null })).toEqual(['the key is missing'])
+  expect(canvas_problems({ ...sound, key: target(20, 1132, 160, 24) })).toEqual([
+    'the key is not centred',
+  ])
+  expect(canvas_problems({ ...sound, surface: null })).toEqual(['the canvas is missing'])
 })
 
-// The same for the stage. The footer it had, holding Pair iPad, is the fault each check names.
-test('the stage check passes the band layout and names the old footer', () => {
+test('the stage check passes the one canvas and names the old footer', () => {
   const screen = { width: 1440, height: 900 }
   const target = (left: number, top: number, width: number, height: number): Target => ({
     width,
@@ -352,38 +338,37 @@ test('the stage check passes the band layout and names the old footer', () => {
   const sound: StageSeen = {
     screen,
     footers_count: 0,
-    views: { x: 0, y: 84, width: 1440, height: 816 },
-    pair: [target(80, 20, 132, 44)],
+    surface: { x: 0, y: 0, width: 1440, height: 900 },
+    pair: [target(1176, 20, 124, 44)],
     pair_pressed: true,
   }
   expect(stage_problems(sound)).toEqual([])
-
-  // The base this replaced: a footer under the views, holding Pair iPad, the views above it.
   const footed: StageSeen = {
     ...sound,
     footers_count: 1,
-    views: { x: 0, y: 84, width: 1440, height: 761 },
+    surface: { x: 0, y: 0, width: 1440, height: 845 },
     pair: [target(16, 850, 95, 44)],
   }
   expect(stage_problems(footed)).toEqual([
-    'a band lies under the views',
-    'the views stop short of the bottom of the screen',
-    'Pair iPad is not in the band above',
+    'a band lies under the canvas',
+    'the canvas stops short of the bottom of the screen',
+    'Pair iPad is not at the top right',
   ])
   expect(stage_problems({ ...sound, pair: [] })).toEqual(['0 Pair iPad buttons, not 1'])
   expect(stage_problems({ ...sound, pair_pressed: false })).toEqual([
     'a press on Pair iPad lands on something else',
   ])
-  expect(stage_problems({ ...sound, pair: [target(80, 20, 132, 40)] })).toEqual([
+  expect(stage_problems({ ...sound, pair: [target(1176, 20, 124, 40)] })).toEqual([
     'control 0 is under 44px',
   ])
-  expect(stage_problems({ ...sound, views: null })).toEqual(['the views are missing'])
+  expect(stage_problems({ ...sound, surface: null })).toEqual(['the canvas is missing'])
 })
 
-test('paired Sends reach the agent, and its scene is shown and copied in one undo', async ({
+test('paired Sends reach the agent; its print is shown, taken in one undo, and replaced', async ({
   browser,
 }, info) => {
-  await board_linked(browser, async ({ root, file, cli, bound, stage, ipad, session, linked }) => {
+  await board_linked(browser, async (board) => {
+    const { root, file, cli, bound, stage, ipad, session, linked } = board
     const status = () => cli('status', '--session', session)
     const ink_hash = await step('one pen stroke reaches the Mac', async () => {
       await draw(ipad)
@@ -399,34 +384,20 @@ test('paired Sends reach the agent, and its scene is shown and copied in one und
       publish_canvas(root, bound, session, ink_hash),
     )
     await step(
-      'the Agent canvas shows on both screens',
-      () => agent_views(ipad, stage, info),
+      'the print shows on both screens',
+      () => print_views(ipad, stage, info),
       step_long_ms,
     )
-    console.log('  step: replace the sketch, then undo')
-    await ipad.getByRole('button', { name: 'Replace sketchboard' }).tap()
-    await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toHaveAttribute(
-      'aria-selected',
-      'true',
+    await step('the pen and eraser touch only the ink', () => ownership(board, ink_hash))
+    await step('one shape is taken exactly where it lies, undone and redone', () =>
+      take_one(board, info, ink_hash),
     )
-    await expect(ipad.getByText('Sketch replaced. Undo restores your ink.')).toBeVisible()
-    await expect.poll(() => status().shapes_count).toBe(3)
-    const snap = bound('snapshot', '--out', path.join(root, 'after'))
-    expect(snap.status).toBe('success')
-    const { records } = JSON.parse(fs.readFileSync(snap.records_path, 'utf8'))
-    const shapes = records.filter((r: { typeName: string }) => r.typeName === 'shape')
-    const ids = new Set(shapes.map((s: { id: string }) => s.id))
-    expect(shapes.map((s: { type: string }) => s.type).sort()).toEqual(['arrow', 'geo', 'geo'])
-    const bindings = records.filter((r: { typeName: string }) => r.typeName === 'binding')
-    expect(bindings).toHaveLength(2)
-
-    for (const b of bindings) expect(ids.has(b.fromId) && ids.has(b.toId)).toBe(true)
-
-    expect(records.every((r: { id: string }) => !r.id.includes(':scene-'))).toBe(true)
-    await ipad.getByRole('button', { name: 'Undo', exact: true }).tap()
-    await expect.poll(() => status().document_hash).toBe(ink_hash)
+    await step('the whole sketch is replaced from the board menu, and undone', () =>
+      replace_all(board, ink_hash),
+    )
     expect(status()).toMatchObject({ protocol: whiteboard_protocol, agent_revision: 1 })
     const token = JSON.parse(fs.readFileSync(file, 'utf8')).token
+    const snap = bound('snapshot', '--out', path.join(root, 'last'))
     expect(JSON.stringify({ linked, snap }).includes(token)).toBe(false)
   })
 })
@@ -591,19 +562,15 @@ test('label containment tolerates subpixels but rejects pane and viewport clippi
   }
 })
 
-async function expect_layer_label(page: Page, text: string, id = 'a') {
-
-  // Measure the published node, never the hidden copy tldraw uses to lay out rich text.
-  const pane = page.getByRole('region', { name: 'Agent canvas' })
-  const label = pane
-    .locator(`.tl-shape[data-shape-id="shape:scene-${id}"]:not(.tl-shape-background)`)
-    .getByText(text, { exact: true })
-
+// A printed label, measured in the picture the canvas shows, wholly inside the canvas and the
+// window.
+async function expect_print_label(page: Page, text: string, id = 'a') {
+  const label = print_shape(page, id).getByText(text, { exact: true })
   await expect(label).toBeVisible()
   const viewport = { x: 0, y: 0, ...page.viewportSize()! }
   await expect
     .poll(async () => {
-      const [bounds, canvas] = await Promise.all([label.boundingBox(), pane.boundingBox()])
+      const [bounds, canvas] = await Promise.all([label.boundingBox(), surface(page).boundingBox()])
       return label_overflow_px(bounds, canvas, viewport)
     })
     .toBeLessThanOrEqual(label_edge_tolerance_px)
@@ -611,13 +578,13 @@ async function expect_layer_label(page: Page, text: string, id = 'a') {
 
 // Chromium on a desktop runner has no software keyboard. Drive its visualViewport contract while
 // keeping the layout viewport fixed, and check that only the chat follows the inset: the
-// composer moves up into what can still be seen, and no view is resized.
+// composer moves up into what can still be seen, and the canvas is not resized.
 async function keyboard_geometry(page: Page, info: TestInfo) {
   const composer = page.locator('.chat__composer')
-  const views = page.locator('.views')
+  const canvas = surface(page)
   await chat_open(page)
   await field(page).fill('One\nTwo\nThree\nFour\nFive\nSix')
-  const before = await views.boundingBox()
+  const before = await canvas.boundingBox()
   const rested = await composer.boundingBox()
   const visible_px = page.viewportSize()!.height - 245
   await page.evaluate(() => {
@@ -641,7 +608,7 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
   // Five lines of 22px and the field's own padding; the sixth line scrolls.
   expect((await field(page).boundingBox())!.height).toBeLessThanOrEqual(132.5)
   expect(await field(page).evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)
-  expect(await views.boundingBox()).toEqual(before)
+  expect(await canvas.boundingBox()).toEqual(before)
   await info.attach('keyboard-inset', { body: await page.screenshot(), contentType: 'image/png' })
   await page.evaluate(() => {
     Reflect.deleteProperty(visualViewport!, 'height')
@@ -651,30 +618,140 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
   // With the keyboard gone the composer is back where it rested.
   await expect.poll(() => composer.boundingBox()).toEqual(rested)
   await field(page).fill('')
+  await sketch_open(page)
 }
 
-// The Agent canvas on both screens, and the tabs that lead to it: Sketchboard, Agent canvas
-// and Chat, and nothing the board had before its chat. The stage, which presents and was not
-// looking at the chat, has the agent's answers waiting there as news.
-async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
+// The print on both screens: in violet, under the ink, with no tab to reach it. The iPad's
+// camera stayed where the person left it when the revision arrived; the key offers to bring
+// the print into view. The stage, which presents, keeps all of it in view itself, and has the
+// agent's answers waiting as news.
+async function print_views(ipad: Page, stage: Page, info: TestInfo) {
+  const ink = await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')
+  await expect(print_shape(ipad, 'a')).toHaveCount(1)
+  expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(ink)
+  await expect(key(ipad)).toContainText('Agent · revision 1')
+  await print_fit(ipad, 'a')
+
   for (const page of [ipad, stage]) {
-    await page.getByRole('tab', { name: 'Agent canvas' }).click()
-    await expect_layer_label(page, 'Request')
-    await expect(page.getByRole('group', { name: 'Agent layer' })).toHaveCount(0)
-    await expect_layer_label(page, 'What about retries?', 'b')
+    await expect_print_label(page, 'Request')
+    await expect_print_label(page, 'What about retries?', 'b')
     await expect(retired_controls(page)).toHaveCount(0)
-    await expect(page.getByRole('tab')).toHaveText(['Sketchboard', 'Agent canvas', /^Chat/])
+
+    // The arrow runs level between the two: a flat picture of it must still be drawn.
+    await expect(page.locator('.print__shape')).toHaveCount(3)
+    await expect(print_region(page)).toHaveAttribute('data-failed', '0')
+
+    // The agent's ink is printed in violet: none of its own black reaches the screen.
+    await expect.poll(async () => (await painted(page, 'b')).violet).toBeGreaterThan(50)
+    expect((await painted(page, 'b')).black).toBe(0)
   }
 
   await expect(stage.getByTestId('chat-unread')).toBeVisible()
-  await expect(chat_tab(stage)).toHaveAccessibleName(/^Chat\W+2 new answers$/)
+  await expect(chat_button(stage)).toHaveAccessibleName(/^Chat\W+2 new answers$/)
   await geometry_ipad(ipad, info, 'ipad-portrait')
   await geometry_stage(stage, info, 'mac-stage')
 
-  // Turned on its side, the Agent canvas keeps its head and Replace, and the chat its column.
+  // Turned on its side, the canvas keeps its instruments where the design puts them.
   await soon(ipad.setViewportSize(ipad_landscape))
-  await expect_layer_label(ipad, 'What about retries?', 'b')
+  await print_fit(ipad, 'b')
+  await expect_print_label(ipad, 'What about retries?', 'b')
   await geometry_ipad(ipad, info, 'ipad-landscape')
   await keyboard_geometry(ipad, info)
-  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
+}
+
+// The pen writes over the print and the eraser takes that writing away: the print is the same
+// revision, every shape of it still shown, and the ink is as it was.
+async function ownership({ ipad, cli, session }: Linked, ink_hash: string) {
+  const status = () => cli('status', '--session', session)
+  await print_fit(ipad, 'b')
+  const box = (await print_shape(ipad, 'b').boundingBox())!
+  const from = { x: box.x + box.width * 0.3, y: box.y + box.height / 2 }
+  await stroke(ipad, from, { x: 30, y: 4 })
+  await expect.poll(() => status().shapes_count).toBe(2)
+  expect(status()).toMatchObject({ agent_revision: 1 })
+
+  await ipad.getByRole('button', { name: 'Eraser' }).tap()
+  await stroke(ipad, { x: from.x - 10, y: from.y - 20 }, { x: 40, y: 15 })
+  await expect.poll(() => status().document_hash).toBe(ink_hash)
+  await ipad.getByRole('button', { name: 'Pen' }).tap()
+  await expect(ipad.getByRole('button', { name: 'Pen' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(ipad.locator('.print__shape')).toHaveCount(3)
+  expect(status()).toMatchObject({ agent_revision: 1, shapes_count: 1 })
+}
+
+// A finger chooses the agent's box. Taking it copies it into the sketch where the print has
+// it, as a native shape of the person's own, recording the revision and sketch it came from;
+// the print fades beneath it. Undo takes the copy back and the print returns; Redo again.
+async function take_one(board: Linked, info: TestInfo, ink_hash: string) {
+  const { ipad, cli, session, origin } = board
+  const status = () => cli('status', '--session', session)
+  await print_fit(ipad, 'a')
+  const card = await print_choose(ipad, 'a', true)
+  await expect(card).toContainText('Drawn by the agent · revision 1')
+  await expect(ipad.getByRole('button', { name: 'Take into my sketch' })).toBeFocused()
+  expect(status().shapes_count).toBe(1)
+  await capture(ipad, info, 'ipad-inspect')
+  await card.getByRole('button', { name: 'Take into my sketch' }).tap()
+  await expect(key(ipad)).toContainText('Copied into your sketch. Undo takes it back.')
+  await expect.poll(() => status().shapes_count).toBe(2)
+  await expect(print_shape(ipad, 'a')).toHaveAttribute('data-state', 'taken')
+  await expect(card).toHaveCount(0)
+  await capture(ipad, info, 'ipad-taken')
+
+  const source = (await published(ipad, origin, session)).find((r) => r.id === 'shape:scene-a')!
+  const copy = await taken_copy(board)
+  expect(copy).toMatchObject({ type: source.type, x: source.x, y: source.y, props: source.props })
+  expect(copy.parentId).toMatch(/^page:/)
+  expect(copy.id).not.toBe(source.id)
+  expect(copy.meta.taken_from).toMatchObject({
+    revision: 1,
+    sketch_hash: ink_hash,
+    shape_id: 'shape:scene-a',
+  })
+
+  const undo = ipad.getByRole('button', { name: 'Undo', exact: true })
+  const redo = ipad.getByRole('button', { name: 'Redo', exact: true })
+  await undo.tap()
+  await expect.poll(() => status().document_hash).toBe(ink_hash)
+  await expect(print_shape(ipad, 'a')).toHaveAttribute('data-state', 'shown')
+  await redo.tap()
+  await expect.poll(() => status().shapes_count).toBe(2)
+  await expect(print_shape(ipad, 'a')).toHaveAttribute('data-state', 'taken')
+  await undo.tap()
+  await expect.poll(() => status().document_hash).toBe(ink_hash)
+  expect(status()).toMatchObject({ agent_revision: 1 })
+}
+
+async function taken_copy({ bound, root }: Linked): Promise<Json> {
+  const snap = bound('snapshot', '--out', path.join(root, 'taken'))
+  expect(snap.status).toBe('success')
+  const { records } = JSON.parse(fs.readFileSync(snap.records_path, 'utf8')) as Json
+  const copies = (records as Json[]).filter((record) => record.meta?.taken_from !== undefined)
+  expect(copies).toHaveLength(1)
+  return copies[0]!
+}
+
+// The old whole-sketch replace, now in the board's menu: one step, every shape the person's own
+// with the arrow still joined, and one Undo back to the ink.
+async function replace_all({ ipad, bound, cli, session, root }: Linked, ink_hash: string) {
+  const status = () => cli('status', '--session', session)
+  await board_menu(ipad, 'Replace my sketch with revision 1')
+  await expect(key(ipad)).toContainText('Sketch replaced. Undo restores your ink.')
+  await expect.poll(() => status().shapes_count).toBe(3)
+  const snap = bound('snapshot', '--out', path.join(root, 'after'))
+  expect(snap.status).toBe('success')
+  const { records } = JSON.parse(fs.readFileSync(snap.records_path, 'utf8'))
+  const shapes = records.filter((r: { typeName: string }) => r.typeName === 'shape')
+  const ids = new Set(shapes.map((s: { id: string }) => s.id))
+  expect(shapes.map((s: { type: string }) => s.type).sort()).toEqual(['arrow', 'geo', 'geo'])
+  const bindings = records.filter((r: { typeName: string }) => r.typeName === 'binding')
+  expect(bindings).toHaveLength(2)
+
+  for (const b of bindings) expect(ids.has(b.fromId) && ids.has(b.toId)).toBe(true)
+
+  expect(records.every((r: { id: string }) => !r.id.includes(':scene-'))).toBe(true)
+  await expect(ipad.locator('.print__shape[data-state="taken"]')).toHaveCount(3)
+  await ipad.getByRole('button', { name: 'Undo', exact: true }).tap()
+  await expect.poll(() => status().document_hash).toBe(ink_hash)
+  await expect(ipad.locator('.print__shape[data-state="taken"]')).toHaveCount(0)
 }

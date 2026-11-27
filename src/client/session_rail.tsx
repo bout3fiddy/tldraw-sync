@@ -20,11 +20,15 @@ import { board_name_length_max, type Role } from '../shared/constants'
 import { session_create, session_rename, type SessionsState } from './board_sessions'
 import { icon_boards, icon_close, icon_pin, icon_plus } from './icons'
 import { BoardActions } from './board_actions'
+import { BoardMenuContext, type BoardMenuItem } from './board_menu'
 
 type ShellProps = {
   role: Role
   sessions: SessionsState
   active: string | null
+
+  // The name of the board on screen, shown beside the button for the list.
+  title: string | null
   onChoose: (id: string) => void
   children: ReactNode
 }
@@ -32,10 +36,12 @@ type ShellProps = {
 const rail_id = 'board-rail'
 const wide_query = '(min-width: 1200px)'
 
-export function SessionShell({ role, sessions, active, onChoose, children }: ShellProps) {
+export function SessionShell(props: ShellProps) {
+  const { role, sessions, active, title, onChoose, children } = props
   const wide = use_media(wide_query)
   const [pinned, pinned_set] = use_stored_flag(`tldraw-sync.rail.${role}`)
   const [open, open_set] = useState(false)
+  const [menu, menu_set] = useState<readonly BoardMenuItem[]>([])
   const toggle = useRef<HTMLButtonElement>(null)
   const docked = wide && pinned
   const empty = sessions.list?.length === 0
@@ -60,20 +66,25 @@ export function SessionShell({ role, sessions, active, onChoose, children }: She
   const mode = docked ? 'docked' : open ? 'open' : 'closed'
   return (
     <div className="shell" data-rail={mode}>
-      <div className="shell__board">{children}</div>
+      <BoardMenuContext.Provider value={menu_set}>
+        <div className="shell__board">{children}</div>
+      </BoardMenuContext.Provider>
       {!shown && (
-        <button
-          ref={toggle}
-          type="button"
-          className="rail-toggle"
-          aria-expanded={false}
-          aria-controls={rail_id}
-          aria-label="Boards"
-          title="Boards"
-          onClick={() => open_set(true)}
-        >
-          {icon_boards}
-        </button>
+        <div className="title">
+          <button
+            ref={toggle}
+            type="button"
+            className="rail-toggle"
+            aria-expanded={false}
+            aria-controls={rail_id}
+            aria-label="Boards"
+            title="Boards"
+            onClick={() => open_set(true)}
+          >
+            {icon_boards}
+          </button>
+          {title !== null && <h1 className="title__name">{title}</h1>}
+        </div>
       )}
       {shown && !empty && !docked && <div className="rail-scrim" onPointerDown={close} />}
       {shown && (
@@ -83,6 +94,10 @@ export function SessionShell({ role, sessions, active, onChoose, children }: She
           active={active}
           docked={docked}
           wide={wide}
+          menu={menu}
+          onMenu={() => {
+            if (!docked) open_set(false)
+          }}
           onChoose={choose}
           onPin={() => pinned_set(!pinned)}
           onClose={close}
@@ -98,12 +113,15 @@ type RailProps = {
   active: string | null
   docked: boolean
   wide: boolean
+  menu: readonly BoardMenuItem[]
+  onMenu: () => void
   onChoose: (id: string) => void
   onPin: () => void
   onClose: () => void
 }
 
-function Rail({ role, sessions, active, docked, wide, onChoose, onPin, onClose }: RailProps) {
+function Rail(props: RailProps) {
+  const { role, sessions, active, docked, wide, menu, onMenu, onChoose, onPin, onClose } = props
   const rail = useRef<HTMLElement>(null)
   const [creating, creating_set] = useState(false)
   const [problem, problem_set] = useState<string | null>(null)
@@ -159,7 +177,14 @@ function Rail({ role, sessions, active, docked, wide, onChoose, onPin, onClose }
           {problem}
         </p>
       )}
-      <RailList role={role} sessions={sessions} active={active} onChoose={onChoose} />
+      <RailList
+        role={role}
+        sessions={sessions}
+        active={active}
+        menu={menu}
+        onMenu={onMenu}
+        onChoose={onChoose}
+      />
     </aside>
   )
 }
@@ -200,11 +225,13 @@ type ListProps = {
   role: Role
   sessions: SessionsState
   active: string | null
+  menu: readonly BoardMenuItem[]
+  onMenu: () => void
   onChoose: (id: string) => void
 }
 
 // Newest first, as a chat app lists its conversations.
-function RailList({ role, sessions, active, onChoose }: ListProps) {
+function RailList({ role, sessions, active, menu, onMenu, onChoose }: ListProps) {
   if (sessions.list === null) {
     const text = sessions.failed ? 'The Mac is not answering.' : 'Loading the boards'
     return (
@@ -226,6 +253,8 @@ function RailList({ role, sessions, active, onChoose }: ListProps) {
             role={role}
             session={session}
             active={session.id === active}
+            menu={session.id === active ? menu : none}
+            onMenu={onMenu}
             onChoose={onChoose}
             onRenamed={sessions.merge}
             onRemoved={sessions.remove}
@@ -240,12 +269,17 @@ type ItemProps = {
   role: Role
   session: BoardSession
   active: boolean
+  menu: readonly BoardMenuItem[]
+  onMenu: () => void
   onChoose: (id: string) => void
   onRenamed: (session: BoardSession) => void
   onRemoved: (id: string) => void
 }
 
-function RailItem({ role, session, active, onChoose, onRenamed, onRemoved }: ItemProps) {
+const none: readonly BoardMenuItem[] = []
+
+function RailItem(props: ItemProps) {
+  const { role, session, active, menu, onMenu, onChoose, onRenamed, onRemoved } = props
   const row = useRef<HTMLLIElement>(null)
   const [editing, editing_set] = useState(false)
   const [problem, problem_set] = useState<string | null>(null)
@@ -301,6 +335,8 @@ function RailItem({ role, session, active, onChoose, onRenamed, onRemoved }: Ite
       </a>
       <BoardActions
         session={session}
+        extra={menu}
+        onExtra={onMenu}
         onRename={() => editing_set(true)}
         onRemove={onRemoved}
         onError={() => problem_set('Deletion not confirmed. Check the list and try again.')}

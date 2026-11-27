@@ -68,7 +68,13 @@ export function App({ role, initial }: { role: Role; initial: string | null }) {
   }, [title])
 
   return (
-    <SessionShell role={role} sessions={sessions} active={active} onChoose={choose}>
+    <SessionShell
+      role={role}
+      sessions={sessions}
+      active={active}
+      title={session === null ? null : board_label(session)}
+      onChoose={choose}
+    >
       {board_content(role, active, session, sessions.list === null, sessions.failed)}
     </SessionShell>
   )

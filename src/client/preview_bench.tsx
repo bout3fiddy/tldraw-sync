@@ -21,7 +21,7 @@ import {
   upload_retry_delay_ms,
 } from '../shared/constants'
 import { asset_urls, components_quiet } from './board_store'
-import { canvas_store } from './cleaned_pane'
+import { canvas_store } from './print_store'
 import { canvas_image } from './stage_mount'
 
 type Draft = { id: string; records: CanvasRecord[] }

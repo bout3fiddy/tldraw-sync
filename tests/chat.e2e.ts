@@ -1,8 +1,8 @@
 // A board's chat in real browsers, on a disposable linked board: the iPad and the Mac stage,
 // words alone and the sketch, the agent's answers under what they answer, news that waits on
-// the Chat tab of its own board only, history that outlives a reload, and recovery from a lost
-// reply, an old Mac and a refusal without a word lost or a request sent twice. A page that is
-// not paired reads nothing. The board's earlier note, bell and Side by side are gone.
+// the Chat button of its own board only, history that outlives a reload, and recovery from a
+// lost reply, an old Mac and a refusal without a word lost or a request sent twice. A page that
+// is not paired reads nothing. The board's earlier note, bell, tabs and Side by side are gone.
 //
 // Run: bun run build && npx playwright test tests/chat.e2e.ts
 
@@ -13,8 +13,8 @@ import {
   answers,
   board_linked,
   chat_open,
+  chat_button,
   chat_send,
-  chat_tab,
   draw,
   field,
   mine,
@@ -25,6 +25,7 @@ import {
   step,
   step_long_ms,
   stroke,
+  surface,
   type Cli,
   type Linked,
 } from './whiteboard_board'
@@ -52,8 +53,8 @@ test('the iPad and Mac share one board chat: words alone, the sketch, answers an
   browser,
 }) => {
   await board_linked(browser, async (board) => {
-    await step('Sketchboard, Agent canvas and Chat, and none of the old controls', () =>
-      tabs_only(board),
+    await step('one canvas and a Chat button, and none of the old controls', () =>
+      canvas_only(board),
     )
     await step('the sketch goes only when added; words alone name none', () => sends(board))
     await step('answers are read where seen and news where not, across reloads', () => news(board))
@@ -69,19 +70,21 @@ test('the iPad and Mac share one board chat: words alone, the sketch, answers an
   })
 })
 
-// A preference saved for the retired Side by side view opens the Sketchboard and is written
-// over. Chat is one tab, at the top right, on a 44px target.
-async function tabs_only({ ipad }: Linked) {
-  await ipad.evaluate(() => localStorage.setItem('tldraw-sync.view.draw', 'side'))
-  await ipad.reload()
-  await expect(ipad.getByRole('tab')).toHaveText(['Sketchboard', 'Agent canvas', 'Chat'])
-  await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  )
-  expect(await ipad.evaluate(() => localStorage.getItem('tldraw-sync.view.draw'))).toBe('sketch')
+// A view saved by an older board, the retired Side by side or the Agent canvas tab, opens the
+// canvas with the chat closed and is written over. Chat is one button, at the top right, on a
+// 44px target, and there are no tabs.
+async function canvas_only({ ipad }: Linked) {
+  for (const retired of ['side', 'cleaned']) {
+    await ipad.evaluate((view) => localStorage.setItem('tldraw-sync.view.draw', view), retired)
+    await ipad.reload()
+    await expect(surface(ipad)).toBeVisible()
+    await expect(chat_button(ipad)).toHaveAttribute('aria-expanded', 'false')
+    const stored = await ipad.evaluate(() => localStorage.getItem('tldraw-sync.view.draw'))
+    expect(stored).toBe('sketch')
+  }
+
   await expect(retired_controls(ipad)).toHaveCount(0)
-  const box = (await chat_tab(ipad).boundingBox())!
+  const box = (await chat_button(ipad).boundingBox())!
   expect(box.height).toBeGreaterThanOrEqual(44)
   expect(ipad.viewportSize()!.width - (box.x + box.width)).toBeLessThanOrEqual(24)
   expect(box.y).toBeLessThanOrEqual(24)
@@ -132,18 +135,16 @@ async function news({ ipad, bound }: Linked) {
   await expect(answers(ipad, 'Tidied: three boxes')).toBeVisible()
   await expect(unread(ipad)).toHaveCount(0)
 
-  // Not on screen: the answer waits as news on the Chat tab, through other views and a
-  // reload. A status line is not news.
+  // Not on screen: the answer waits as news on the Chat button, through a reload. A status
+  // line is not news.
   await sketch_open(ipad)
   ack(bound, second!.id, 'received')
   ack(bound, second!.id, 'working', '--message', 'Thinking it over')
-  await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toBeVisible()
+  await expect(surface(ipad)).toBeVisible()
   await expect(unread(ipad)).toHaveCount(0)
   ack(bound, second!.id, 'failed', '--message', 'I could not tell which box you meant.')
   await expect(unread(ipad)).toBeVisible()
-  await expect(chat_tab(ipad)).toHaveAccessibleName(/^Chat\W+1 new answer$/)
-  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
-  await expect(unread(ipad)).toBeVisible()
+  await expect(chat_button(ipad)).toHaveAccessibleName(/^Chat\W+1 new answer$/)
   await ipad.reload()
   await expect(unread(ipad)).toBeVisible()
 
@@ -154,7 +155,7 @@ async function news({ ipad, bound }: Linked) {
   await expect(failed).toHaveAttribute('data-failed', 'true')
   await expect(mine(ipad, 'And words alone.').locator('.chat__receipt')).toContainText('Failed')
   await ipad.reload()
-  await expect(chat_tab(ipad)).toHaveAttribute('aria-selected', 'true')
+  await expect(chat_button(ipad)).toHaveAttribute('aria-expanded', 'true')
   await expect(unread(ipad)).toHaveCount(0)
   await expect(ipad.locator('.chat__log > li:not(.chat__day)')).toHaveText([
     /Tidy this up\./,

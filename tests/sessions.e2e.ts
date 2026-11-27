@@ -102,8 +102,8 @@ async function status(session = 'default'): Promise<Record<string, unknown>> {
 
 // A stroke drawn with the mouse, which tldraw treats as a pen when the page has no touch.
 async function stroke(page: Page, offset_px: number): Promise<void> {
-  await expect(page.getByRole('tab', { name: 'Sketch' })).toBeVisible()
-  const box = await page.locator('section[aria-label="Sketch"]').boundingBox()
+  await expect(page.getByRole('region', { name: 'Canvas' })).toBeVisible()
+  const box = await page.locator('section[aria-label="Canvas"]').boundingBox()
   expect(box).not.toBeNull()
   const x = box!.x + box!.width * 0.45 + offset_px
   const y = box!.y + box!.height * 0.5
@@ -125,11 +125,12 @@ const rail_open = async (page: Page) => {
 const board_link = (page: Page, name: RegExp) => rail(page).getByRole('link', { name })
 const board_id_of = (page: Page) => /\/s\/([0-9a-f]{16})/.exec(page.url())?.[1] ?? ''
 
-// Words on the Agent canvas of a linked board: the shape itself, never the copy tldraw keeps
-// out of sight to measure its lettering.
+// Words in the agent's print on a linked board: in the picture the canvas shows, never the
+// hidden editor the print is drawn from.
 const shape_text = (page: Page, text: string) =>
   page
-    .locator('section[aria-label="Agent canvas"] .tl-shape:not(.tl-shape-background)')
+    .getByRole('region', { name: 'Agent print' })
+    .locator('.print__shape')
     .getByText(text, { exact: true })
 
 type Host = { session: string; bound: (action: string, ...args: string[]) => CliResult }
@@ -419,7 +420,7 @@ async function boards_make_and_switch(ipad: Page): Promise<[string, string]> {
   // Back goes to the board before, as it would between pages.
   await ipad.goBack()
   await expect(ipad).toHaveURL(new RegExp(`/s/${one}/draw$`))
-  await expect(ipad.getByRole('tab', { name: 'Sketch' })).toBeVisible()
+  await expect(ipad.getByRole('region', { name: 'Canvas' })).toBeVisible()
   await ipad.goForward()
   await expect(ipad).toHaveURL(new RegExp(`/s/${two}/draw$`))
   return [one, two]
@@ -436,8 +437,8 @@ async function boards_present_and_fetch(
   await stages[1].goto(`${origin}/s/${two}`)
   await expect.poll(async () => (await status(one)).stage_connected).toBe(true)
   await expect.poll(async () => (await status(two)).stage_connected).toBe(true)
-  await expect(stages[0].locator('section[aria-label="Sketch"] .tl-shape')).toHaveCount(1)
-  await expect(stages[1].locator('section[aria-label="Sketch"] .tl-shape')).toHaveCount(2)
+  await expect(stages[0].locator('section[aria-label="Canvas"] .tl-shape')).toHaveCount(1)
+  await expect(stages[1].locator('section[aria-label="Canvas"] .tl-shape')).toHaveCount(2)
 
   // Each board's image is its own, saved where the other's is not.
   const fetched_one = cli('fetch', '--session', one, '--no-open')
@@ -494,16 +495,17 @@ async function linked_boards_publish(
     title_applied: true,
   })
 
+  // Each stage shows its own board's print, on the one canvas, with no tab to switch to.
   for (const [page, shown] of [
     [stages[0], 1],
     [stages[1], 0],
   ] as const) {
-    await page.getByRole('tab', { name: 'Agent canvas' }).click()
+    await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(shape_text(page, 'Payments client')).toHaveCount(shown)
   }
 
-  const nothing = stages[1].getByText('Nothing on the agent canvas yet.', { exact: false })
-  await expect(nothing).toBeVisible()
+  await expect(stages[0].locator('.key')).toContainText('Agent · revision 1')
+  await expect(stages[1].locator('.key')).toContainText('Agent · nothing yet')
   await expect(stages[0]).toHaveTitle('Payments · Board')
 }
 
@@ -517,7 +519,7 @@ async function rename_beats_title(ipad: Page, host: Host): Promise<void> {
   await expect(board_link(ipad, /Payments/)).toBeVisible()
   await rail(ipad).locator(`a[href="/s/${two}/draw"]`).click()
   await expect(ipad).toHaveURL(new RegExp(`/s/${two}/draw$`))
-  await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toBeVisible()
+  await expect(ipad.getByRole('region', { name: 'Canvas' })).toBeVisible()
   await expect(rail(ipad)).toBeHidden()
   await rail_open(ipad)
   const active = rail(ipad).locator('li', { has: ipad.locator('[aria-current="page"]') })
@@ -550,7 +552,7 @@ async function restart_and_default(
   await ipad.reload()
   await stages[0].reload()
   await expect(ipad).toHaveURL(new RegExp(`/s/${second.session}/draw$`))
-  await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toBeVisible()
+  await expect(ipad.getByRole('region', { name: 'Canvas' })).toBeVisible()
   expect(await status(one)).toMatchObject({ shapes_count: 1, cleaned_revision: 0 })
   expect(await status(two)).toMatchObject({ shapes_count: 2, cleaned_revision: 0 })
   expect(await status(first.session)).toMatchObject({
@@ -577,6 +579,10 @@ async function restart_and_default(
   expect(new URL(ipad.url()).pathname).toBe('/s/default/draw')
   const fetched = cli('fetch', '--no-open')
   expect(fetched.json).toMatchObject({ code: 'image_saved', session: 'default' })
-  await ipad.getByRole('tab', { name: 'Cleaned' }).click()
-  await expect(ipad.getByText('No cleaned diagram on this board.')).toBeVisible()
+
+  // Never linked and never published to: the canvas holds the person's ink alone, and the key
+  // names no agent.
+  await expect(ipad.locator('.key')).toContainText('Your ink')
+  await expect(ipad.locator('.key')).not.toContainText('Agent')
+  await expect(ipad.locator('.print__shape')).toHaveCount(0)
 }

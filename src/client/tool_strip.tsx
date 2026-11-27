@@ -1,9 +1,11 @@
-// The whole iPad interface: pen, eraser, four inks, undo, redo, and a way to start over.
-// It sits under the hand that is not holding the Pencil.
+// The drawing tools, down the left edge under the hand that is not holding the Pencil: pen,
+// eraser, undo and redo. Tapping the pen again lays out its four inks beside it. Clearing the
+// sketch is in the board's menu, away from a resting palm. Both tools touch only the person's
+// ink: the agent's print lies under the glass, out of their reach.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DefaultColorStyle, useEditor, useValue } from 'tldraw'
-import { icon_clear, icon_eraser, icon_pen, icon_select, icon_redo, icon_undo } from './icons'
+import { icon_eraser, icon_pen, icon_redo, icon_undo } from './icons'
 
 // tldraw's own ink names, with the colours it draws them in, so a well matches its stroke.
 const inks = [
@@ -13,32 +15,68 @@ const inks = [
   { name: 'green', label: 'Green ink', colour: '#099268' },
 ] as const
 
-const clear_confirm_ms = 3000
+const inks_id = 'strip-inks'
 
-export function ToolStrip({ editable = false }: { editable?: boolean }) {
+export function ToolStrip() {
   const editor = useEditor()
   const tool = useValue('tool', () => editor.getCurrentToolId(), [editor])
   const ink = useValue('ink', () => editor.getStyleForNextShape(DefaultColorStyle), [editor])
   const undo_possible = useValue('undo', () => editor.getCanUndo(), [editor])
   const redo_possible = useValue('redo', () => editor.getCanRedo(), [editor])
-  const tool_set = (name: 'draw' | 'eraser') => editor.setCurrentTool(name)
+  const [inks_open, inks_set] = useState(false)
+  const strip = useRef<HTMLElement>(null)
+  use_inks_dismiss(inks_open, strip, () => inks_set(false))
 
+  const pen = () => {
+    if (tool === 'draw') return inks_set(!inks_open)
+
+    editor.setCurrentTool('draw')
+    inks_set(false)
+  }
+  const eraser = () => {
+    editor.setCurrentTool('eraser')
+    inks_set(false)
+  }
+  const colour = inks.find((candidate) => candidate.name === ink)?.colour ?? inks[0].colour
   return (
-    <nav
-      className="strip"
-      aria-label="Drawing tools"
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      {editable && <StripButton label="Select shapes" active={tool === 'select'}
-        onPress={() => editor.setCurrentTool('select')}>{icon_select}</StripButton>}
-      <StripButton label="Pen" active={tool === 'draw'} onPress={() => tool_set('draw')}>
-        {icon_pen}
-      </StripButton>
-      <StripButton label="Eraser" active={tool === 'eraser'} onPress={() => tool_set('eraser')}>
-        {icon_eraser}
-      </StripButton>
+    <div className="toolside">
+      <nav
+        ref={strip}
+        className="strip"
+        aria-label="Drawing tools"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div className="strip__pen">
+          <StripButton label="Pen" active={tool === 'draw'} expanded={inks_open} onPress={pen}>
+            {icon_pen}
+            <span
+              className="strip__nib"
+              data-ink={ink}
+              style={{ '--ink-well': colour } as React.CSSProperties}
+            />
+          </StripButton>
+          {inks_open && <InkWells ink={ink} onChosen={() => inks_set(false)} />}
+        </div>
+        <StripButton label="Eraser" active={tool === 'eraser'} onPress={eraser}>
+          {icon_eraser}
+        </StripButton>
 
-      <div className="strip__rule" />
+        <div className="strip__rule" />
+        <StripButton label="Undo" disabled={!undo_possible} onPress={() => editor.undo()}>
+          {icon_undo}
+        </StripButton>
+        <StripButton label="Redo" disabled={!redo_possible} onPress={() => editor.redo()}>
+          {icon_redo}
+        </StripButton>
+      </nav>
+    </div>
+  )
+}
+
+function InkWells({ ink, onChosen }: { ink: string; onChosen: () => void }) {
+  const editor = useEditor()
+  return (
+    <div id={inks_id} className="strip__inks" role="group" aria-label="Inks">
       {inks.map((candidate) => (
         <button
           key={candidate.name}
@@ -50,80 +88,61 @@ export function ToolStrip({ editable = false }: { editable?: boolean }) {
           onClick={() => {
             editor.setStyleForNextShapes(DefaultColorStyle, candidate.name)
             editor.setCurrentTool('draw')
+            onChosen()
           }}
         />
       ))}
-
-      <div className="strip__rule" />
-      <StripButton label="Undo" disabled={!undo_possible} onPress={() => editor.undo()}>
-        {icon_undo}
-      </StripButton>
-      <StripButton label="Redo" disabled={!redo_possible} onPress={() => editor.redo()}>
-        {icon_redo}
-      </StripButton>
-
-      <div className="strip__rule" />
-      <ClearButton />
-    </nav>
+    </div>
   )
+}
+
+// The inks go away when anything else is pressed, or on Escape.
+function use_inks_dismiss(open: boolean, strip: React.RefObject<HTMLElement>, close: () => void) {
+  const latest = useRef(close)
+  latest.current = close
+  useEffect(() => {
+    if (!open) return
+
+    const press = (event: PointerEvent) => {
+      if (event.target instanceof Node && strip.current?.contains(event.target)) return
+
+      latest.current()
+    }
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') latest.current()
+    }
+    window.addEventListener('pointerdown', press, true)
+    window.addEventListener('keydown', key)
+    return () => {
+      window.removeEventListener('pointerdown', press, true)
+      window.removeEventListener('keydown', key)
+    }
+  }, [open, strip])
 }
 
 type StripButtonProps = {
   label: string
   active?: boolean
+  expanded?: boolean
   disabled?: boolean
   onPress: () => void
   children: ReactNode
 }
 
 function StripButton(props: StripButtonProps) {
-  const { label, active = false, disabled = false, onPress, children } = props
+  const { label, active = false, expanded, disabled = false, onPress, children } = props
   return (
     <button
       type="button"
       className="strip__button"
       aria-label={label}
       aria-pressed={active}
+      aria-expanded={expanded}
+      aria-controls={expanded === undefined ? undefined : inks_id}
       disabled={disabled}
       onClick={onPress}
     >
       {children}
     </button>
-  )
-}
-
-// Clearing takes two taps: the first arms the button, the second clears. A stray palm on
-// the strip cannot wipe the board, and Undo brings everything back if it was a mistake.
-function ClearButton() {
-  const editor = useEditor()
-  const [armed, armed_set] = useState(false)
-  const empty = useValue('empty', () => editor.getCurrentPageShapeIds().size === 0, [editor])
-
-  useEffect(() => {
-    if (!armed) return
-    const timer = window.setTimeout(() => armed_set(false), clear_confirm_ms)
-    return () => window.clearTimeout(timer)
-  }, [armed])
-
-  const press = () => {
-    if (!armed) return armed_set(true)
-    editor.deleteShapes([...editor.getCurrentPageShapeIds()])
-    armed_set(false)
-  }
-
-  return (
-    <div className="strip__clear">
-      <button
-        type="button"
-        className="strip__button"
-        data-armed={armed}
-        aria-label={armed ? 'Clear the board now' : 'Clear the board'}
-        disabled={empty}
-        onClick={press}
-      >
-        {icon_clear}
-      </button>
-      {armed && <span className="strip__confirm">Tap again to clear the board</span>}
-    </div>
   )
 }

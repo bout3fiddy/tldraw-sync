@@ -1,37 +1,41 @@
-// The Mac presentation view: the whole drawing, fitted to the window, and nothing else.
-// Until an iPad is connected it also shows how to connect one.
+// The Mac presentation view: the one canvas, the person's ink over the agent's print, fitted
+// to the window. It only presents: nothing on it can be drawn on or taken. Until an iPad is
+// connected it also shows how to connect one.
 
-import { useCallback, useEffect, useState, type KeyboardEvent } from 'react'
-import { Tldraw, useEditor, useValue, type Editor } from 'tldraw'
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { atom, useEditor, useValue, type Atom, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
 import { path_pairing } from '../shared/constants'
-import { asset_urls, components_quiet, use_board_store } from './board_store'
+import { BoardKey } from './board_key'
+import { use_board_store } from './board_store'
+import { ChatButton, ChatDrawer, use_chat_open } from './chat_drawer'
 import { ChatPane } from './chat_pane'
 import { use_board_chat, use_stage_token } from './chat_state'
-import { CleanedPane } from './cleaned_pane'
 import { use_cleaned } from './cleaned_state'
 import { icon_pair } from './icons'
 import { Notice } from './notice'
 import { PreviewBench } from './preview_bench'
+import { PrintProvider } from './print_engine'
+import type { PrintBox } from './print_svg'
 import { stage_mount } from './stage_mount'
-import { use_view, ViewPanes, ViewTabs } from './views'
+import { Surface } from './surface'
 
 type Pairing = { url: string; modules: string[] }
 
-// The sketch canvas stays mounted whichever view is chosen: it renders the image agents fetch.
+// The sketch canvas stays mounted while the chat is open: it renders the image agents fetch.
 // On a linked board the stage also draws an agent's drafts, out of sight, when asked, and
 // holds the board's chat, read and sent with the pairing it hands the iPad.
 export function StagePage({ session, title }: { session: string; title: string }) {
   const board = use_board_store('stage', session)
-  const [view, view_choose] = use_view('stage')
+  const [chat_open, chat_open_set] = use_chat_open('stage')
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const pairing = use_pairing(session)
-  const [editor, mount] = use_stage_editor(session)
+  const bounds = useMemo(() => atom<PrintBox | null>('print bounds', null), [])
+  const [editor, mount] = use_stage_editor(session, bounds)
   const token = use_stage_token(session, linked)
   const online = board.status === 'synced-remote' && board.connectionStatus !== 'offline'
-  const viewing = view === 'chat'
-  const talk = use_board_chat({ session, token, linked, online, editor, viewing })
+  const talk = use_board_chat({ session, token, linked, online, editor, viewing: chat_open })
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     const text = 'The board is not answering. Start it with “tldraw-sync start”, then reload.'
@@ -39,42 +43,32 @@ export function StagePage({ session, title }: { session: string; title: string }
   }
 
   return (
-    <main className="board board--stage" data-linked={linked}>
-      <ViewPanes
-        linked={linked}
-        view={view}
-        sketch={
-          <Tldraw
-            store={board.store}
-            hideUi
-            assetUrls={asset_urls}
-            components={components_quiet}
-            onMount={mount}
-          >
-            <StageGuide pairing={pairing} />
-          </Tldraw>
-        }
-        cleaned={<CleanedPane cleaned={cleaned} />}
-        chat={
-          <ChatPane
-            role="stage"
-            title={title}
-            linked={linked}
-            online={online}
-            paired={token !== null}
-            {...talk}
-            onOpenCanvas={() => view_choose('cleaned')}
-          />
-        }
-      />
-      <ViewTabs
-        view={view}
-        linked={linked}
-        stale={!!cleaned.status?.stale}
-        unread={talk.unread}
-        onChoose={view_choose}
-      />
-      {linked && <StagePair pairing={pairing} />}
+    <main className="board board--stage" data-linked={linked} data-chat={chat_open}>
+      <PrintProvider document={cleaned.document} bounds={bounds}>
+        <Surface store={board.store} onMount={mount}>
+          <StageGuide pairing={pairing} />
+        </Surface>
+        <BoardKey editor={editor} notice="" linked={linked} interactive={false} />
+      </PrintProvider>
+      <div className="corner">
+        {linked && <StagePair pairing={pairing} />}
+        <ChatButton
+          open={chat_open}
+          unread={talk.unread}
+          onToggle={() => chat_open_set(!chat_open)}
+        />
+      </div>
+      <ChatDrawer open={chat_open} onClose={() => chat_open_set(false)}>
+        <ChatPane
+          role="stage"
+          title={title}
+          linked={linked}
+          online={online}
+          paired={token !== null}
+          {...talk}
+          onOpenCanvas={() => chat_open_set(false)}
+        />
+      </ChatDrawer>
       {linked && <PreviewBench session={session} />}
       {board.connectionStatus === 'offline' && (
         <Notice
@@ -88,27 +82,29 @@ export function StagePage({ session, title }: { session: string; title: string }
 
 // The stage's own sketch editor: it renders the image agents fetch, and is read when the
 // sketch is added to a message sent from the Mac.
-function use_stage_editor(session: string): [Editor | null, (editor: Editor) => () => void] {
+function use_stage_editor(
+  session: string,
+  print: Atom<PrintBox | null>,
+): [Editor | null, (editor: Editor) => () => void] {
   const [editor, editor_set] = useState<Editor | null>(null)
   const mount = useCallback(
     (value: Editor) => {
       editor_set(value)
-      const stop = stage_mount(value, session)
+      const stop = stage_mount(value, session, () => print.get())
       return () => {
         stop()
         editor_set(null)
       }
     },
-    [session],
+    [session, print],
   )
   return [editor, mount]
 }
 
 const pair_sheet_id = 'stage-pair'
 
-// Pairing an iPad with a linked board: one instrument in the band above the views, beside the
-// list of boards. Pressed, it shows the stage's QR on a sheet under it; pressed again, or
-// Escape, puts the sheet away. Nothing of it lies under the views.
+// Pairing an iPad with a linked board: one instrument at the top right, beside Chat. Pressed,
+// it shows the stage's QR on a sheet under it; pressed again, or Escape, puts the sheet away.
 function StagePair({ pairing }: { pairing: Pairing | null }) {
   const [open, open_set] = useState(false)
   const key_down = (event: KeyboardEvent<HTMLElement>) => {

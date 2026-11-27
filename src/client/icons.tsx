@@ -1,23 +1,18 @@
-// The interface's icons, all from Phosphor at its light weight, so their strokes sit close to
-// the one-pixel ink edges of the chrome. Each is imported on its own to keep the bundle small.
+// The interface's icons. The rail and chat use Phosphor at its light weight, so their strokes
+// sit close to the one-pixel ink edges of the chrome. Each is imported on its own to keep the
+// bundle small.
 // tldraw's icon font is not loaded, because its interface is hidden.
 
 import type { Icon } from '@phosphor-icons/react'
 import { ArrowClockwise } from '@phosphor-icons/react/dist/csr/ArrowClockwise'
 import { ArrowUp } from '@phosphor-icons/react/dist/csr/ArrowUp'
 import { ArrowUpRight } from '@phosphor-icons/react/dist/csr/ArrowUpRight'
-import { ArrowUUpLeft } from '@phosphor-icons/react/dist/csr/ArrowUUpLeft'
-import { ArrowUUpRight } from '@phosphor-icons/react/dist/csr/ArrowUUpRight'
-import { Cursor } from '@phosphor-icons/react/dist/csr/Cursor'
 import { DotsThreeVertical } from '@phosphor-icons/react/dist/csr/DotsThreeVertical'
-import { Eraser } from '@phosphor-icons/react/dist/csr/Eraser'
 import { PencilSimpleLine } from '@phosphor-icons/react/dist/csr/PencilSimpleLine'
-import { Pen } from '@phosphor-icons/react/dist/csr/Pen'
 import { Plus } from '@phosphor-icons/react/dist/csr/Plus'
 import { PushPin } from '@phosphor-icons/react/dist/csr/PushPin'
 import { QrCode } from '@phosphor-icons/react/dist/csr/QrCode'
 import { Scribble } from '@phosphor-icons/react/dist/csr/Scribble'
-import { SidebarSimple } from '@phosphor-icons/react/dist/csr/SidebarSimple'
 import { Trash } from '@phosphor-icons/react/dist/csr/Trash'
 import { X } from '@phosphor-icons/react/dist/csr/X'
 import type { ReactNode } from 'react'
@@ -28,13 +23,56 @@ function glyph(Glyph: Icon, size_px = icon_size_px): ReactNode {
   return <Glyph size={size_px} weight="light" aria-hidden="true" focusable="false" />
 }
 
-export const icon_select = glyph(Cursor)
-export const icon_pen = glyph(Pen)
-export const icon_eraser = glyph(Eraser)
-export const icon_undo = glyph(ArrowUUpLeft)
-export const icon_redo = glyph(ArrowUUpRight)
-export const icon_clear = glyph(Trash)
-export const icon_boards = glyph(SidebarSimple)
+// The board's own instruments are drawn as the One canvas design draws them: plain strokes at
+// one and a half units, in whatever ink the control is set in.
+function drawn(paths: readonly string[], size_px = icon_size_px, width = 1.5): ReactNode {
+  return (
+    <svg
+      width={size_px}
+      height={size_px}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={width}
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {paths.map((d) => (
+        <path key={d} d={d} />
+      ))}
+    </svg>
+  )
+}
+
+const pen_path = 'M15.5 4.5l4 4L9 19l-5 1 1-5z'
+const chat_path = 'M4 5.5h16v10.5H10l-4.5 3.5V16H4z'
+
+export const icon_pen = drawn([pen_path])
+export const icon_pen_small = drawn([pen_path], 20, 1.6)
+export const icon_eraser = drawn([
+  'M14 4.5l5.5 5.5-8.5 8.5H6.5L4.5 16.5z',
+  'M9 9.5l5.5 5.5M11 18.5h8.5',
+])
+export const icon_undo = drawn(['M9 6L4.5 10.5 9 15', 'M5 10.5h9a5 5 0 010 10h-3'])
+export const icon_redo = drawn(['M15 6l4.5 4.5L15 15', 'M19 10.5h-9a5 5 0 000 10h3'])
+export const icon_chat = drawn([chat_path], 22)
+export const icon_chat_small = drawn([chat_path], 20, 1.6)
+export const icon_boards = (
+  <svg
+    width={icon_size_px}
+    height={icon_size_px}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    aria-hidden="true"
+    focusable="false"
+  >
+    <rect x="3.5" y="4.5" width="17" height="15" rx="1" />
+    <path d="M9 4.5v15" />
+  </svg>
+)
 export const icon_plus = glyph(Plus, 20)
 export const icon_close = glyph(X)
 export const icon_close_small = glyph(X, 20)

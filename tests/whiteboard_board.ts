@@ -1,7 +1,7 @@
 // What the linked-board journeys share: a disposable board started through the real command
 // line, a Mac stage and a paired iPad page, and the handles a person has on a board's chat:
-// the Chat tab, the field, Add sketch and Send. Nothing here touches a live board. Pairing
-// ends on the Sketchboard, so every journey starts on a board that can be drawn on.
+// the Chat button, the field, Add sketch and Send. Nothing here touches a live board. Pairing
+// ends on the canvas, so every journey starts on a board that can be drawn on.
 
 import { expect, test, type Browser, type Page } from '@playwright/test'
 import { spawnSync } from 'node:child_process'
@@ -133,8 +133,9 @@ export async function phases(settle: () => Promise<void>, list: readonly Phase[]
   throw first.error
 }
 
-// The board's chat: one tab among the views, a field, Add sketch and Send.
-export const chat_tab = (page: Page) => page.getByRole('tab', { name: /^Chat/ })
+// The board's chat: one button at the top right, a drawer over the canvas, a field, Add sketch
+// and Send.
+export const chat_button = (page: Page) => page.getByRole('button', { name: /^Chat/ })
 export const field = (page: Page) => page.getByRole('textbox', { name: 'Message to agent' })
 export const send_button = (page: Page) => page.getByRole('button', { name: 'Send', exact: true })
 export const add_sketch = (page: Page) =>
@@ -145,23 +146,55 @@ export const mine = (page: Page, text: string | RegExp) =>
 export const answers = (page: Page, text: string | RegExp) =>
   messages(page).locator('.chat__answer').filter({ hasText: text })
 
-// The controls the board had before its chat. None of them may come back.
+// The controls the board had before its chat and its one canvas. None of them may come back:
+// no note, no bell, and no tabs or layer switch between the sketch and the agent's drawing.
 export const retired_controls = (page: Page) =>
   page
-    .getByRole('button', { name: /^(Agent note|Notifications)/ })
-    .or(page.getByRole('tab', { name: 'Side by side' }))
-    .or(page.locator('dialog.notepad, .dock, .inbox'))
+    .getByRole('button', { name: /^(Agent note|Notifications|Replace sketchboard)/ })
+    .or(page.getByRole('tab'))
+    .or(page.getByRole('tablist'))
+    .or(page.locator('dialog.notepad, .dock, .inbox, .views, .agent-pane'))
 
+// The canvas: the person's ink and, under it, the agent's print.
+export const surface = (page: Page) => page.getByRole('region', { name: 'Canvas' })
+export const print_region = (page: Page) => page.getByRole('region', { name: 'Agent print' })
+export const print_shape = (page: Page, id: string) =>
+  page.locator(`.print__shape[data-print-shape="shape:scene-${id}"]`)
+
+// The key at the foot of the canvas, and its name for the agent's print, which brings the
+// print into view when pressed.
+export const key = (page: Page) => page.locator('.key')
+export const key_agent = (page: Page) => key(page).locator('[data-layer="agent"]')
+
+// Opens the chat if it is not open, and waits until its field is there.
 export async function chat_open(page: Page) {
-  await chat_tab(page).click()
-  await expect(chat_tab(page)).toHaveAttribute('aria-selected', 'true')
+  if ((await chat_button(page).getAttribute('aria-expanded')) !== 'true') {
+    await chat_button(page).click()
+  }
+
+  await expect(chat_button(page)).toHaveAttribute('aria-expanded', 'true')
   await expect(field(page)).toBeVisible()
+
+  // The drawer slides in. What is measured next is measured where it comes to rest. The check
+  // runs in the page, so it carries everything it needs.
+  const drawer = page.getByRole('complementary', { name: 'Chat' })
+  await expect
+    .poll(() =>
+      drawer.evaluate((element) =>
+        element.getAnimations().some((animation) => animation.playState !== 'finished'),
+      ),
+    )
+    .toBe(false)
 }
 
+// Closes the chat if it is open: the canvas has the whole screen again.
 export async function sketch_open(page: Page) {
-  const tab = page.getByRole('tab', { name: /^(Sketchboard|Sketch)$/ })
-  await tab.click()
-  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  if ((await chat_button(page).getAttribute('aria-expanded')) === 'true') {
+    await chat_button(page).click()
+  }
+
+  await expect(chat_button(page)).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByRole('complementary', { name: 'Chat' })).toHaveCount(0)
 }
 
 // Writes `words` in the chat and sends them, the sketch with them if asked, and waits until the
@@ -197,12 +230,12 @@ export type Mark = {
 // how many pieces of this app's chrome overlap it, and where it sits in its own pane.
 export function marks(page: Page): Promise<Mark[]> {
   return page.evaluate(() => {
-    const chrome = '.chat, .strip, .tabs, .notice'
+    const chrome = '.chat, .drawer, .strip, .title, .corner, .key, .notice'
     const round = (value: number) => Math.round(value * 100) / 100
     const found: Mark[] = []
 
     for (const mark of document.querySelectorAll('[data-testid^="tl-watermark"]')) {
-      const pane = mark.closest('.views__pane')!
+      const pane = mark.closest('.surface, .bench, .print-bench')!
 
       if (getComputedStyle(pane).visibility !== 'visible') continue
 
@@ -232,7 +265,7 @@ export function marks(page: Page): Promise<Mark[]> {
       found.push({
         own: hit !== null && mark.contains(hit),
         covered,
-        sketch: pane.classList.contains('views__pane--sketch'),
+        sketch: pane.classList.contains('surface'),
 
         // Whether the drawing surface of its own canvas reaches under the notice.
         drawn_over: canvas !== null && meets(canvas),
@@ -252,8 +285,7 @@ export function marks(page: Page): Promise<Mark[]> {
 // drawing surface, in the corner tldraw keeps it in. The branding is tldraw's: these journeys
 // only ever look at it and press it, as a person would.
 export async function expect_marks_clear(page: Page, count: number): Promise<Mark[]> {
-  const wrong = (mark: Mark) =>
-    !mark.own || mark.covered > 0 || mark.width <= 0 || mark.height <= 0
+  const wrong = (mark: Mark) => !mark.own || mark.covered > 0 || mark.width <= 0 || mark.height <= 0
 
   // Polled: tldraw chooses the notice's form from a width it measures a moment after a resize.
   await expect
@@ -331,7 +363,7 @@ export async function stroke(
 // Link a board as a pih host does, then pair the iPad by scanning the stage QR. Before the
 // scan the chat can be written in but neither read nor sent, and says why. The scan is read
 // with the chat open, and a reload keeps the pairing and drops it from the address. Pairing
-// ends on the Sketchboard, where a pen stroke draws.
+// ends with the chat closed, on the canvas, where a pen stroke draws.
 export async function pair(root: string, file: string, stage: Page, ipad: Page) {
   const link = () =>
     command(root, 'whiteboard-link', '--protocol', protocol, '--owner', 'e2e', '--out', file)
@@ -359,8 +391,8 @@ export async function pair(root: string, file: string, stage: Page, ipad: Page) 
   await expect(ipad.locator('.chat__standing')).toContainText('Agent linked on this Mac')
   await ipad.reload()
 
-  // The words, the pairing and the view outlive the reload; the pairing leaves the address.
-  await expect(chat_tab(ipad)).toHaveAttribute('aria-selected', 'true')
+  // The words, the pairing and the open chat outlive the reload; the pairing leaves the address.
+  await expect(chat_button(ipad)).toHaveAttribute('aria-expanded', 'true')
   await expect(field(ipad)).toHaveValue('Hello')
   await expect(send_button(ipad)).toBeEnabled()
   expect(new URL(ipad.url()).hash.length).toBe(0)

@@ -8,13 +8,16 @@
 //   it is published, and publishing the same file saves exactly what the draft showed.
 // - Once the sketch moves on, a scene made from the older sketch is refused, as a draft and
 //   as a publish, and a change to the canvas alone is still taken.
+// - A new revision reprints only the print, under the ink, without moving the person's view.
+//   It says so in the key, with the revision before it a press away to look at; looking back
+//   restores and publishes nothing, and a shape chosen from the old print is let go.
 // - A free variation uses every kind of element an agent places itself. The person copies it
 //   into the sketch in one step, as shapes of their own, and Undo brings their ink back.
 // - A request for the retired Interpret, left unconfirmed in a tab from before the upgrade,
 //   is never sent again. Its words stay, and the next Send sends them as a message.
 //
 // The pictures of the drafts and the screens are attached to the test results for review. A
-// picture of the Agent canvas is taken only once the whole scene is in view and at rest.
+// picture of the print is taken only once the whole scene is in view and at rest.
 //
 // Run: bun run build && npx playwright test tests/scenes.e2e.ts
 
@@ -23,23 +26,28 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scene_format } from '../src/shared/scene_types'
+import { at_rest, board_menu, print_choose, print_fit } from './one_canvas'
 import { pixels_read } from './screen_pixels'
 import {
   action_ms,
   answers,
   board_linked,
+  chat_button,
   chat_open,
   chat_send,
   draw,
   field,
   ipad_landscape,
+  key,
   mine,
+  print_region,
   send_button,
   sketch_open,
   soon,
   step,
   step_long_ms,
   stroke,
+  surface,
   type Cli,
   type Linked,
 } from './whiteboard_board'
@@ -63,44 +71,46 @@ const png_signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 // A pixel this dark is ink: lettering or a pen stroke, never the page or a pale fill.
 const ink_light_max = 96
 
-// A shape on the Agent canvas, by the id its element was given: the shape itself, never the
-// layer tldraw draws behind some shapes.
-const canvas_region = (page: Page) => page.getByRole('region', { name: 'Agent canvas' })
+// A top-level shape of the agent's print, by the id its element was given: the picture the
+// canvas shows of it. A grouped shape is drawn inside its group's picture.
+const canvas_region = print_region
 
 const canvas_shape = (page: Page, id: string) =>
-  canvas_region(page).locator(
-    `.tl-shape[data-shape-id="shape:scene-${id}"]:not(.tl-shape-background)`,
-  )
+  page.locator(`.print__shape[data-print-shape="shape:scene-${id}"]`)
 
 const canvas_words = (page: Page, id: string, text: string) =>
   canvas_shape(page, id).getByText(text, { exact: true }).first()
 
-// Sample the center of an empty revision: a visible SVG alone does not prove dots were painted.
+// An empty revision prints nothing: sample the sheet clear of the person's ink. A visible SVG
+// alone does not prove dots were painted.
 async function empty_surface(page: Page) {
-  const pane = canvas_region(page)
-  await expect(pane.locator('.tl-shape')).toHaveCount(0)
-  const grid = pane.locator('svg.tl-grid')
+  await expect(canvas_region(page).locator('.print__shape')).toHaveCount(0)
+  const grid = surface(page).locator('svg.tl-grid')
   await expect(grid).toBeVisible()
+  await key(page).locator('[data-layer="ink"]').click()
+  await at_rest(page, '.tl-shape[data-shape-type="draw"]')
   const box = (await grid.boundingBox())!
   const side = 96
-  expect(Math.min(box.width, box.height)).toBeGreaterThan(side)
-  const x = Math.floor(box.x + (box.width - side) / 2)
-  const y = Math.floor(box.y + (box.height - side) / 2)
+  expect(Math.min(box.width, box.height)).toBeGreaterThan(side * 3)
+
+  // The ink is brought to the middle; the sheet beside the Chat button holds nothing.
+  const x = Math.floor(box.x + box.width - side - 40)
+  const y = Math.floor(box.y + 120)
   const pixels = await pixels_read(page, action_ms)
-  let vellum = 0
+  let sheet = 0
   let dots = 0
 
   for (let row = y; row < y + side; row++) {
     for (let col = x; col < x + side; col++) {
       const rgb = pixels.data.readUIntBE(4 * (row * pixels.width + col), 3)
 
-      if (rgb === 0xf6f7f4) vellum++
+      if (rgb === 0xffffff) sheet++
 
       if (rgb >>> 16 < 235) dots++
     }
   }
 
-  expect(vellum).toBeGreaterThan(side * side * 0.9)
+  expect(sheet).toBeGreaterThan(side * side * 0.9)
   expect(dots).toBeGreaterThan(4)
 }
 
@@ -120,10 +130,9 @@ type Framing = { shapes: number; cut: string[]; boxes: string }
 // What can be seen of the canvas is its box, less whatever an ancestor or the window clips.
 //
 // The measure is taken on the next animation frame, so two measures are a frame or more apart.
-async function framing_read(region: Element): Promise<Framing> {
+async function framing_read(canvas: Element): Promise<Framing> {
   await new Promise((resolve) => requestAnimationFrame(resolve))
 
-  const canvas = region.querySelector('.tl-container')!
   const seen = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
 
   for (let node: Element | null = canvas; node !== null; node = node.parentElement) {
@@ -137,15 +146,11 @@ async function framing_read(region: Element): Promise<Framing> {
   }
 
   const prefix = 'shape:scene-'
-  const shapes = region.querySelectorAll(
-    `.tl-shape[data-shape-id^="${prefix}"]:not(.tl-shape-background)`,
-  )
+  const shapes = canvas.querySelectorAll(`.print__shape[data-print-shape^="${prefix}"]`)
   const cut: string[] = []
   const boxes: number[] = []
 
   for (const shape of shapes) {
-    if (shape.getAttribute('data-shape-type') === 'group') continue
-
     const strokes = [...shape.querySelectorAll('path')].filter((path) => !path.closest('defs'))
     const drawn = strokes.length > 0 ? strokes : [shape]
     const parts = drawn.map((part) => part.getBoundingClientRect())
@@ -154,13 +159,12 @@ async function framing_read(region: Element): Promise<Framing> {
     const right = Math.max(...parts.map((part) => part.right))
     const bottom = Math.max(...parts.map((part) => part.bottom))
 
-    // tldraw stops drawing a shape that is wholly outside its viewport.
-    const culled = getComputedStyle(shape).display === 'none'
+    const hidden = getComputedStyle(shape).display === 'none'
     const within = left >= seen.left && right <= seen.right
     const between = top >= seen.top && bottom <= seen.bottom
 
-    if (culled || !within || !between) {
-      cut.push(shape.getAttribute('data-shape-id')!.slice(prefix.length))
+    if (hidden || !within || !between) {
+      cut.push(shape.getAttribute('data-print-shape')!.slice(prefix.length))
     }
 
     boxes.push(left, top, right, bottom)
@@ -169,12 +173,12 @@ async function framing_read(region: Element): Promise<Framing> {
   return { shapes: shapes.length, cut, boxes: boxes.join(' ') }
 }
 
-// Waits for the whole scene to be in view on the Agent canvas, and at rest. A label is
-// visible as soon as any of it is, and the camera follows a pane to its new size only a
-// moment after the pane has it: so neither says that the scene is framed. Every shape has to
-// lie inside what can be seen of the canvas, and be where it was a frame earlier.
+// Waits for the whole print to be in view on the canvas, and at rest. A label is visible as
+// soon as any of it is, and a camera fits a window's new size only a moment after the window
+// has it: so neither says that the scene is framed. Every top-level shape has to lie inside
+// what can be seen of the canvas, and be where it was a frame earlier.
 async function scene_framed(page: Page, shapes_count: number) {
-  const region = canvas_region(page)
+  const region = surface(page)
   let boxes_last: string | null = null
   await expect
     .poll(
@@ -184,7 +188,7 @@ async function scene_framed(page: Page, shapes_count: number) {
         boxes_last = boxes
         return { ...scene, still }
       },
-      { message: 'The whole scene is in view on the Agent canvas, and at rest.' },
+      { message: 'The whole print is in view on the canvas, and at rest.' },
     )
     .toEqual({ shapes: shapes_count, cut: [], still: true })
 }
@@ -208,7 +212,7 @@ function ack(bound: Cli, event: string, state: string, ...rest: string[]) {
 
 // The person's side of every request about the drawing: in the chat, the sketch is added and
 // the words written and sent. The Mac confirms the request, which clears the field and takes
-// the sketch off. The person goes back to the Sketchboard.
+// the sketch off. The person closes the chat and is back on the canvas.
 async function send(ipad: Page, bound: Cli, words: string): Promise<Json> {
   const waiting = bound('poll').events.length
   await chat_send(ipad, words, true)
@@ -310,7 +314,7 @@ test('a question is answered in words; a tidy copy and a free variation are draw
       () => creative(board, info),
       step_long_ms,
     )
-    await step('distant shapes share the initial Agent viewport', async () => {
+    await step('distant shapes are brought into view together when asked', async () => {
       const snap = board.bound('snapshot', '--out', path.join(board.root, 'wide'))
       scene_edit(snap.scene_path, (scene) => {
         scene.elements = [-500_000, 500_000].map((x, i) => ({
@@ -323,20 +327,20 @@ test('a question is answered in words; a tidy copy and a free variation are draw
         }))
       })
       expect(board.bound('publish', '--file', snap.scene_path)).toMatchObject({ code: 'published' })
-      await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
       await expect(canvas_shape(ipad, 'end-0')).toHaveCount(1)
+      await print_fit(ipad, 'end-1')
       await scene_framed(ipad, 2)
     })
-    await step('an empty revision shows dots on vellum without its summary', async () => {
+    await step('an empty revision shows dots on the sheet without its summary', async () => {
       const snap = board.bound('snapshot', '--out', path.join(board.root, 'empty'))
       const scene = scene_edit(snap.scene_path, (draft) => {
         draft.elements = []
         draft.summary = 'Cleared for the next drawing.'
       })
       expect(board.bound('publish', '--file', snap.scene_path)).toMatchObject({ code: 'published' })
-      await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
+      await expect(key(ipad)).toContainText(/Agent · revision \d+/)
       await empty_surface(ipad)
-      await expect(canvas_region(ipad).getByText(scene.summary)).toHaveCount(0)
+      await expect(ipad.getByText(scene.summary)).toHaveCount(0)
     })
     await step('an Interpret left unconfirmed before the upgrade is never sent again', () =>
       retired_request(board),
@@ -373,10 +377,20 @@ async function conversation(board: Linked, info: TestInfo, hash: string) {
     agent_revision: 0,
     document_hash: hash,
   })
-  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
-  await expect(ipad.getByText('Nothing on the agent canvas yet.', { exact: false })).toBeVisible()
-  await expect(ipad.getByRole('button', { name: 'Replace sketchboard' })).toBeDisabled()
-  await ipad.getByRole('tab', { name: 'Sketchboard' }).click()
+
+  // Nothing to print: the key says so, and the board's menu offers nothing to replace with.
+  await sketch_open(ipad)
+  await expect(key(ipad)).toContainText('Agent · nothing yet')
+  await expect(canvas_region(ipad).locator('.print__shape')).toHaveCount(0)
+  await ipad.getByRole('button', { name: 'Boards', exact: true }).click()
+  const rail = ipad.getByRole('complementary', { name: 'Boards' })
+  const active = rail.locator('li', { has: ipad.locator('[aria-current="page"]') })
+  await active.getByRole('button', { name: /^Actions for / }).click()
+  await expect(active.getByRole('menuitem', { name: /^Replace my sketch/ })).toHaveCount(0)
+  await expect(active.getByRole('menuitem', { name: 'Clear my ink' })).toBeEnabled()
+  await ipad.keyboard.press('Escape')
+  await rail.getByRole('button', { name: 'Close the list of boards' }).click()
+  await expect(rail).toBeHidden()
 }
 
 // The agent names the person's stroke and sets a label beside it. The board copies the stroke
@@ -428,21 +442,23 @@ async function cleanup(board: Linked, info: TestInfo, hash: string): Promise<str
   })
   ack(bound, event.id, 'updated', '--message', 'Tidied on the Agent canvas.')
 
-  // The label and ink are scene content. The summary is metadata, not another label.
+  // The label and ink are scene content. The summary is metadata, not another label. The
+  // iPad's view stays where the person left it until they ask for the print.
+  await print_fit(ipad, 'label')
+
   for (const page of [ipad, stage]) {
-    await page.getByRole('tab', { name: 'Agent canvas' }).click()
     await expect(canvas_words(page, 'label', 'A bridge')).toBeVisible()
-    await expect(canvas_region(page).locator('svg.tl-grid')).toBeVisible()
+    await expect(surface(page).locator('svg.tl-grid')).toBeVisible()
     await expect(canvas_shape(page, 'ink.0')).toHaveAttribute('data-shape-type', 'draw')
-    expect.soft(await canvas_region(page).getByText(scene.summary).count()).toBe(0)
+    expect.soft(await page.getByText(scene.summary).count()).toBe(0)
     expect.soft(await canvas_region(page).getByRole('complementary').count()).toBe(0)
   }
 
-  await scene_capture(ipad, info, 'cleanup-agent-canvas-ipad', published.shapes_count)
-  await scene_capture(stage, info, 'cleanup-agent-canvas-mac', published.shapes_count)
+  await scene_capture(ipad, info, 'cleanup-print-ipad', published.shapes_count)
+  await scene_capture(stage, info, 'cleanup-print-mac', published.shapes_count)
 
-  await viewer_zoom(stage, false)
-  await viewer_zoom(ipad, true)
+  await stage_locked(stage)
+  await viewer_zoom(ipad)
   expect(board.cli('status', '--session', session)).toMatchObject({
     document_hash: hash,
     agent_revision: 1,
@@ -462,65 +478,76 @@ async function cleanup(board: Linked, info: TestInfo, hash: string): Promise<str
   return next.scene_path as string
 }
 
-// Exercise the input surface, not an editor API. Measure the width of the published frame
-// on screen so a page zoom, a swallowed gesture or a locked camera cannot pass.
-async function viewer_zoom(page: Page, touch: boolean) {
+// Exercise the input surface, not an editor API: two fingers pinch and pan the one canvas, and
+// the print moves with the ink in the same camera. Measure the published frame on screen, so a
+// page zoom, a swallowed gesture or a print left behind by the camera cannot pass.
+async function viewer_zoom(page: Page) {
   const frame = canvas_shape(page, 'frame')
+  const ink = page.locator('section[aria-label="Canvas"] .tl-shape[data-shape-type="draw"]').first()
   const width = () => frame.evaluate((el) => el.getBoundingClientRect().width)
+  const gap = async () => {
+    const [a, b] = await Promise.all([frame.boundingBox(), ink.boundingBox()])
+    return Math.round(((b!.x - a!.x) / a!.width) * 1000)
+  }
   const fitted = await width()
-  const canvas = canvas_region(page).locator('.tl-canvas')
-  const bounds = await canvas.boundingBox()
-  expect(bounds).not.toBeNull()
-  const x = bounds!.x + bounds!.width / 2
-  const y = bounds!.y + bounds!.height / 2
-  await page.mouse.click(x, y)
+  const apart = await gap()
+  const bounds = (await surface(page).boundingBox())!
+  const x = bounds.x + bounds.width / 2
+  const y = bounds.y + bounds.height / 2
+  const input = await page.context().newCDPSession(page)
+  const fingers = (radius: number, shift = 0) => [
+    { x: x - radius + shift, y, id: 1 },
+    { x: x + radius + shift, y, id: 2 },
+  ]
 
-  if (touch) {
-    const input = await page.context().newCDPSession(page)
-    const fingers = (radius: number) => [
-      { x: x - radius, y, id: 1 },
-      { x: x + radius, y, id: 2 },
-    ]
+  try {
+    await input.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: fingers(40) })
+    await input.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(70) })
+    await expect.poll(width).toBeGreaterThan(fitted * 1.1)
+    await input.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(28) })
+    await expect.poll(width).toBeLessThan(fitted * 0.95)
 
-    try {
-      await input.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: fingers(40) })
-      await input.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(70) })
-      await expect.poll(width).toBeGreaterThan(fitted * 1.1)
-      await input.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(28) })
-      await expect.poll(width).toBeLessThan(fitted * 0.95)
-      await input.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
-    } finally {
-      await input.detach()
+    // Two fingers moved together pan, at the scale the person chose.
+    const left = () => frame.evaluate((el) => el.getBoundingClientRect().left)
+    const before = await left()
+
+    for (const shift of [30, 60]) {
+      await input.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: fingers(28, shift),
+      })
     }
-  } else {
-    await page.keyboard.down('Control')
 
-    try {
-      await page.mouse.wheel(0, -100)
-      await expect.poll(width).toBeGreaterThan(fitted)
-
-      // tldraw clamps each wheel tick and may discard a gesture-end tick. Wheel past the
-      // initial fit and keep Control pressed until Chromium has rendered the smaller frame.
-
-      for (let tick = 0; tick < 4; tick++) await page.mouse.wheel(0, 100)
-
-      await expect.poll(width).toBeLessThan(fitted * 0.95)
-    } finally {
-      await page.keyboard.up('Control')
-    }
+    await expect.poll(left).toBeGreaterThan(before + 20)
+    await input.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  } finally {
+    await input.detach()
   }
 
-  await expect.poll(width).toBeLessThan(fitted)
-
-  // Another navigation must preserve the user's scale rather than reapply the initial fit.
-  const left = () => frame.evaluate((el) => el.getBoundingClientRect().left)
-  const before = await left()
-  await page.mouse.move(x, y)
-  await page.mouse.down()
-  await page.mouse.move(x + 45, y, { steps: 5 })
-  await page.mouse.up()
-  await expect.poll(left).toBeGreaterThan(before + 20)
   expect(await width()).toBeLessThan(fitted)
+
+  // One camera: the print and the ink keep their places relative to each other, to within the
+  // rounding of a rendered edge.
+  await at_rest(page, `.print__shape[data-print-shape="shape:scene-frame"]`)
+  expect(Math.abs((await gap()) - apart)).toBeLessThanOrEqual(3)
+}
+
+// The stage presents: its camera keeps the whole board in view and does not follow a wheel.
+async function stage_locked(stage: Page) {
+  const frame = canvas_shape(stage, 'frame')
+  const fitted = await at_rest(stage, '.print__shape[data-print-shape="shape:scene-frame"]')
+  const bounds = (await surface(stage).boundingBox())!
+  await stage.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  await stage.keyboard.down('Control')
+
+  try {
+    await stage.mouse.wheel(0, -200)
+  } finally {
+    await stage.keyboard.up('Control')
+  }
+
+  await expect(frame).toBeVisible()
+  expect(await at_rest(stage, '.print__shape[data-print-shape="shape:scene-frame"]')).toBe(fitted)
 }
 
 // The person draws on. A scene made from the sketch as it was is refused, drafted or
@@ -528,7 +555,6 @@ async function viewer_zoom(page: Page, touch: boolean) {
 async function moved_on(board: Linked, tidy_path: string) {
   const { ipad, bound, cli, session } = board
   const status = () => cli('status', '--session', session)
-  await ipad.getByRole('tab', { name: 'Sketchboard' }).click()
   await stroke(ipad, { x: 420, y: 520 }, { x: 25, y: -10 })
   await expect.poll(() => status().shapes_count).toBe(2)
 
@@ -541,10 +567,10 @@ async function moved_on(board: Linked, tidy_path: string) {
   }
 
   expect(status()).toMatchObject({ agent_revision: 1, cleaned_stale: true })
-  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
-  await expect(ipad.getByRole('tab', { name: /Agent canvas.*out of date/ })).toBeVisible()
   await expect(canvas_region(ipad).getByRole('complementary')).toHaveCount(0)
   await expect(canvas_words(ipad, 'label', 'A bridge')).toBeVisible()
+  const ink = await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')
+  const frame = await at_rest(ipad, '.print__shape[data-print-shape="shape:scene-frame"]')
 
   scene_edit(tidy_path, (scene) => {
     scene.basis = 'canvas'
@@ -557,6 +583,40 @@ async function moved_on(board: Linked, tidy_path: string) {
   })
   await expect(canvas_words(ipad, 'label', 'Still a bridge')).toBeVisible()
   await expect(canvas_shape(ipad, 'ink.0')).toHaveAttribute('data-shape-type', 'draw')
+  await revision_arrival(ipad, { ink, frame })
+  expect(status()).toMatchObject({ agent_revision: 2, shapes_count: 2 })
+}
+
+// A new revision is said in the key, the ink untouched and the view where it was. The revision
+// before is a press away; it is shown in place, its shapes can be looked at but not taken, and
+// going back to the newest restores and publishes nothing.
+async function revision_arrival(ipad: Page, before: { ink: string; frame: string }) {
+  const arrived = ipad.locator('.key[data-state="arrived"]')
+  await expect(arrived).toContainText('Your ink, untouched')
+  await expect(arrived).toContainText('Agent · revision 2, just now')
+  expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(before.ink)
+  expect(await at_rest(ipad, '.print__shape[data-print-shape="shape:scene-frame"]')).toBe(
+    before.frame,
+  )
+
+  await ipad.getByRole('button', { name: 'Show revision 1' }).tap()
+  await expect(ipad.locator('.key[data-state="previous"]')).toContainText(
+    'Agent · showing revision 1',
+  )
+  await expect(canvas_words(ipad, 'label', 'A bridge')).toBeVisible()
+  await expect(canvas_region(ipad)).toHaveAttribute('data-showing', 'previous')
+  expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(before.ink)
+  const card = await print_choose(ipad, 'label', true)
+  await expect(card).toContainText('revision 1')
+  await expect(card.getByRole('button', { name: 'Take into my sketch' })).toBeDisabled()
+  await ipad.keyboard.press('Escape')
+  await expect(card).toHaveCount(0)
+
+  await ipad.getByRole('button', { name: 'Back to revision 2' }).tap()
+  await expect(canvas_words(ipad, 'label', 'Still a bridge')).toBeVisible()
+  await expect(canvas_region(ipad)).toHaveAttribute('data-showing', 'current')
+  await expect(key(ipad)).toContainText('Agent · revision 2')
+  expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(before.ink)
 }
 
 // A scene of the agent's own invention, placed element by element. The person then copies it
@@ -583,45 +643,60 @@ async function creative(board: Linked, info: TestInfo) {
   })
   const drafted = await draft_drawn(board, info, snap.scene_path, 'creative-draft')
   expect(drafted).toMatchObject({ shapes_count: night_city.length, base_revision: 2 })
+
+  // A shape of revision 2 is chosen as revision 3 arrives: the choice is let go, nothing is
+  // taken, and the shapes revision 3 no longer has ghost for a moment and are gone.
+  await print_fit(ipad, 'label')
+  const card = await print_choose(ipad, 'label', true)
   expect(bound('publish', '--file', snap.scene_path)).toMatchObject({
     code: 'published',
     revision: 3,
     shapes_count: night_city.length,
     records_hash: drafted.records_hash,
   })
+  await expect(card).toHaveCount(0)
+  await expect(ipad.locator('.print__shape[data-state="ghost"]')).not.toHaveCount(0)
+  await expect(ipad.locator('.print__shape[data-state="ghost"]')).toHaveCount(0)
+  expect(status()).toMatchObject({ agent_revision: 3, shapes_count: 2 })
   ack(bound, event.id, 'updated', '--message', 'Drawn on the Agent canvas.')
 
-  // Every element is a shape on both screens, where the agent put it.
+  // Every top-level element is a shape on both screens, where the agent put it; grouped ones
+  // are drawn inside their group.
+  const top_level = night_city.filter((element) => element.parent === undefined)
+  await print_fit(ipad, 'tower')
+
   for (const page of [ipad, stage]) {
-    await page.getByRole('tab', { name: 'Agent canvas' }).click()
     await expect(canvas_words(page, 'tower', 'Tower')).toBeVisible()
     await expect(canvas_words(page, 'title', 'Night city')).toBeVisible()
 
-    for (const element of night_city) await expect(canvas_shape(page, element.id)).toHaveCount(1)
+    for (const element of night_city) {
+      const count = element.parent === undefined ? 1 : 0
+      await expect(canvas_shape(page, String(element.id))).toHaveCount(count)
+    }
 
     await expect(canvas_shape(page, 'ink.0')).toHaveCount(0)
+    await expect(canvas_region(page)).toHaveAttribute('data-failed', '0')
   }
 
-  await scene_capture(stage, info, 'creative-agent-canvas-mac', night_city.length)
+  await scene_capture(stage, info, 'creative-print-mac', top_level.length)
   await soon(ipad.setViewportSize(ipad_landscape))
-  await scene_framed(ipad, night_city.length)
-  await scene_capture(ipad, info, 'creative-agent-canvas-ipad-landscape', night_city.length)
+  await print_fit(ipad, 'tower')
+  await scene_capture(ipad, info, 'creative-print-ipad-landscape', top_level.length)
 
-  // The answer says the canvas moved while the request was open, and leads there.
+  // The answer says the canvas moved while the request was open, and leads there: the chat
+  // closes and the print is brought into view.
+  await key(ipad).locator('[data-layer="ink"]').click()
   await chat_open(ipad)
   const drawn = answers(ipad, 'Drawn on the Agent canvas.')
-  await expect(drawn.locator('.chat__canvas')).toContainText('revision 3')
-  await drawn.getByRole('button', { name: 'Open' }).click()
-  await expect(ipad.getByRole('tab', { name: 'Agent canvas' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  )
-  await scene_framed(ipad, night_city.length)
+  await expect(drawn.locator('.chat__canvas')).toContainText('Revision 3')
+  await drawn.getByRole('button', { name: 'Show on canvas' }).click()
+  await expect(chat_button(ipad)).toHaveAttribute('aria-expanded', 'false')
+  await scene_framed(ipad, top_level.length)
 
   // Only the person replaces the sketch: one step, shapes of their own, and one Undo back.
   const ink_hash = status().document_hash
-  await ipad.getByRole('button', { name: 'Replace sketchboard' }).tap()
-  await expect(ipad.getByText('Sketch replaced. Undo restores your ink.')).toBeVisible()
+  await board_menu(ipad, 'Replace my sketch with revision 3')
+  await expect(key(ipad)).toContainText('Sketch replaced. Undo restores your ink.')
   await expect.poll(() => status().shapes_count).toBe(night_city.length)
   const copied = bound('snapshot', '--out', path.join(root, 'copied'))
   expect(copied.status).toBe('success')

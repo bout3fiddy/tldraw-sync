@@ -1,36 +1,28 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { board_label, type BoardSession } from '../shared/board_session'
+import type { BoardMenuItem } from './board_menu'
 import { session_delete } from './board_sessions'
 import { icon_actions, icon_delete, icon_rename } from './icons'
 
 type Props = {
   session: BoardSession
+
+  // The board on screen's own actions, offered by its page; empty for every other board.
+  extra: readonly BoardMenuItem[]
   onRename(): void
   onRemove(id: string): void
   onError(): void
+  onExtra(): void
 }
 
 // The button is deliberately separate from the link. Secondary clicks, long presses and
 // modifier clicks on that link keep the browser's normal navigation choices.
-export function BoardActions({ session, onRename, onRemove, onError }: Props) {
+export function BoardActions({ session, extra, onRename, onRemove, onError, onExtra }: Props) {
   const [open, open_set] = useState(false)
   const [confirm, confirm_set] = useState<BoardSession | null>(null)
-  const [busy, busy_set] = useState(false)
   const button = useRef<HTMLButtonElement>(null)
+  const { busy, remove } = use_board_delete(button, onRemove, onError)
   const label = `Actions for ${board_label(session)}`
-
-  const remove = async (selected: BoardSession) => {
-    const rail = button.current?.closest('aside')
-    confirm_set(null)
-    busy_set(true)
-    const removed = await session_delete(selected)
-    busy_set(false)
-
-    if (removed) onRemove(selected.id)
-    else onError()
-
-    restore_focus(rail, removed ? null : button.current)
-  }
 
   const dismiss = () => {
     open_set(false)
@@ -55,10 +47,16 @@ export function BoardActions({ session, onRename, onRemove, onError }: Props) {
       {open && (
         <ActionMenu
           session={session}
+          extra={extra}
           trigger={button}
           onOutside={() => open_set(false)}
           onDismiss={dismiss}
           onRename={onRename}
+          onExtra={(item) => {
+            open_set(false)
+            onExtra()
+            item.run()
+          }}
           onDelete={() => {
             open_set(false)
             confirm_set(session)
@@ -68,7 +66,10 @@ export function BoardActions({ session, onRename, onRemove, onError }: Props) {
       {confirm && (
         <DeleteDialog
           session={confirm}
-          onConfirm={() => void remove(confirm)}
+          onConfirm={() => {
+            confirm_set(null)
+            void remove(confirm)
+          }}
           onCancel={() => {
             confirm_set(null)
             button.current?.focus()
@@ -77,6 +78,27 @@ export function BoardActions({ session, onRename, onRemove, onError }: Props) {
       )}
     </>
   )
+}
+
+// Deletes a confirmed board: busy while the board answers, then focus goes where the row was.
+function use_board_delete(
+  button: RefObject<HTMLButtonElement>,
+  onRemove: (id: string) => void,
+  onError: () => void,
+) {
+  const [busy, busy_set] = useState(false)
+  const remove = async (selected: BoardSession) => {
+    const rail = button.current?.closest('aside')
+    busy_set(true)
+    const removed = await session_delete(selected)
+    busy_set(false)
+
+    if (removed) onRemove(selected.id)
+    else onError()
+
+    restore_focus(rail, removed ? null : button.current)
+  }
+  return { busy, remove }
 }
 
 // Once React removes the row, restore keyboard focus without stealing it from a new choice.
@@ -92,14 +114,17 @@ function restore_focus(rail: HTMLElement | null | undefined, button: HTMLButtonE
 
 type MenuProps = {
   session: BoardSession
+  extra: readonly BoardMenuItem[]
   trigger: RefObject<HTMLButtonElement>
   onOutside(): void
   onDismiss(): void
   onRename(): void
+  onExtra(item: BoardMenuItem): void
   onDelete(): void
 }
 
-function ActionMenu({ session, trigger, onOutside, onDismiss, onRename, onDelete }: MenuProps) {
+function ActionMenu(props: MenuProps) {
+  const { session, extra, trigger, onOutside, onDismiss, onRename, onExtra, onDelete } = props
   const menu = useRef<HTMLDivElement>(null)
   useEffect(() => {
     menu.current?.querySelector('button')?.focus()
@@ -131,11 +156,18 @@ function ActionMenu({ session, trigger, onOutside, onDismiss, onRename, onDelete
       <button role="menuitem" tabIndex={-1} onClick={onRename}>
         {icon_rename} Rename
       </button>
-      <button
-        role="menuitem"
-        tabIndex={-1}
-        onClick={onDelete}
-      >
+      {extra.map((item) => (
+        <button
+          key={item.label}
+          role="menuitem"
+          tabIndex={-1}
+          disabled={item.disabled}
+          onClick={() => onExtra(item)}
+        >
+          {item.label}
+        </button>
+      ))}
+      <button role="menuitem" tabIndex={-1} onClick={onDelete}>
         {icon_delete} Delete
       </button>
     </div>

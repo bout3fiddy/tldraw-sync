@@ -1,7 +1,7 @@
 // What the stage does once its canvas exists: stay read-only, keep the whole drawing in
 // view, and keep the server's image of the drawing current.
 
-import { react, type Editor } from 'tldraw'
+import { Box, react, type Editor } from 'tldraw'
 import {
   image_edge_pixels_max,
   image_padding_px,
@@ -11,12 +11,10 @@ import {
 import { board_query } from '../shared/board_session'
 import { time_real } from '../shared/time'
 import { drawing_uploader_create } from './drawing_uploader'
+import type { PrintBox } from './print_svg'
 
 // Total space kept clear around the drawing, across both sides of each axis.
 const fit_inset_px = 160
-// The Agent canvas gives its scene more of the pane: a narrow split view keeps its words as
-// large as it can.
-export const fit_inset_cleaned_px = 48
 // A small sketch is not blown up to fill a monitor: past this it only looks coarse.
 const fit_zoom_max = 2
 // A board written zoomed far out is far larger than a window. tldraw stops zooming out at a
@@ -24,14 +22,19 @@ const fit_zoom_max = 2
 const fit_zoom_min = 0.005
 const fit_duration_ms = 180
 
-// `session` is the board this stage presents, and renders the image of.
-export function stage_mount(editor: Editor, session: string): () => void {
+// `session` is the board this stage presents, and renders the image of. `print` is where the
+// agent's print lies, so the stage keeps both it and the ink in view.
+export function stage_mount(
+  editor: Editor,
+  session: string,
+  print: () => PrintBox | null,
+): () => void {
   editor.user.updateUserPreferences({ colorScheme: 'light' })
-  editor.updateInstanceState({ isReadonly: true })
+  editor.updateInstanceState({ isReadonly: true, isGridMode: true })
   // Locked against the viewer. The fit below moves the camera with `force`.
   editor.setCameraOptions({ isLocked: true, zoomSteps: [fit_zoom_min, fit_zoom_max] })
 
-  const fit_stop = fit_start(editor, fit_inset_px, fit_duration_ms)
+  const fit_stop = fit_start(editor, print)
   const upload_stop = upload_start(editor, session)
   return () => {
     fit_stop()
@@ -39,26 +42,28 @@ export function stage_mount(editor: Editor, session: string): () => void {
   }
 }
 
-// The stage never follows the pen's zoom. It shows the whole drawing, and refits only when
-// the drawing's extent or the window's size changes. The cleaned canvas fits the same way.
-export function fit_start(editor: Editor, inset_px: number, duration_ms: number): () => void {
+// The stage never follows the pen's zoom. It shows the whole drawing and the agent's print,
+// and refits only when their extent or the window's size changes.
+function fit_start(editor: Editor, print: () => PrintBox | null): () => void {
   let key_fitted = ''
   let frame = 0
+  let fitted_once = false
 
   const fit = (): void => {
     frame = 0
-    const bounds = editor.getCurrentPageBounds()
+    const bounds = board_bounds(editor, print())
     if (bounds === undefined) return
     editor.zoomToBounds(bounds, {
       force: true,
-      inset: inset_px,
+      inset: fit_inset_px,
       targetZoom: fit_zoom_max,
-      animation: { duration: key_fitted === '' ? 0 : duration_ms },
+      animation: { duration: fitted_once ? fit_duration_ms : 0 },
     })
+    fitted_once = true
   }
 
   const react_stop = react('stage fit', () => {
-    const bounds = editor.getCurrentPageBounds()
+    const bounds = board_bounds(editor, print())
     const viewport = editor.getViewportScreenBounds()
     const key = bounds === undefined
       ? 'empty'
@@ -72,6 +77,16 @@ export function fit_start(editor: Editor, inset_px: number, duration_ms: number)
     react_stop()
     window.cancelAnimationFrame(frame)
   }
+}
+
+// Everything on the board: the ink, the print, or both together.
+function board_bounds(editor: Editor, print: PrintBox | null): Box | undefined {
+  const ink = editor.getCurrentPageBounds()
+
+  if (print === null) return ink
+
+  const box = new Box(print.x, print.y, print.w, print.h)
+  return ink === undefined ? box : Box.Common([ink, box])
 }
 
 function upload_start(editor: Editor, session: string): () => void {

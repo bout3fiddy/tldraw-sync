@@ -18,7 +18,7 @@ import {
   type Mine,
 } from './chat_thread'
 import { ChatComposer } from './chat_composer'
-import { icon_open, icon_retry, icon_sketch_small } from './icons'
+import { icon_retry, icon_sketch_small } from './icons'
 
 export type ChatProps = {
   role: Role
@@ -51,14 +51,13 @@ export function ChatPane(props: ChatProps) {
   return (
     <div className="chat" ref={root}>
       <header className="chat__head">
-        <h1 className="chat__title">{props.title}</h1>
+        <h2 className="visually-hidden">Chat for {props.title}</h2>
         <p className="chat__standing" data-trouble={standing_trouble(props)}>
           {standing_text(props)}
         </p>
       </header>
       <div className="chat__scroll" ref={log}>
         <div className="chat__lane">
-          <ChatScope title={props.title} />
           <ol className="chat__log" role="log" aria-label="Messages">
             {entries.map((entry, index) => (
               <ChatEntry key={entry.key} entry={entry} before={entries[index - 1]} {...props} />
@@ -147,18 +146,6 @@ function standing_text({ linked, online, paired, chat, role }: ChatProps): strin
 const standing_trouble = (props: ChatProps) =>
   !props.linked || !props.online || !props.paired || props.chat.denied
 
-function ChatScope({ title }: { title: string }) {
-  return (
-    <div className="chat__scope">
-      <p className="chat__scope-title">This chat belongs to this board.</p>
-      <p className="chat__scope-text">
-        The agent linked to {title} answers here, with this board’s sketch and Agent canvas in
-        reach. Other boards keep their own chats. Delete the board and its chat goes with it.
-      </p>
-    </div>
-  )
-}
-
 type EntryProps = ChatProps & { entry: Entry; before: Entry | undefined }
 
 function ChatEntry({ entry, before, ...props }: EntryProps) {
@@ -243,20 +230,19 @@ function AnswerMessage({ answer, onOpenCanvas }: AnswerProps) {
   return (
     <li className="chat__answer" data-failed={answer.failed} data-unread={answer.unread}>
       <p className="chat__from">
-        <span className="chat__who">Agent</span>
+        <span className="chat__who">
+          <span className="chat__agent-mark" aria-hidden="true" />
+          Agent
+        </span>
         <span className="chat__when">{time_of(answer.at_ms)}</span>
         {answer.unread && <span className="chat__new">New</span>}
       </p>
       <p className="chat__words chat__words--answer">{answer.text}</p>
       {answer.canvas_revision !== null && (
         <div className="chat__canvas">
-          <span className="chat__mark" data-ended="true" aria-hidden="true" />
-          <span className="chat__canvas-text">
-            Drew on the Agent canvas · revision {answer.canvas_revision}
-          </span>
+          <span className="chat__canvas-text">Revision {answer.canvas_revision}</span>
           <button type="button" className="chat__open" onClick={onOpenCanvas} onKeyDown={open_key}>
-            Open
-            {icon_open}
+            Show on canvas
           </button>
         </div>
       )}

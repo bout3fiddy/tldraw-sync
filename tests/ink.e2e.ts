@@ -88,7 +88,7 @@ async function stroke_draw(page: Page, x: number, y: number): Promise<void> {
 const zoom_read = async (page: Page): Promise<number> =>
   Number(
     await page
-      .locator('section[aria-label="Sketch"] .tl-container')
+      .locator('section[aria-label="Canvas"] .tl-container')
       .evaluate((container) => getComputedStyle(container).getPropertyValue('--tl-zoom')),
   )
 
@@ -97,7 +97,7 @@ const zoom_read = async (page: Page): Promise<number> =>
 async function line_width_min_px(page: Page): Promise<number | null> {
   const zoom = await zoom_read(page)
   const widths = await page
-    .locator('section[aria-label="Sketch"] .tl-shape[data-shape-type="draw"] path[stroke]')
+    .locator('section[aria-label="Canvas"] .tl-shape[data-shape-type="draw"] path[stroke]')
     .evaluateAll((paths) => paths.map((path) => parseFloat(getComputedStyle(path).strokeWidth)))
   return widths.length === 0 ? null : Math.min(...widths) * zoom
 }
@@ -114,7 +114,8 @@ test('ink written and shown far zoomed out is never a hairline', async ({ browse
     const ipad = await contexts[1]!.newPage()
     await stage.goto(origin)
     await ipad.goto(`${origin}/draw`)
-    await expect(ipad.getByRole('tab', { name: 'Sketch' })).toHaveAttribute('aria-selected', 'true')
+    await expect(ipad.getByRole('region', { name: 'Canvas' })).toBeVisible()
+    await expect(ipad.getByRole('tab')).toHaveCount(0)
 
     // At full size the nib is the nib.
     await stroke_draw(ipad, 500, 400)
