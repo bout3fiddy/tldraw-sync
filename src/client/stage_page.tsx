@@ -6,6 +6,8 @@ import { Tldraw, useEditor, useValue, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
 import { path_pairing } from '../shared/constants'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
+import { ChatPane } from './chat_pane'
+import { use_board_chat, use_stage_token } from './chat_state'
 import { CleanedPane } from './cleaned_pane'
 import { use_cleaned } from './cleaned_state'
 import { icon_pair } from './icons'
@@ -17,14 +19,19 @@ import { use_view, ViewPanes, ViewTabs } from './views'
 type Pairing = { url: string; modules: string[] }
 
 // The sketch canvas stays mounted whichever view is chosen: it renders the image agents fetch.
-// On a linked board the stage also draws an agent's drafts, out of sight, when asked.
-export function StagePage({ session }: { session: string }) {
+// On a linked board the stage also draws an agent's drafts, out of sight, when asked, and
+// holds the board's chat, read and sent with the pairing it hands the iPad.
+export function StagePage({ session, title }: { session: string; title: string }) {
   const board = use_board_store('stage', session)
   const [view, view_choose] = use_view('stage')
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const pairing = use_pairing(session)
-  const mount = useCallback((editor: Editor) => stage_mount(editor, session), [session])
+  const [editor, mount] = use_stage_editor(session)
+  const token = use_stage_token(session, linked)
+  const online = board.status === 'synced-remote' && board.connectionStatus !== 'offline'
+  const viewing = view === 'chat'
+  const talk = use_board_chat({ session, token, linked, online, editor, viewing })
   if (board.status === 'loading') return <Notice text="Opening the board" />
   if (board.status === 'error') {
     const text = 'The board is not answering. Start it with “tldraw-sync start”, then reload.'
@@ -48,9 +55,25 @@ export function StagePage({ session }: { session: string }) {
           </Tldraw>
         }
         cleaned={<CleanedPane cleaned={cleaned} />}
+        chat={
+          <ChatPane
+            role="stage"
+            title={title}
+            linked={linked}
+            online={online}
+            paired={token !== null}
+            {...talk}
+            onOpenCanvas={() => view_choose('cleaned')}
+          />
+        }
       />
-      <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
-        onChoose={view_choose} />
+      <ViewTabs
+        view={view}
+        linked={linked}
+        stale={!!cleaned.status?.stale}
+        unread={talk.unread}
+        onChoose={view_choose}
+      />
       {linked && <StagePair pairing={pairing} />}
       {linked && <PreviewBench session={session} />}
       {board.connectionStatus === 'offline' && (
@@ -61,6 +84,24 @@ export function StagePage({ session }: { session: string }) {
       )}
     </main>
   )
+}
+
+// The stage's own sketch editor: it renders the image agents fetch, and is read when the
+// sketch is added to a message sent from the Mac.
+function use_stage_editor(session: string): [Editor | null, (editor: Editor) => () => void] {
+  const [editor, editor_set] = useState<Editor | null>(null)
+  const mount = useCallback(
+    (value: Editor) => {
+      editor_set(value)
+      const stop = stage_mount(value, session)
+      return () => {
+        stop()
+        editor_set(null)
+      }
+    },
+    [session],
+  )
+  return [editor, mount]
 }
 
 const pair_sheet_id = 'stage-pair'

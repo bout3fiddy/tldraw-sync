@@ -1,25 +1,29 @@
 // The iPad workspace: a canvas and a tool strip. Everything else tldraw offers is hidden. Tabs
-// switch to the cleaned diagram, or show it beside the sketch while drawing continues.
+// switch to the Agent canvas or to the board's chat, while the sketch stays mounted behind.
 
 import { useCallback, useState } from 'react'
 import { AgentActions } from './agent_actions'
 import { DefaultSizeStyle, Tldraw, type Editor } from 'tldraw'
+import { use_pair_token } from './board_pair'
 import { asset_urls, components_quiet, use_board_store } from './board_store'
+import { ChatPane } from './chat_pane'
+import { use_board_chat } from './chat_state'
 import { CleanedPane } from './cleaned_pane'
-import { use_cleaned } from './cleaned_state'
+import { use_cleaned, type CleanedState } from './cleaned_state'
 import { Notice } from './notice'
 import { ToolSide } from './tool_side'
 import { use_view, ViewPanes, ViewTabs } from './views'
 
-export function DrawPage({ session }: { session: string }) {
+export function DrawPage({ session, title }: { session: string; title: string }) {
   const board = use_board_store('draw', session)
   const [view, view_choose] = use_view('draw')
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
   const [editor, setEditor] = useState<Editor | null>(null)
-
-  // Where the agent's two buttons go while the sketch is on screen: beside its tools.
-  const [tools, tools_set] = useState<HTMLElement | null>(null)
+  const token = use_pair_token(session)
+  const online = board.status === 'synced-remote' && board.connectionStatus !== 'offline'
+  const viewing = view === 'chat'
+  const talk = use_board_chat({ session, token, linked, online, editor, viewing })
 
   // Where the one action on the Agent canvas goes while that canvas is on screen: its head.
   const [head, head_set] = useState<HTMLElement | null>(null)
@@ -45,27 +49,49 @@ export function DrawPage({ session }: { session: string }) {
             components={components_quiet}
             onMount={mount}
           >
-            <ToolSide editable={linked} onSlot={tools_set} />
+            <ToolSide editable={linked} />
           </Tldraw>
         }
-        cleaned={
-          <div className="agent-pane">
-            <div ref={head_set} className="agent-pane__head" />
-            <div className="agent-pane__canvas">
-              <CleanedPane cleaned={cleaned} />
-            </div>
-          </div>
+        cleaned={<AgentPane cleaned={cleaned} onHead={head_set} />}
+        chat={
+          <ChatPane
+            role="draw"
+            title={title}
+            linked={linked}
+            online={online}
+            paired={token !== null}
+            {...talk}
+            onOpenCanvas={() => view_choose('cleaned')}
+          />
         }
       />
-      <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
-        onChoose={view_choose} />
-      <AgentActions editor={editor} session={session}
-        cleaned={cleaned} view={view} online={board.connectionStatus !== 'offline'}
-        tools={tools} head={head} showSketch={() => view_choose('sketch')} />
-      {!linked && board.connectionStatus === 'offline' && (
+      <ViewTabs
+        view={view}
+        linked={linked}
+        stale={!!cleaned.status?.stale}
+        unread={talk.unread}
+        onChoose={view_choose}
+      />
+      <AgentActions editor={editor} cleaned={cleaned} online={online}
+        head={head} showSketch={() => view_choose('sketch')} />
+      {!linked && !online && (
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}
     </main>
+  )
+}
+
+// The Agent canvas under a head of its own, where its one action goes.
+type AgentPaneProps = { cleaned: CleanedState; onHead: (head: HTMLElement | null) => void }
+
+function AgentPane({ cleaned, onHead }: AgentPaneProps) {
+  return (
+    <div className="agent-pane">
+      <div ref={onHead} className="agent-pane__head" />
+      <div className="agent-pane__canvas">
+        <CleanedPane cleaned={cleaned} />
+      </div>
+    </div>
   )
 }
 

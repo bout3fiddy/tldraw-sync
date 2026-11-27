@@ -1,12 +1,7 @@
 # tldraw-sync
 
-Draw on your iPad with an Apple Pencil while your Mac shows the whole board. Choose **Side by side**
-on the Mac to see your Sketchboard next to the Agent canvas.
-
-![Mac screenshot: the Sketchboard on the left shows an architecture diagram with handwritten
-questions and circles. The Agent canvas on the right shows the diagram without those marks.][mac]
-
-[mac]: docs/images/whiteboard.png
+Draw on your iPad with an Apple Pencil while your Mac shows the whole board. Switch between the
+**Sketchboard**, the **Agent canvas** and the board's **Chat** with the tabs at the top right.
 
 ## Run it locally
 
@@ -29,15 +24,21 @@ The home addresses (`/` on the Mac and `/draw` on the iPad) open the oldest rema
 all boards and the list stays empty until you select **New board**.
 
 In a pih session with whiteboard support, use `/start_whiteboard` instead to link the board to that
-session. Scan the QR code on the Mac stage and leave the stage open. On the iPad, open the note, say
-what you want if you like, and send: every send is your sketch as it is, with or without a note. Ask
-a question and the agent answers in the conversation. Ask for something drawn, tidied or imagined
-and it draws on the **Agent canvas**. **Replace sketchboard** copies that drawing into your sketch
-as shapes you can edit, and Undo brings your ink back.
+session. Scan the QR code on the Mac stage and leave the stage open. Open **Chat** on the iPad or
+the Mac and write to the agent linked to that board. Your words go alone: the agent sees no sketch
+unless you press **Add sketch**, which sends the sketch as it is at that moment. The agent answers
+in the chat, under your message, and says so when it draws on the **Agent canvas**; **Open** takes
+you there. A dot on **Chat** means an answer you have not read on this device. **Replace
+sketchboard** copies the Agent canvas into your sketch as shapes you can edit, and Undo brings your
+ink back.
+
+Each board has its own chat, kept on the Mac with the board. Only a device paired by that board's QR
+code, and the Mac stage itself, can read it. A draft and a message the Mac has not confirmed stay on
+the device: if the Mac is lost, press **Send again** once it is back, and nothing is sent twice.
 
 The board runs on your Mac and has no model of its own. Use a trusted network: sketch access has no
-password and traffic is unencrypted. If your agent uses a hosted model, the sketch you share with it
-goes to that provider.
+password and traffic is unencrypted. If your agent uses a hosted model, the messages and sketches
+you share with it go to that provider.
 
 ## iPad Sketchboard
 

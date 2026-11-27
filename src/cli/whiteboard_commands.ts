@@ -3,9 +3,13 @@ import { AssertionError } from '../shared/assert'
 import { document_hash_pattern } from '../shared/constants'
 import { board_query } from '../shared/board_session'
 import {
+  event_message_valid,
+  event_request_complete,
+  event_state_terminal,
   event_states,
   event_kinds,
   events_count_max,
+  text_code_points_max,
   request_id_pattern,
   request_text_valid,
   type BoardEvent,
@@ -200,14 +204,17 @@ async function delivery(command: string, binding: Binding, options: Options): Pr
 
   const ack = command === 'whiteboard-ack'
 
-  if (
-    ack &&
-    (!options.event ||
-      options.event.length > 128 ||
-      !event_states.some((s) => s !== 'queued' && s === options.state) ||
-      (options.message?.length ?? 0) > message_length_max)
-  ) {
-    return usage(command, 'Supply an event, acknowledgement state and optional short message.')
+  const state = event_states.find((s) => s !== 'queued' && s === options.state)
+
+  if (ack && (!options.event || options.event.length > 128 || state === undefined)) {
+    return usage(command, 'Supply an event and an acknowledgement state.')
+  }
+
+  // A status line while working; the answer for the pad when the request ends.
+  if (ack && state !== undefined && !event_message_valid(state, options.message)) {
+    return event_state_terminal(state)
+      ? usage(command, `Give --message as an answer of 1 to ${text_code_points_max} characters.`)
+      : usage(command, `Keep a --message for ${state} to ${message_length_max} characters.`)
   }
 
   const query = `?protocol=${protocol_text}&${board_query(binding.session)}`
@@ -261,7 +268,8 @@ function poll_checked(body: Record<string, unknown>, binding: Binding) {
   for (const value of events) {
     if (!value || typeof value !== 'object') return null
 
-    const { id, kind, request_id, sketch_hash, created_at_ms, state, text } = value as BoardEvent
+    const event = value as BoardEvent
+    const { id, kind, request_id, sketch_hash, created_at_ms, state, text, include_sketch } = event
 
     if (
       !event_kinds.some((known) => known === kind) ||
@@ -274,11 +282,16 @@ function poll_checked(body: Record<string, unknown>, binding: Binding) {
       !Number.isSafeInteger(created_at_ms) ||
       created_at_ms < 0 ||
       !['queued', 'received', 'working'].includes(state) ||
-      (text !== undefined && (!request_text_valid(text) || !text.length))
+      (text !== undefined && (!request_text_valid(text) || !text.length)) ||
+      (include_sketch !== undefined && typeof include_sketch !== 'boolean') ||
+      !event_request_complete({ text, include_sketch })
     )
       return null
 
-    pending.push({ id, kind, request_id, sketch_hash, created_at_ms, state, text })
+    // Absent is the earlier meaning: the sketch goes with the words. False is words alone,
+    // and there is no snapshot to take for it.
+    const sketch = include_sketch === undefined ? {} : { include_sketch }
+    pending.push({ id, kind, request_id, sketch_hash, created_at_ms, state, text, ...sketch })
   }
 
   const protocol = whiteboard_protocol

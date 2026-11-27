@@ -1,9 +1,9 @@
 /*
   A drafting board. The ink is the loudest thing on the page. The chrome is drawn in that same
   ink, at a hairline, on the paper it floats over: no colour, no shadows, square-cut corners.
-  Filled ink always means chosen. Danger is said in words, never in red. The note to the
-  agent is drawn the same way: a square sheet with an ink edge, laid over the board for a
-  moment at the centre of what can be seen.
+  Filled ink always means chosen. Danger is said in words, never in red. The board's chat is
+  drawn the same way: slips of white sheet with an ink edge on the vellum, and the agent's
+  words set straight on the page.
 
   Type is Atkinson Hyperlegible Next, bundled with the client, so it works with no internet
   connection. It tells 1, l and I apart, and 0 and O, which matters in sketch hashes.
@@ -33,6 +33,9 @@
   --radius-inner: 1px;
   --edge: 16px;
   --rail-width: 288px;
+  /* The chat's column, and the width of an answer within it: a comfortable line to read. */
+  --lane: 720px;
+  --measure: 640px;
 }
 
 html,
@@ -68,10 +71,8 @@ body {
 .notice,
 .cleaned__empty,
 .rail,
-.dock,
-.inbox,
 .pair,
-.notepad {
+.chat {
   font-family: var(--type);
 }
 
@@ -104,13 +105,14 @@ button {
   left: var(--rail-width);
 }
 
-/* Keep the stage presentation passive, except for the tabs and Agent viewer. */
+/* Keep the stage presentation passive, except for the tabs, the Agent viewer and the chat. */
 .board--stage {
   pointer-events: none;
 }
 
 .board--stage .tabs,
-.board--stage .views__pane--cleaned {
+.board--stage .views__pane--cleaned,
+.board--stage .views__pane--chat {
   pointer-events: auto;
 }
 
@@ -138,15 +140,11 @@ button {
   overflow: hidden;
 }
 
-.views[data-view='cleaned'] .views__pane--sketch {
+.views:not([data-view='sketch']) .views__pane--sketch {
   position: absolute;
   inset: 0;
   visibility: hidden;
   pointer-events: none;
-}
-
-.views[data-view='side'] .views__pane--cleaned {
-  border-left: 1px solid var(--ink);
 }
 
 /* The stage's workbench for an agent's draft: laid out at full size, like the hidden sketch,
@@ -159,23 +157,10 @@ button {
   pointer-events: none;
 }
 
-/* A tall screen, such as an iPad held upright, stacks the two views instead. */
-@media (max-aspect-ratio: 1/1) {
-  .views[data-view='side'] {
-    flex-direction: column;
-  }
-
-  .views[data-view='side'] .views__pane--cleaned {
-    border-top: 1px solid var(--ink);
-    border-left: 0;
-  }
-}
-
 /* Floating instruments: a paper frame with an ink edge, holding 44px controls. */
 
 .tabs,
 .strip,
-.dock,
 .rail-toggle {
   box-sizing: border-box;
   border: 1px solid var(--ink);
@@ -217,6 +202,13 @@ button {
 .tabs__stale {
   width: 6px;
   height: 6px;
+  background: currentColor;
+}
+
+/* An answer in the chat not yet read on this device: a larger square of ink by its name. */
+.tabs__unread {
+  width: 8px;
+  height: 8px;
   background: currentColor;
 }
 
@@ -298,10 +290,8 @@ button {
 }
 
 /* The tool column, under the hand that is not holding the Pencil. Its rail runs the height of
-   the pane and lets the pen through: only the strip and the agent's buttons take a touch.
-   The strip rests at the middle of the pane. Nothing the note does changes the pane, so no
-   button moves from under a finger. The strip gives way only when the pane is too short to
-   hold it. */
+   the pane and lets the pen through: only the strip takes a touch. The strip rests at the
+   middle of the pane, and gives way only when the pane is too short to hold it. */
 
 .toolside {
   position: absolute;
@@ -331,8 +321,7 @@ button {
   flex: none;
 }
 
-.strip,
-.toolside__slot {
+.strip {
   pointer-events: auto;
 }
 
@@ -423,9 +412,9 @@ button {
   border-top: 1px solid var(--rule);
 }
 
-/* Pairing an iPad, on the Mac stage: one instrument in the band above the views, where the
-   iPad keeps its agent buttons. Pressed, it lets out the stage's QR on a sheet under it. The
-   views run to the bottom of the screen: nothing lies under them on either page. */
+/* Pairing an iPad, on the Mac stage: one instrument in the band above the views, beside the
+   list of boards. Pressed, it lets out the stage's QR on a sheet under it. The views run to
+   the bottom of the screen: nothing lies under them on either page. */
 
 .pair {
   position: absolute;
@@ -493,60 +482,19 @@ button {
   container: board / size;
 }
 
-/* The agent's two instruments on the iPad: one opens the note, one lists what became of each
-   request. While the sketch is on screen they are fixed to its drawing tools, eight pixels
-   off the strip, wherever the strip is. A dot says there is something to come back to: a
-   note not yet sent, or news not yet read. */
-
-/* Beside the head of the strip: the placing that fits a pane of any height. */
-.toolside__slot {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 8px);
-}
-
-.dockside {
-  position: relative;
-}
-
-.dock {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--frame);
-}
-
-/* A board tall enough carries them at the head of the column, over the strip. Tall enough
-   means that the 499px strip at the middle of the pane leaves the 98px of the two buttons,
-   the gap and air to spare above it. The board's height does not change when the note
-   opens, so neither does the placing. */
-@container board (min-height: 770px) {
-  .toolside__slot {
-    top: auto;
-    bottom: calc(100% + 8px);
-    left: 0;
-  }
-
-  .toolside__slot .inbox {
-    top: 0;
-    left: calc(100% + 8px);
-  }
-}
-
-/* With only the Agent canvas on screen there are no drawing tools. The two buttons wait in
-   the band above the views, beside the list of boards, where they cover no diagram. */
+/* The one instrument in the band beside the list of boards, the stage's Pair iPad, sits just
+   right of the list's button, or in its place when the list is pinned open. */
 
 .board {
   --dock-top: calc(env(safe-area-inset-top) + var(--edge));
   --dock-left: calc(env(safe-area-inset-left) + var(--edge) + var(--module) + 8px);
 }
 
-/* Pinned open, the list of boards has no button in the corner: the dock takes its place. */
 .shell[data-rail='docked'] .board {
   --dock-left: calc(env(safe-area-inset-left) + var(--edge));
 }
 
-/* A window too narrow for the dock beside the view tabs: it drops to just under the band. */
+/* A window too narrow for it beside the view tabs: it drops to just under the band. */
 @media (max-width: 640px) {
   .board {
     --dock-top: calc(env(safe-area-inset-top) + var(--module) + 3 * var(--edge));
@@ -554,22 +502,564 @@ button {
   }
 }
 
-.dockside[data-place='band'] {
+
+/* The board's chat. A column at a reading width on the vellum: the person's messages on slips
+   of white sheet with an ink edge, at the right, each with its receipt under it; the agent's
+   answers set straight on the page at the left, at a measure. The composer is one plate at
+   the foot of the column, drawn like the slips. Nothing here is laid over a canvas. */
+
+.chat {
   position: absolute;
-  top: var(--dock-top);
-  left: var(--dock-left);
-  z-index: 450;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  /* A keyboard on screen lifts the composer into what can still be seen. */
+  padding-bottom: var(--keyboard-inset, 0px);
+  background: var(--vellum);
+  color: var(--ink);
+  touch-action: manipulation;
 }
 
-.dockside[data-place='band'] .dock {
-  flex-direction: row;
+.chat__head {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px calc(env(safe-area-inset-right) + 28px) 12px
+    calc(env(safe-area-inset-left) + 28px);
+  border-bottom: 1px solid var(--rule);
 }
 
-.dock__button {
-  /* What the button is drawn on, so its dot can be cut clear of the glyph beneath it. */
-  --ground: var(--vellum);
-  position: relative;
+/* An unlinked stage has no band above its views: its tabs float over the chat's head. */
+.board--stage:not([data-linked='true']) .chat__head {
+  padding-top: calc(env(safe-area-inset-top) + var(--module) + 2 * var(--edge));
+}
+
+.chat__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.01em;
+}
+
+.chat__standing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--lead);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.chat__standing::before {
+  content: '';
+  flex: none;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  background: var(--ink);
+}
+
+/* Trouble is said in the weight of ink, with an open square: never in red. */
+.chat__standing[data-trouble='true'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.chat__standing[data-trouble='true']::before {
+  border: 1.5px solid var(--ink);
+  background: transparent;
+}
+
+.chat__scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 0 calc(env(safe-area-inset-right) + 28px) 0 calc(env(safe-area-inset-left) + 28px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.chat__lane {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--lane);
+  margin: 0 auto;
+}
+
+.chat__scroll .chat__lane {
+  padding: 32px 0 20px;
+}
+
+.chat__scope {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 12px;
+}
+
+.chat__scope-title {
+  max-width: 520px;
+  margin: 0;
+  font-size: 40px;
+  font-weight: 300;
+  line-height: 44px;
+  letter-spacing: -0.025em;
+}
+
+.chat__scope-text {
+  max-width: 540px;
+  margin: 0;
+  color: var(--lead);
+  font-size: 17px;
+  line-height: 26px;
+}
+
+.chat__log {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat__day {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--lead);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
+.chat__day::after {
+  content: '';
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--rule);
+}
+
+.chat__mine {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* What the person sent, and what the agent answered, can be selected and copied. */
+.chat__slip,
+.chat__answer,
+.chat__detail {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.chat__slip {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-width: min(500px, 100%);
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+}
+
+.chat__words {
+  margin: 0;
+  padding: 11px 16px 12px;
+  font-size: 17px;
+  line-height: 26px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat__words--answer {
+  padding: 0;
+}
+
+.chat__sketch,
+.chat__attached {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px 10px 10px;
+}
+
+.chat__sketch:not(:last-child),
+.chat__attached {
+  border-bottom: 1px solid var(--rule);
+}
+
+.chat__attached {
+  gap: 12px;
+  padding: 8px 4px 8px 8px;
+}
+
+.chat__picture {
   display: grid;
+  flex: none;
+  place-items: center;
+  box-sizing: border-box;
+  width: 104px;
+  height: 72px;
+  border: 1px solid var(--rule);
+  background: var(--vellum);
+  overflow: hidden;
+}
+
+.chat__picture--small {
+  width: 64px;
+  height: 44px;
+}
+
+.chat__picture img {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.chat__sketch-text {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat__sketch-title {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.chat__sketch-meta {
+  color: var(--lead);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
+.chat__receipt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 14px;
+  color: var(--lead);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
+.chat__receipt[data-trouble='true'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* An open square is on its way; a square of ink has ended. A receipt shows its square only
+   when something is wrong: otherwise its words say enough. */
+.chat__mark {
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--ink);
+}
+
+.chat__mark[data-ended='true'] {
+  background: var(--ink);
+}
+
+.chat__receipt:not([data-trouble='true']) .chat__mark {
+  display: none;
+}
+
+.chat__receipt[data-trouble='true'] .chat__mark {
+  margin-right: -6px;
+}
+
+.chat__again {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control);
+  padding: 0 14px 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--vellum);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.chat__again:disabled {
+  color: var(--lead);
+  cursor: default;
+}
+
+.chat__detail {
+  max-width: min(500px, 100%);
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: right;
+}
+
+.chat__answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: var(--measure);
+  font-size: 17px;
+  line-height: 26px;
+}
+
+.chat__from {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.chat__who {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.chat__when {
+  color: var(--lead);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat__new {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.chat__new::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--ink);
+}
+
+.chat__canvas {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--control);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.chat__canvas-text {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.chat__open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control);
+  padding: 0 2px 0 12px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.chat__working {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  color: var(--lead);
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.chat__status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat__status::before {
+  content: '· ';
+}
+
+.chat__foot {
+  flex: none;
+  padding: 0 calc(env(safe-area-inset-right) + 28px)
+    calc(env(safe-area-inset-bottom) + var(--edge)) calc(env(safe-area-inset-left) + 28px);
+}
+
+.chat__foot .chat__lane {
+  gap: 8px;
+}
+
+/* The Mac cannot be reached: the one notice set in solid ink. */
+.chat__notice {
+  margin: 0;
+  padding: 12px 16px;
+  background: var(--ink);
+  color: var(--vellum);
+  font-size: 15px;
+  line-height: 21px;
+}
+
+/* Being typed in, the hairline is doubled from the inside: the plate is in hand. */
+.chat__composer {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+}
+
+.chat__composer:focus-within {
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.chat__plate {
+  display: flex;
+  align-items: flex-end;
+  padding: var(--frame);
+}
+
+.chat__add {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: var(--control);
+  padding: 0 14px 0 10px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+/* Added, the sketch is chosen: a square of solid ink, as every chosen control is. */
+.chat__add[aria-pressed='true'] {
+  justify-content: center;
+  width: var(--control);
+  padding: 0;
+  background: var(--ink);
+  color: var(--vellum);
+}
+
+.chat__add:disabled {
+  color: var(--ink-quiet);
+  cursor: default;
+}
+
+.chat__rule {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 28px;
+  background: var(--rule);
+}
+
+.chat__field-box {
+  display: grid;
+  /* One column, exactly as wide as the room left by the controls, whatever the words are. */
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The field is as tall as its words, to five lines. An unseen copy of the text shares the
+   field's cell and sets its height, so no height is measured and stored. */
+.chat__mirror,
+.chat__field {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-height: calc(6 * 22px);
+  margin: 0;
+  padding: 11px 6px 11px 14px;
+  border: 0;
+  /* Sixteen pixels: Safari on the iPad zooms the page into any smaller field it focuses. */
+  font: 400 16px / 22px var(--type);
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.chat__mirror {
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Safari on the iPad insets a field's own text by three pixels a side. */
+@supports (-webkit-touch-callout: none) {
+  .chat__mirror {
+    padding-right: 9px;
+    padding-left: 17px;
+  }
+}
+
+.chat__field {
+  display: block;
+  height: 100%;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  resize: none;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: pan-y;
+}
+
+/* Empty is always one line: a long hint is cut short, never wrapped. */
+.chat__field::placeholder {
+  overflow: hidden;
+  color: var(--lead);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat__field:disabled {
+  background: transparent;
+}
+
+.chat__send,
+.chat__remove {
+  display: grid;
+  flex: none;
   place-items: center;
   width: var(--control);
   height: var(--control);
@@ -581,355 +1071,53 @@ button {
   cursor: pointer;
 }
 
-/* A press lands on the button whichever part of it is touched: tldraw, inside whose frame
-   the buttons sit, passes on an edge-of-screen touch only when it lands on a button. */
-.dock__button > * {
-  pointer-events: none;
-}
-
-.dock__button[aria-expanded='true'] {
-  --ground: var(--ink);
-  background: var(--ink);
-  color: var(--vellum);
-}
-
-.dock__dot {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 2px var(--ground);
-}
-
-/* What became of each request: a sheet let out from the two buttons, one row to a request,
-   kept up to date in place. It opens only when the bell is pressed. Its left edge is never
-   further in than a strip and a gap from the screen's, and it is sized to fit from there:
-   by the window where container units are missing, by the board where they are not. */
-
-.inbox {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  width: min(22rem, calc(100vw - 2 * var(--edge) - var(--module) - 8px));
-  width: min(22rem, calc(100cqw - 2 * var(--edge) - var(--module) - 8px));
-  max-height: min(27rem, 45vh);
-  max-height: min(27rem, 45cqh);
-  border: 1px solid var(--ink);
-  border-radius: var(--radius);
-  background: var(--sheet);
-  /* Beside the tools the sheet sits in tldraw's frame, which sets type small and unaligned. */
-  color: var(--ink);
-  font-size: 0.9375rem;
-  font-weight: 400;
-  line-height: 1.4;
-  text-align: left;
-  touch-action: manipulation;
-}
-
-.inbox:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
-}
-
-.inbox__title {
-  margin: 0;
-  padding: 12px 16px 11px;
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.inbox__hint,
-.inbox__empty {
-  margin: 0;
-  padding: 11px 16px 12px;
-  border-top: 1px solid var(--rule);
-}
-
-/* Why nothing can be sent yet: set apart by a square of ink, like every other caution. */
-.inbox__hint {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-weight: 600;
-}
-
-.inbox__hint::before {
-  content: '';
-  flex: none;
-  width: 6px;
-  height: 6px;
-  background: var(--ink);
-  transform: translateY(-2px);
-}
-
-.inbox__empty {
-  color: var(--lead);
-}
-
-.inbox__list {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  border-top: 1px solid var(--rule);
-  list-style: none;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  touch-action: pan-y;
-}
-
-.inbox__row {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 0 12px;
-  padding: 10px 16px 11px;
-}
-
-.inbox__row + .inbox__row {
-  border-top: 1px solid var(--rule);
-}
-
-/* An open square is a request still on its way; a square of ink is one that has ended. */
-.inbox__mark {
-  box-sizing: border-box;
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--ink);
-}
-
-.inbox__row:is([data-state='updated'], [data-state='failed'], [data-state='refused']) .inbox__mark {
-  background: var(--ink);
-}
-
-.inbox__subject,
-.inbox__state,
-.inbox__detail {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.inbox__subject {
-  font-weight: 500;
-}
-
-.inbox__state {
-  color: var(--lead);
-  font-size: 0.875rem;
-}
-
-/* Trouble is said in words, in the weight of ink, never in red. */
-.inbox__row:is([data-state='failed'], [data-state='refused'], [data-state='unconfirmed'])
-  .inbox__state {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.inbox__detail {
-  margin-top: 2px;
-  font-size: 0.875rem;
-}
-
-.inbox__time {
-  color: var(--lead);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* The note. Closed, it takes no room at all. Open, it is a modal dialog of the browser's
-   own, a sheet laid over the board: the page behind it takes no press, so nothing of this
-   app's has to be laid over a canvas, or over the notice tldraw keeps in a canvas's corner,
-   to stop a stray mark. The board stays in plain sight behind it, undimmed.
-
-   The dialog is exactly the part of the screen that can be seen, which the keyboard and a
-   rotation change, and is otherwise clear. The sheet sits at its centre, across and down,
-   and stays there as the note grows. No canvas is resized. A grid centres it, so it is laid
-   out and not shifted, and its words stay sharp. A press on the clear part of the dialog is
-   a press beside the note. */
-
-.notepad {
-  --note-line: 22px;
-  --note-pad: 11px;
-  position: fixed;
-  inset: auto;
-  top: var(--visible-top, 0px);
-  left: var(--visible-left, 0px);
-  box-sizing: border-box;
-  width: var(--visible-width, 100%);
-  max-width: none;
-  height: var(--visible-height, 100%);
-  max-height: none;
-  margin: 0;
-  padding: var(--edge);
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
-  overflow: visible;
-  touch-action: none;
-}
-
-/* Only an open dialog is laid out: closed, the browser's own `display: none` stands. */
-.notepad[open] {
-  display: grid;
-  grid-template-columns: minmax(0, 34rem);
-  align-content: center;
-  justify-content: center;
-  animation: note-arrive 140ms ease-out;
-}
-
-/* A press beside the note is the note's to hear, whole: the browser makes no gesture of it. */
-.notepad::backdrop {
-  background: transparent;
-  touch-action: none;
-}
-
-/* The dialog holds the focus until the field is tapped. Its ring is drawn round the sheet,
-   not round the screen, and shown to a keyboard only. */
-.notepad:focus-visible {
-  outline: 0;
-}
-
-.notepad:focus-visible .composer {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
-}
-
-/* The sheet is drawn like every instrument on the board: the white of a clean sheet with an
-   ink hairline, square-cut, and no shadow. Its one control keeps its size and stays on its
-   bottom line while the note grows, from one line to five. */
-.composer {
-  display: flex;
-  align-items: flex-end;
-  box-sizing: border-box;
-  min-width: 0;
-  padding: var(--frame) var(--frame) var(--frame) 18px;
-  border: 1px solid var(--ink);
-  border-radius: 0;
-  background: var(--sheet);
-  touch-action: manipulation;
-}
-
-/* Being typed in, the hairline is doubled from the inside: the sheet is in hand. */
-.composer:focus-within {
-  box-shadow: inset 0 0 0 1px var(--ink);
-}
-
-.composer__field {
-  display: grid;
-  /* One column, exactly as wide as the room left by the controls, whatever the words are. */
-  grid-template-columns: minmax(0, 1fr);
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-/* The note is as tall as its words. An unseen copy of the text shares the field's cell and
-   sets its height, so the browser lays the field out afresh after every edit, paste, undo,
-   rotation and reopening. No height is measured and stored, so none can go stale. */
-.composer__mirror,
-.composer__input {
-  grid-area: 1 / 1;
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  max-height: calc(5 * var(--note-line) + 2 * var(--note-pad));
-  margin: 0;
-  padding: var(--note-pad) 6px var(--note-pad) 0;
-  border: 0;
-  /* Sixteen pixels: Safari on the iPad zooms the page into any smaller field it focuses. */
-  font: 400 16px / var(--note-line) var(--type);
-  letter-spacing: normal;
-  white-space: pre-wrap;
-  word-break: normal;
-  overflow-wrap: break-word;
-}
-
-.composer__mirror {
-  overflow: hidden;
-  visibility: hidden;
-  pointer-events: none;
-}
-
-/* Safari on the iPad insets a field's own text by three pixels a side. The copy is inset to
-   match, so that it wraps where the field does and never comes up a line short. */
-@supports (-webkit-touch-callout: none) {
-  .composer__mirror {
-    padding-right: 9px;
-    padding-left: 3px;
-  }
-}
-
-.composer__input {
-  display: block;
-  /* The cell is as tall as the copy made it; the field fills the cell. */
-  height: 100%;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
-  outline: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  resize: none;
-  -webkit-appearance: none;
-  appearance: none;
-  /* A note is typed and selected like any text, unlike the drawing surface around it. */
-  -webkit-user-select: text;
-  user-select: text;
-  touch-action: pan-y;
-}
-
-/* Empty is always one line: a long hint is cut short, never wrapped. */
-.composer__input::placeholder {
-  overflow: hidden;
-  color: var(--lead);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A 44px target around a small plate. The glyphs never scale with the note. */
-.composer__icon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: var(--control);
-  height: var(--control);
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.composer__icon:disabled {
+.chat__send:disabled {
   cursor: default;
 }
 
-.composer__plate {
+/* Send is always a plate of ink: an action, not a state. Quiet while there is nothing to go. */
+.chat__send-plate {
   display: grid;
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 0;
-}
-
-/* Send is always a plate of ink: an action, not a state. */
-.composer__send .composer__plate {
   background: var(--ink);
   color: var(--vellum);
 }
 
-.composer__send:disabled .composer__plate {
+.chat__send:disabled .chat__send-plate {
   background: var(--ink-quiet);
+}
+
+.chat__caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0;
+  padding: 0 4px;
+  color: var(--lead);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.chat__caption[data-trouble='true'] span:first-child {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* A narrow window keeps the column, with less margin, and drops the receipts' extra words. */
+@media (max-width: 640px) {
+  .chat__head,
+  .chat__scroll,
+  .chat__foot {
+    padding-right: calc(env(safe-area-inset-right) + var(--edge));
+    padding-left: calc(env(safe-area-inset-left) + var(--edge));
+  }
+
+  .chat__scope-title {
+    font-size: 30px;
+    line-height: 34px;
+  }
 }
 
 /* The Agent canvas on the iPad, under a head of its own: a strip of the same sheet, ruled
@@ -979,89 +1167,6 @@ button {
   border-color: var(--rule);
   color: var(--lead);
   cursor: default;
-}
-
-/* Stacked views. The sketch is the upper half, too short for a column: the two buttons stay
-   beside the head of the strip. On a linked board the strip lies along the bottom of the
-   sketch, and the two buttons lie with it: at its left end where the pane is wide enough
-   for both, over its left end where it is not. */
-@media (max-aspect-ratio: 1/1) {
-  .views[data-view='side'] .toolside__slot {
-    top: 0;
-    bottom: auto;
-    left: calc(100% + 8px);
-  }
-
-  .views[data-view='side'] .toolside__slot .inbox {
-    top: calc(100% + 8px);
-    left: 0;
-  }
-
-  .board[data-linked='true'] .views[data-view='side'] .toolside {
-    top: auto;
-    right: 0;
-    bottom: 4px;
-    left: 0;
-    flex-direction: row;
-    justify-content: center;
-  }
-
-  .board[data-linked='true'] .views[data-view='side'] .toolside::before,
-  .board[data-linked='true'] .views[data-view='side'] .toolside::after {
-    content: none;
-  }
-
-  /* The strip keeps clear of the corner tldraw's notice rests in, in either of its forms. */
-  .board[data-linked='true'] .views[data-view='side'] .toolside__set {
-    min-width: 0;
-    max-width: calc(100% - 2 * var(--edge));
-  }
-
-  .board[data-linked='true'] .views[data-view='side'] .strip {
-    max-width: 100%;
-    flex-direction: row;
-    overflow-x: auto;
-  }
-
-  .board[data-linked='true'] .strip > * {
-    flex-shrink: 0;
-  }
-
-  .board[data-linked='true'] .views[data-view='side'] .toolside__slot {
-    top: auto;
-    right: calc(100% + 8px);
-    bottom: 0;
-    left: auto;
-  }
-
-  .board[data-linked='true'] .views[data-view='side'] .dock {
-    flex-direction: row;
-  }
-
-  .board[data-linked='true'] .views[data-view='side'] .toolside__slot .inbox {
-    top: auto;
-    bottom: calc(100% + 8px);
-    left: 0;
-    max-height: min(27rem, 30vh);
-    max-height: min(27rem, 30cqh);
-  }
-
-  /* 508px of strip, and on each side of it the 98px of the two buttons, a gap and air. */
-  @container board (max-width: 735px) {
-    .board[data-linked='true'] .views[data-view='side'] .toolside__slot {
-      right: auto;
-      bottom: calc(100% + 8px);
-      left: 0;
-    }
-  }
-
-  /* Just wide enough for tldraw's notice at full width, and too narrow for the strip to
-     pass it: the strip is cut short of the notice, and slides. */
-  @container board (min-width: 690px) and (max-width: 735px) {
-    .board[data-linked='true'] .views[data-view='side'] .toolside__set {
-      max-width: calc(100% - 224px);
-    }
-  }
 }
 
 /* The stage guide: how to connect an iPad, shown only until one is connected. */
@@ -1447,8 +1552,10 @@ button {
   .tabs__tab:not([aria-selected='true']):hover,
   .strip__button:not([aria-pressed='true'], [data-armed='true'], :disabled):hover,
   .strip__ink:hover,
-  .dock__button:not([aria-expanded='true']):hover,
   .pair__button:not([aria-expanded='true']):hover,
+  .chat__add:not([aria-pressed='true'], :disabled):hover,
+  .chat__open:hover,
+  .chat__remove:hover,
   .rail__icon:not([aria-pressed='true']):hover,
   .rail__options:hover,
   .rail__item:not([data-active='true']):hover {
@@ -1457,7 +1564,8 @@ button {
 
   .rail-toggle:hover,
   .rail__new:not(:disabled):hover,
-  .cleaned__replace:not(:disabled):hover {
+  .cleaned__replace:not(:disabled):hover,
+  .chat__again:not(:disabled):hover {
     background: var(--blotter);
   }
 
@@ -1483,16 +1591,9 @@ button {
   }
 }
 
-@keyframes note-arrive {
-  from {
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .guide--card,
-  .shell[data-rail='open'] .rail,
-  .notepad[open] {
+  .shell[data-rail='open'] .rail {
     animation: none;
   }
 }
@@ -1501,15 +1602,17 @@ button {
 @media (forced-colors: active) {
   .tabs__tab[aria-selected='true'],
   .strip__button[aria-pressed='true'],
-  .dock__button[aria-expanded='true'],
   .pair__button[aria-expanded='true'],
-  .rail__item[data-active='true'] {
+  .rail__item[data-active='true'],
+  .chat__add[aria-pressed='true'] {
     outline: 2px solid CanvasText;
     outline-offset: -2px;
   }
 
-  .composer,
-  .composer__send .composer__plate {
+  .chat__composer,
+  .chat__slip,
+  .chat__send-plate,
+  .tabs__unread {
     outline: 1px solid CanvasText;
   }
 }

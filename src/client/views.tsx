@@ -1,7 +1,7 @@
-// Three ways to look at the board: the sketch, the Agent canvas, or both side by side. The
-// sketch canvas stays mounted in every view, so switching never interrupts the Pencil, loses
-// the iPad's zoom or undo history, or stops the stage rendering the image agents fetch. The
-// cleaned canvas exists only while it is shown.
+// Three places on a board: the sketch, the Agent canvas, and the board's chat. The sketch
+// canvas stays mounted in every view, so switching never interrupts the Pencil, loses the
+// iPad's zoom or undo history, or stops the stage rendering the image agents fetch. The Agent
+// canvas and the chat exist only while they are shown.
 
 import { useCallback, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { Role } from '../shared/constants'
@@ -9,23 +9,20 @@ import type { Role } from '../shared/constants'
 export const views = [
   { id: 'sketch', label: 'Sketch' },
   { id: 'cleaned', label: 'Cleaned' },
-  { id: 'side', label: 'Side by side' },
+  { id: 'chat', label: 'Chat' },
 ] as const
 export type View = (typeof views)[number]['id']
 
-// Each device remembers its own choice, so the iPad and the Mac can show different views.
+// Each device remembers its own choice, so the iPad and the Mac can show different views. A
+// choice this board no longer offers, such as the retired side-by-side view, opens the sketch
+// and is written over.
 export function use_view(role: Role): [View, (view: View) => void] {
   const key = `tldraw-sync.view.${role}`
   const [view, view_set] = useState<View>(() => view_stored(key))
   const view_choose = useCallback(
     (next: View) => {
       view_set(next)
-
-      try {
-        window.localStorage.setItem(key, next)
-      } catch {
-        // Private browsing may refuse storage; the choice still holds for this visit.
-      }
+      view_store(key, next)
     },
     [key],
   )
@@ -35,16 +32,34 @@ export function use_view(role: Role): [View, (view: View) => void] {
 function view_stored(key: string): View {
   try {
     const stored = window.localStorage.getItem(key)
-    return views.find((view) => view.id === stored)?.id ?? 'sketch'
+    const known = views.find((view) => view.id === stored)?.id
+
+    if (known !== undefined) return known
+
+    if (stored !== null) view_store(key, 'sketch')
+
+    return 'sketch'
   } catch {
     return 'sketch'
   }
 }
 
-type ViewTabsProps = {
-  view: View; linked?: boolean; stale: boolean; onChoose: (view: View) => void
+function view_store(key: string, view: View): void {
+  try {
+    window.localStorage.setItem(key, view)
+  } catch {
+    // Private browsing may refuse storage; the choice still holds for this visit.
+  }
 }
-const linked_labels = { sketch: 'Sketchboard', cleaned: 'Agent canvas', side: 'Side by side' }
+
+type ViewTabsProps = {
+  view: View
+  linked?: boolean
+  stale: boolean
+  unread: number
+  onChoose: (view: View) => void
+}
+const linked_labels = { sketch: 'Sketchboard', cleaned: 'Agent canvas', chat: 'Chat' }
 
 // A tab list as the platform expects: one tab stop, arrow keys move between views.
 const tab_keys: Record<string, (index: number) => number> = {
@@ -54,9 +69,10 @@ const tab_keys: Record<string, (index: number) => number> = {
   End: () => views.length - 1,
 }
 
-export function ViewTabs({ view, linked, stale, onChoose }: ViewTabsProps) {
+export function ViewTabs({ view, linked, stale, unread, onChoose }: ViewTabsProps) {
   const key_down = (event: KeyboardEvent<HTMLElement>) => {
     const step = tab_keys[event.key]
+
     if (step === undefined) return
 
     event.preventDefault()
@@ -79,7 +95,9 @@ export function ViewTabs({ view, linked, stale, onChoose }: ViewTabsProps) {
           type="button"
           role="tab"
           className="tabs__tab"
+          data-view={candidate.id}
           aria-selected={view === candidate.id}
+          aria-controls={`view-${candidate.id}`}
           tabIndex={view === candidate.id ? 0 : -1}
           onClick={() => onChoose(candidate.id)}
         >
@@ -90,28 +108,51 @@ export function ViewTabs({ view, linked, stale, onChoose }: ViewTabsProps) {
               <span className="visually-hidden">, out of date</span>
             </>
           )}
+          {candidate.id === 'chat' && unread > 0 && (
+            <>
+              <span className="tabs__unread" data-testid="chat-unread" />
+              <span className="visually-hidden">
+                , {unread} new {unread === 1 ? 'answer' : 'answers'}
+              </span>
+            </>
+          )}
         </button>
       ))}
     </nav>
   )
 }
 
-type ViewPanesProps = { view: View; linked?: boolean; sketch: ReactNode; cleaned: ReactNode }
+type ViewPanesProps = {
+  view: View
+  linked?: boolean
+  sketch: ReactNode
+  cleaned: ReactNode
+  chat: ReactNode
+}
 
-export function ViewPanes({ view, linked, sketch, cleaned }: ViewPanesProps) {
+export function ViewPanes({ view, linked, sketch, cleaned, chat }: ViewPanesProps) {
   return (
     <div className="views" data-view={view}>
       <section
+        id="view-sketch"
         className="views__pane views__pane--sketch"
         aria-label={linked ? linked_labels.sketch : 'Sketch'}
-        aria-hidden={view === 'cleaned'}
+        aria-hidden={view !== 'sketch'}
       >
         {sketch}
       </section>
-      {view !== 'sketch' && (
-        <section className="views__pane views__pane--cleaned"
-          aria-label={linked ? linked_labels.cleaned : 'Cleaned'}>
+      {view === 'cleaned' && (
+        <section
+          id="view-cleaned"
+          className="views__pane views__pane--cleaned"
+          aria-label={linked ? linked_labels.cleaned : 'Cleaned'}
+        >
           {cleaned}
+        </section>
+      )}
+      {view === 'chat' && (
+        <section id="view-chat" className="views__pane views__pane--chat" aria-label="Chat">
+          {chat}
         </section>
       )}
     </div>

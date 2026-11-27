@@ -38,7 +38,7 @@ import {
 import { document_hash, shapes_count, type DocumentRecord } from '../shared/document_hash'
 import { png_blank, png_signed } from '../shared/png'
 import type { Time, TimerHandle } from '../shared/time'
-import type { EventRequest } from '../shared/whiteboard'
+import type { EventRequest, EventState } from '../shared/whiteboard'
 import { BoardEvents } from './board_events'
 import {
   Cleaned,
@@ -330,19 +330,36 @@ export class Board {
   }
 
   // A Send from the iPad: a note for the agent about the sketch as it is, saved before it is
-  // acknowledged. It writes nothing to either canvas.
-  queue_event(hash: string, request: EventRequest = {}) {
-    const replay = this.events.replay('sketch_notify', hash, request)
-    if (replay !== null) return replay
+  // acknowledged. It writes nothing to either canvas. Words alone name no sketch: the hash
+  // recorded with them is the board's at that moment, for the record, and is never a reason
+  // to refuse them or a request to take a snapshot.
+  queue_event(hash: string | null, request: EventRequest = {}) {
+    const sketch = request.include_sketch !== false
+    assert(sketch === (hash !== null), 'a sketch is named exactly when it goes')
     const current = this.document_state()
-    if (current.hash !== hash) return 'syncing'
-    if (this.clock_saved !== current.clock) this.save()
-    assert(this.clock_saved === current.clock, 'the referenced sketch is durable')
+    const named = hash ?? current.hash
+    const replay = this.events.replay('sketch_notify', named, request)
+    if (replay !== null) return replay
+    if (current.hash !== named) return 'syncing'
+    if (sketch && this.clock_saved !== current.clock) this.save()
+    assert(!sketch || this.clock_saved === current.clock, 'the referenced sketch is durable')
     const now = this.environment.time.now_ms()
-    const revision = this.cleaned.status(hash).revision
-    const queued = this.events.queue('sketch_notify', hash, now, crypto.randomUUID(), request)
-    assert(this.cleaned.status(hash).revision === revision, 'a Send publishes nothing')
+    const revision = this.cleaned.status(named).revision
+    const context = { revision_sent: revision, shapes_count: current.shapes_count }
+    const id = crypto.randomUUID()
+    const queued = this.events.queue('sketch_notify', named, now, id, request, context)
+    assert(this.cleaned.status(named).revision === revision, 'a Send publishes nothing')
     return queued
+  }
+
+  // An acknowledgement from the host. An end records the canvas revision it was given at.
+  event_ack(id: string, state: EventState, message?: string) {
+    assert(!this.closed, 'board is open')
+    const now_ms = this.environment.time.now_ms()
+    const answered = { revision: this.cleaned_status().revision, now_ms }
+    const acked = this.events.ack(id, state, message, answered)
+    assert(typeof acked === 'string' || acked.id === id, 'the acknowledgement names its event')
+    return acked
   }
 
   cleaned_status(): CleanedStatus {

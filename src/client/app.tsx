@@ -9,6 +9,7 @@ import {
   board_label,
   board_page_parse,
   board_stage_path,
+  type BoardSession,
 } from '../shared/board_session'
 import type { Role } from '../shared/constants'
 import { use_sessions } from './board_sessions'
@@ -66,26 +67,34 @@ export function App({ role, initial }: { role: Role; initial: string | null }) {
     window.document.title = title
   }, [title])
 
-  const known = sessions.list === null ? null : session !== null
   return (
     <SessionShell role={role} sessions={sessions} active={active} onChoose={choose}>
-      {board_content(role, active, known, sessions.failed)}
+      {board_content(role, active, session, sessions.list === null, sessions.failed)}
     </SessionShell>
   )
 }
 
-function board_content(role: Role, board: string | null, known: boolean | null, failed: boolean) {
-  if (known === null) {
+function board_content(
+  role: Role,
+  board: string | null,
+  session: BoardSession | null,
+  listing: boolean,
+  failed: boolean,
+) {
+  if (listing) {
     return <Notice text={failed ? 'The Mac is not answering.' : 'Opening the board'} />
   }
 
   if (board === null) return null
 
-  if (known === false) {
+  if (session === null) {
     return <Notice text="There is no such board. Open the list of boards to choose one." />
   }
 
-  if (role === 'draw') return <DrawPage key={board} session={board} />
+  // Each board is mounted afresh: its sketch, canvas, chat and draft are its own.
+  const title = board_label(session)
 
-  return <StagePage key={board} session={board} />
+  if (role === 'draw') return <DrawPage key={board} session={board} title={title} />
+
+  return <StagePage key={board} session={board} title={title} />
 }

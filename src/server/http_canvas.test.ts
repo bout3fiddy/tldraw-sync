@@ -206,6 +206,62 @@ async function linked(owner: string) {
   return { session, host, route, get, sketch_hash: String(polled.sketch_hash) }
 }
 
+// The chat is read with the board's pairing and nothing else. Method: a real server, a pad's
+// words and the agent's answer, then every public route read for either of them.
+test('the chat is read only with its pairing; public routes never carry a word of it', async () => {
+  const { session, host, route, get } = await linked('chat-public')
+  const words = 'Private words about the gateway'
+  const answer = 'Private answer: two minutes'
+  const stage = await fetch(`${origin}${route('stage')}`, { headers: { 'x-board-stage': 'chat' } })
+  const { token } = await json(stage)
+  const pad = { authorization: `Bearer ${token}` }
+  const sent = await post(
+    route('event/v2'),
+    {
+      kind: 'sketch_notify',
+      request_id: '00000000-0001-7aaa-8000-000000000001',
+      include_sketch: false,
+      text: words,
+    },
+    pad,
+  )
+  const { id } = await json(sent)
+
+  for (const state of ['received', 'working']) {
+    expect(await status_of(await post(route('ack'), { event: id, state }, host))).toBe(200)
+  }
+
+  const ended = await post(route('ack'), { event: id, state: 'updated', message: answer }, host)
+  expect(await status_of(ended)).toBe(200)
+
+  for (const pathname of [
+    `/api/cleaned/status?session=${session}`,
+    `/api/status?session=${session}`,
+    '/api/sessions',
+    `/api/drawing.json?session=${session}`,
+    `/api/pairing?session=${session}`,
+  ]) {
+    const text = await (await fetch(`${origin}${pathname}`)).text()
+    expect(text, pathname).not.toContain('Private')
+  }
+
+  const polled = await json(await get('poll', `&protocol=${whiteboard_protocol}`))
+  expect(JSON.stringify(polled)).not.toContain('Private')
+  const status = await json(await fetch(`${origin}/api/cleaned/status?session=${session}`))
+  expect(status.last_event).toEqual({ id, kind: 'sketch_notify', state: 'updated',
+    created_at_ms: expect.any(Number) })
+
+  // The pairing reads it all; nobody else reads any of it.
+  expect(await status_of(await fetch(`${origin}${route('chat')}`))).toBe(403)
+  expect(await status_of(await fetch(`${origin}${route('chat')}`, { headers: host }))).toBe(403)
+  const chat = await json(await fetch(`${origin}${route('chat')}`, { headers: pad }))
+  expect(chat.items).toMatchObject([{ id, text: words, reply: answer, answer_seq: 1 }])
+  const elsewhere = { 'x-board-stage': 'chat', origin: 'http://elsewhere.example' }
+  expect(await status_of(await fetch(`${origin}${route('stage')}`, { headers: elsewhere }))).toBe(
+    403,
+  )
+})
+
 test('a draft goes to the stage as records and comes back as a picture, unpublished', async () => {
   const { session, host, route, get, sketch_hash } = await linked('drafter')
   const scene = scene_example(sketch_hash, 0, 'Draft', session)

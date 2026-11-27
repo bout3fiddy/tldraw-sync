@@ -1,12 +1,7 @@
-// A linked board end to end: an iPad paired by the stage QR sends its sketch with and without
-// a note, the agent's replies arrive as rows under the bell, a scene is published to the
+// A linked board end to end: an iPad paired by the stage QR sends words alone and its sketch
+// from the board's chat, the agent's answers arrive under them, a scene is published to the
 // Agent canvas and shown on both screens, and the person copies it into the sketch and takes
 // that back. Every Send is one kind of request, and none of them writes to a canvas.
-//
-// The note is a modal dialog over the board. While it is open nothing behind it can be
-// pressed, so the journey puts it away before it draws, reads the bell's list, changes view
-// or replaces the sketch, and asks for it again to write or send. The draft and an
-// unconfirmed request have to survive each of those closings.
 //
 // Run: bun run build && npx playwright test tests/whiteboard.e2e.ts
 
@@ -16,31 +11,23 @@ import path from 'node:path'
 import { scene_format } from '../src/shared/scene_types'
 import { whiteboard_protocol } from '../src/shared/whiteboard'
 import {
-  bell,
-  bell_behind,
+  add_sketch,
+  answers,
   board_linked,
-  chat,
-  composer_close,
-  composer_open,
+  chat_open,
+  chat_tab,
   draw,
-  expect_dock,
   expect_marks_clear,
-  inbox_behind,
-  inbox_open,
+  field,
   ipad_landscape,
-  layout,
-  mark_placed,
-  marks,
-  note,
-  notify,
-  row_with,
-  rows,
-  rows_about,
+  mine,
+  retired_controls,
+  send_button,
+  sketch_open,
   soon,
   step,
   step_long_ms,
   type Cli,
-  type DockSide,
 } from './whiteboard_board'
 
 // Disposable pairing material belongs neither in traces nor in screenshots. Capture the agent
@@ -87,13 +74,15 @@ function target_problems(list: Target[], screen: { width: number; height: number
 
 type Shown = { x: number; y: number; width: number; height: number }
 
-// What the iPad's Agent canvas is made of, with the note shut. Replace is the one control at
-// the head of that canvas; the canvas begins under the head and runs to the pane's bottom,
-// which is the bottom of the screen. `footers_count` is every band or rail under the views.
+// What the iPad's Agent canvas is made of. Replace is the one control at the head of that
+// canvas; the canvas begins under the head and runs to the pane's bottom, which is the bottom
+// of the screen. `footers_count` is every band or rail under the views. `chat` is the Chat tab,
+// the one way to the agent, and `retired_count` every control the board had before it.
 type AgentSeen = {
   screen: { width: number; height: number }
   footers_count: number
-  dock: Target[]
+  retired_count: number
+  chat: Target[]
   replace: Target[]
   replace_pressed: boolean
   pane: Shown | null
@@ -108,11 +97,19 @@ const edge_px = 0.5
 // and Replace anywhere but the head. Pure, so that it can be shown to catch each of them.
 function agent_problems(seen: AgentSeen): string[] {
   const { pane, head, canvas, screen } = seen
-  const problems = target_problems([...seen.dock, ...seen.replace], screen)
+  const problems = target_problems([...seen.chat, ...seen.replace], screen)
 
   if (seen.footers_count > 0) problems.push('a band lies under the views')
 
-  if (seen.dock.length !== 2) problems.push(`${seen.dock.length} agent buttons, not 2`)
+  if (seen.retired_count > 0) problems.push('a retired control is back')
+
+  if (seen.chat.length !== 1) problems.push(`${seen.chat.length} Chat tabs, not 1`)
+
+  for (const tab of seen.chat) {
+    if (screen.width - tab.right > 24) problems.push('Chat is not at the top right')
+
+    if (tab.top > 24) problems.push('Chat is not at the top')
+  }
 
   if (seen.replace.length !== 1) problems.push(`${seen.replace.length} Replace buttons, not 1`)
 
@@ -156,7 +153,8 @@ async function agent_seen(ipad: Page): Promise<AgentSeen> {
   return {
     screen: ipad.viewportSize()!,
     footers_count: await ipad.locator('footer, .agent-rail').count(),
-    dock: await targets(ipad, '.dock button'),
+    retired_count: await retired_controls(ipad).count(),
+    chat: await targets(ipad, '.tabs__tab[data-view="chat"]'),
     replace: await targets(ipad, '.cleaned__replace'),
     replace_pressed: await pressed,
     pane: await ipad.locator('.views__pane--cleaned').boundingBox(),
@@ -251,43 +249,21 @@ async function geometry_stage(stage: Page, info: TestInfo, name: string) {
 }
 
 // The iPad has no rail and no band: the views run to the bottom of the screen, Replace has
-// the head of the Agent canvas, and the agent's two buttons are on the side asked. tldraw's
-// notice is whole and uncovered in each of the `notices_count` canvases on screen.
-//
-// Asked for, the note is a modal dialog laid over that board: one 44px target on a slip
-// wholly on the screen, with no press reaching the buttons behind it. Nothing behind it
-// moves or shrinks, and it covers no notice and moves none. It is put away again after.
-async function geometry_ipad(
-  ipad: Page,
-  info: TestInfo,
-  name: string,
-  side: DockSide,
-  notices_count: number,
-) {
+// the head of the Agent canvas, and Chat is one tab at the top right. tldraw's notice is whole
+// and uncovered in the Agent canvas. In the chat every control is a 44px target on the screen.
+async function geometry_ipad(ipad: Page, info: TestInfo, name: string) {
   const screen = ipad.viewportSize()!
-  await composer_close(ipad)
-  await expect_dock(ipad, side)
   await expect.poll(async () => agent_problems(await agent_seen(ipad))).toEqual([])
-  const resting = await expect_marks_clear(ipad, notices_count)
-  const shut = await layout(ipad)
-  const shut_canvas = (await agent_seen(ipad)).canvas
-  expect(shut.band).toBeNull()
-  expect(shut.reach).toEqual({ chat: true, bell: true })
-
-  await composer_open(ipad)
-  const controls = await targets(ipad, '.composer button')
-  expect(controls).toHaveLength(1)
-  expect(target_problems(controls, screen)).toEqual([])
-  const open = await layout(ipad)
-  expect(open.band).not.toBeNull()
-  expect(target_problems([open.band!], screen)).toEqual([])
-  expect(open.reach).toEqual({ chat: false, bell: false })
-  expect(open.views).toEqual(shut.views)
-  expect(open.dock).toEqual(shut.dock)
-  expect((await agent_seen(ipad)).canvas).toEqual(shut_canvas)
-  expect((await marks(ipad)).map(mark_placed)).toEqual(resting.map(mark_placed))
+  await expect_marks_clear(ipad, 1)
   await capture(ipad, info, name)
-  await composer_close(ipad)
+
+  await chat_open(ipad)
+  const controls = await targets(ipad, '.chat__composer button')
+  expect(controls).toHaveLength(2)
+  expect(target_problems(controls, screen)).toEqual([])
+  expect(target_problems(await targets(ipad, '.chat__open'), screen)).toEqual([])
+  await capture(ipad, info, `${name}-chat`)
+  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
 }
 
 // The checks above are the safeguard against the band coming back. Each fault below is one
@@ -305,7 +281,8 @@ test('the Agent canvas check passes the modal layout and names the old band', ()
   const sound: AgentSeen = {
     screen,
     footers_count: 0,
-    dock: [target(80, 20, 44, 44), target(126, 20, 44, 44)],
+    retired_count: 0,
+    chat: [target(730, 19, 71, 44)],
     replace: [target(644, 88, 160, 44)],
     replace_pressed: true,
     pane: { x: 0, y: 85, width: 820, height: 1095 },
@@ -340,12 +317,18 @@ test('the Agent canvas check passes the modal layout and names the old band', ()
     'Replace lies over the Agent canvas',
   ])
   expect(agent_problems({ ...sound, replace: [target(644, 90, 160, 40)] })).toEqual([
-    'control 2 is under 44px',
+    'control 1 is under 44px',
   ])
-  expect(agent_problems({ ...sound, dock: [target(800, 20, 44, 44)] })).toEqual([
+
+  // The two buttons the chat replaced, back by the tools, and Chat moved off its corner.
+  expect(agent_problems({ ...sound, retired_count: 2 })).toEqual(['a retired control is back'])
+  expect(agent_problems({ ...sound, chat: [target(80, 20, 71, 44)] })).toEqual([
+    'Chat is not at the top right',
+  ])
+  expect(agent_problems({ ...sound, chat: [target(800, 20, 71, 44)] })).toEqual([
     'control 0 is off the screen',
-    '1 agent buttons, not 2',
   ])
+  expect(agent_problems({ ...sound, chat: [] })).toEqual(['0 Chat tabs, not 1'])
   expect(agent_problems({ ...sound, replace: [] })).toEqual(['0 Replace buttons, not 1'])
   expect(agent_problems({ ...sound, replace_pressed: false })).toEqual([
     'a press on Replace lands on something else',
@@ -408,7 +391,7 @@ test('paired Sends reach the agent, and its scene is shown and copied in one und
       return status().document_hash as string
     })
     await step(
-      'refused, lost and inexact sends keep the draft',
+      'a refused send keeps its words; words alone and the sketch both reach the agent',
       () => delivery(ipad, bound, ink_hash),
       step_long_ms,
     )
@@ -478,9 +461,19 @@ function publish_canvas(root: string, bound: Cli, session: string, hash: string)
 }
 
 async function delivery(ipad: Page, bound: Cli, hash: string) {
-  await composer_open(ipad)
+  await chat_open(ipad)
 
-  // Exercise the real server rejection by substituting an unconfirmed document hash in transit.
+  // Words alone need words: until there are some, Send stays quiet.
+  await expect(add_sketch(ipad)).toHaveAttribute('aria-pressed', 'false')
+  await field(ipad).fill('   ')
+  await expect(send_button(ipad)).toBeDisabled()
+
+  // A real refusal from the board: an unconfirmed sketch hash substituted in transit. The
+  // words stay in the field, the sketch stays added, and nothing is queued or shown as sent.
+  const question = 'Which way round is this?'
+  await add_sketch(ipad).click()
+  await expect(ipad.locator('.chat__attached')).toContainText('1 shape')
+  await field(ipad).fill(question)
   await ipad.route(
     '**/api/whiteboard/event/v2?*',
     (route) =>
@@ -492,207 +485,72 @@ async function delivery(ipad: Page, bound: Cli, hash: string) {
       }),
     { times: 1 },
   )
-  await notify(ipad).tap()
-
-  // The refusal is news on the bell, which is behind the open note: what it says is read off
-  // the page. No list opens and the paper says nothing. A screen reader, which cannot hear
-  // the page behind an open note, is told on the note itself.
-  await expect(bell_behind(ipad)).toHaveAttribute('aria-label', 'Notifications, 1 unread')
-  await expect(inbox_behind(ipad)).toHaveCount(0)
-  await expect(ipad.locator('.composer')).not.toContainText('Ink is syncing')
-  await expect(ipad.locator('.notepad [role="status"]')).toContainText('Ink is syncing')
-
-  // Reading the list means putting the note away: the bell can be pressed and named again.
-  const refused = await row_with(ipad, 'Ink is syncing. Tap again to send.')
-  await expect(refused).toHaveAttribute('data-state', 'refused')
-  await expect(bell(ipad)).toHaveAccessibleName('Notifications')
+  await send_button(ipad).click()
+  await expect(ipad.locator('.chat__caption')).toContainText('Not sent: Ink is syncing.')
+  await expect(field(ipad)).toHaveValue(question)
+  await expect(add_sketch(ipad)).toHaveAttribute('aria-pressed', 'true')
+  await expect(mine(ipad, question)).toHaveCount(0)
   expect(bound('poll').events).toEqual([])
 
-  // Asking for the note again shuts the list. A second tap sends what the first could not.
-  await composer_open(ipad)
-
-  // The slip shook its head at the refusal, and not again as it is shown once more: an
-  // opening note rests still at its centre, where `keyboard_geometry` measures it.
-  const motions = await ipad.locator('.composer').evaluate((e) => e.getAnimations().length)
-  expect(motions).toBe(0)
-  await expect(inbox_behind(ipad)).toHaveCount(0)
-  await notify(ipad).tap()
-  await inbox_open(ipad)
-  await expect(rows(ipad)).toHaveCount(2)
-  await expect(rows_about(ipad, 'sketch_notify', 'queued')).toHaveCount(1)
-  await composer_open(ipad)
-
-  // The note holds a field and one control. Nothing on it chooses what a send means.
-  await expect(ipad.locator('.composer button')).toHaveCount(1)
-  await expect(ipad.locator('.notepad [role="switch"], .notepad input')).toHaveCount(0)
-  const text = '  筆 📝\nr and d?  '
-  await composer_recovery(ipad, text, bound)
-
-  // The confirmed send cleared the note. With or without words, a send is the same request.
-  await composer_open(ipad)
-  await expect(note(ipad)).toHaveValue('')
-  await expect(notify(ipad)).toBeEnabled()
-  const poll = bound('poll')
-  expect(poll.events.map((e: { kind: string }) => e.kind)).toEqual([
-    'sketch_notify',
-    'sketch_notify',
-  ])
-
-  expect(poll.events[0].text).toBeUndefined()
-  expect(poll.events[1].text).toBe(text)
-
-  for (const event of poll.events) {
-    expect(event.sketch_hash).toBe(hash)
-
-    for (const state of ['received', 'working', 'updated']) {
-      expect(bound('ack', '--event', event.id, '--state', state).status).toBe('success')
-    }
-  }
-
-  // The newest request is followed to its end in its own row. The Mac publishes only that
-  // one, so the earlier row keeps the last state this tab saw, and says so.
-  await inbox_open(ipad)
-  await expect(rows_about(ipad, 'sketch_notify', 'updated')).toHaveCount(1)
-  await expect(rows_about(ipad, 'sketch_notify', 'updated')).toContainText('Done')
-  await expect(rows_about(ipad, 'sketch_notify', 'queued')).toHaveCount(1)
-  await expect(rows_about(ipad, 'sketch_notify', 'queued')).toContainText('last known')
-  await expect(rows(ipad)).toHaveCount(3)
-  expect(bound('poll').events).toEqual([])
-
-  // None of these Sends drew anything: a request publishes nothing by itself.
-  expect(bound('poll').agent_revision).toBe(0)
-  await bare_send_and_edited_note(ipad, bound)
-
-  // The board is left as a person leaves it: the note put away, so the views can be pressed.
-  await composer_close(ipad)
+  // Sent again, the sketch goes as it is now, with the words, and comes off after.
+  await send_button(ipad).click()
+  await expect(field(ipad)).toHaveValue('')
+  await expect(add_sketch(ipad)).toHaveAttribute('aria-pressed', 'false')
+  await expect(mine(ipad, question).locator('.chat__sketch')).toContainText('Sketch, as it was')
+  await expect(mine(ipad, question).locator('.chat__receipt')).toContainText('Queued on the Mac')
+  const words = await words_alone(ipad, bound)
+  await answered(ipad, bound, { hash, question, words })
+  await sketch_open(ipad)
 }
 
-// A send with no words is the sketch alone. A note edited while its send is on its way is
-// kept: the Mac has the words that were sent, and the field has the newer ones.
-async function bare_send_and_edited_note(ipad: Page, bound: Cli) {
-  const field = note(ipad)
-  const send = notify(ipad)
-  await composer_open(ipad)
-  await expect(field).toHaveValue('')
-  await send.tap()
-  await expect.poll(() => bound('poll').events.length).toBe(1)
-  await expect(send).toBeEnabled()
-  await field.fill('First note')
-  let release!: () => void
-  const hold = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  let received!: () => void
-  const committed = new Promise<void>((resolve) => {
-    received = resolve
-  })
-  await ipad.route(
-    '**/api/whiteboard/event/v2?*',
-    async (route) => {
-      const reply = await route.fetch()
-      received()
-      await hold
-      await route.fulfill({ response: reply })
-    },
-    { times: 1 },
-  )
-  await send.tap()
-
-  try {
-    await committed
-    await expect(send).toBeDisabled()
-    await field.fill('Newer note')
-    await field.press('Control+Enter')
-  } finally {
-    release()
-  }
-
-  await expect(send).toBeEnabled()
-  await expect(field).toHaveValue('Newer note')
-  const events = bound('poll').events
-  expect(events).toHaveLength(2)
-  expect(events[0]).toMatchObject({ kind: 'sketch_notify' })
-  expect(events[0].text).toBeUndefined()
-  expect(events[1]).toMatchObject({ kind: 'sketch_notify', text: 'First note' })
-  await field.fill('')
+// Words alone, sent with Return. Shift and Return is a new line; a key still being composed
+// sends nothing; and typing never reaches the canvas behind.
+async function words_alone(ipad: Page, bound: Cli): Promise<string> {
+  const words = '  筆 📝\nr and d?  '
+  await field(ipad).fill('d')
+  await field(ipad).press('r')
+  await field(ipad).press('Backspace')
+  await field(ipad).press('Shift+Enter')
+  await expect(field(ipad)).toHaveValue('d\n')
+  await field(ipad).fill(words)
+  await field(ipad).dispatchEvent('keydown', { key: 'Enter', isComposing: true })
+  expect(bound('poll').events).toHaveLength(1)
+  await field(ipad).press('Enter')
+  await expect(field(ipad)).toHaveValue('')
+  await expect(mine(ipad, 'r and d?').locator('.chat__receipt')).toContainText('Words only')
+  return words
 }
 
-async function composer_recovery(ipad: Page, text: string, bound: Cli) {
-  const field = note(ipad)
-  await field.fill('d')
-  await field.press('r')
-  await field.press('Backspace')
-  await field.press('Enter')
-  await expect(field).toHaveValue('d\n')
-  await field.fill(text)
-  await field.dispatchEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true })
-  expect(bound('poll').events).toHaveLength(1)
+type Sent = { hash: string; question: string; words: string }
 
-  // Simulate an old daemon before submitting any bytes. Then lose the successful response.
-  await ipad.route('**/api/status?*', (r) => r.fulfill({ json: { protocol: 1 } }), { times: 1 })
-  await field.press('Control+Enter')
-  const upgrade = await row_with(ipad, /Upgrade and restart/)
-  await expect(upgrade).toHaveAttribute('data-state', 'unconfirmed')
-  expect(bound('poll').events).toHaveLength(1)
+// The host sees both requests as they were sent, and its answers come back under each. A
+// status line is shown at the foot while the agent works, and is never the answer.
+async function answered(ipad: Page, bound: Cli, { hash, question, words }: Sent) {
+  const [drawn, alone] = bound('poll').events
+  expect(drawn).toMatchObject({ include_sketch: true, sketch_hash: hash, text: question })
+  expect(alone).toMatchObject({ include_sketch: false, text: words })
 
-  // Put away to read the list and asked for again, the note has kept its words.
-  await composer_open(ipad)
-  await expect(field).toHaveValue(text)
-  await ipad.route(
-    '**/api/whiteboard/event/v2?*',
-    async (route) => {
-      expect((await route.fetch()).ok()).toBe(true)
-      await route.abort('failed')
-    },
-    { times: 1 },
-  )
-  await notify(ipad).tap()
-  const lost = await row_with(ipad, /No confirmation/)
-  await expect(lost).toHaveAttribute('data-state', 'unconfirmed')
-  const polled = bound('poll')
-  const before = polled.events
-  expect(before).toHaveLength(2)
-  const status_url = new URL('/api/cleaned/status', ipad.url())
-  status_url.searchParams.set('session', polled.session)
-  const status = await (await ipad.request.get(status_url.href)).json()
-  expect(status.last_event.id).toBe(before[1].id)
-  expect(status.last_event.text).toBeUndefined()
-  expect(status.last_event.request_id).toBeUndefined()
-  await ipad.reload()
+  for (const event of [drawn, alone]) {
+    expect(bound('ack', '--event', event.id, '--state', 'received').status).toBe('success')
+  }
 
-  // After a reload the note is closed again. Its button says a draft is waiting, and the
-  // unconfirmed request is still the one the next send repeats.
-  await expect(chat(ipad)).toHaveAccessibleName('Agent note, draft saved')
-  await expect(field).toBeHidden()
-  await composer_open(ipad)
-  await expect(field).toHaveValue(text)
-  await ipad.route(
-    '**/api/whiteboard/event/v2?*',
-    async (route) => {
-      const reply = await route.fetch()
-      const body = await reply.json()
-      delete body.text
-      await route.fulfill({ response: reply, json: body })
-    },
-    { times: 1 },
-  )
-  await notify(ipad).tap()
-  const inexact = await row_with(ipad, /No exact confirmation/)
-  await expect(inexact).toHaveAttribute('data-state', 'unconfirmed')
+  const status = ['--state', 'working', '--message', 'Reading the sketch']
+  expect(bound('ack', '--event', drawn.id, ...status).status).toBe('success')
+  await expect(ipad.locator('.chat__working')).toContainText('Agent is working')
+  await expect(ipad.locator('.chat__working')).toContainText('Reading the sketch')
+  await expect(answers(ipad, 'Reading the sketch')).toHaveCount(0)
+  const reply = (id: string, message: string) =>
+    bound('ack', '--event', id, '--state', 'updated', '--message', message).status
+  expect(reply(drawn.id, 'It reads left to right.')).toBe('success')
+  expect(reply(alone.id, 'Yes: R and D.')).toBe('success')
+  await expect(answers(ipad, 'It reads left to right.')).toBeVisible()
+  await expect(answers(ipad, 'Yes: R and D.')).toBeVisible()
+  await expect(mine(ipad, question).locator('.chat__receipt')).toContainText('Done')
+  await expect(ipad.locator('.chat__working')).toHaveCount(0)
 
-  // Still unconfirmed after the note was put away: the words and the pending request are kept.
-  await composer_open(ipad)
-  await expect(field).toHaveValue(text)
-  await notify(ipad).tap()
-  await expect(field).toHaveValue('')
-  expect(bound('poll').events).toEqual(before)
-
-  // Three tries and the Mac's own report of the request are one row, not four: the refused
-  // send, the bare send and this one.
-  await inbox_open(ipad)
-  await expect(rows(ipad)).toHaveCount(3)
-  await expect(rows_about(ipad, 'sketch_notify', 'refused')).toHaveCount(1)
-  await expect(rows_about(ipad, 'sketch_notify', 'queued')).toHaveCount(2)
+  // Read as they came, on screen: nothing is left unread. None of these drew anything.
+  await expect(ipad.getByTestId('chat-unread')).toHaveCount(0)
+  expect(bound('poll')).toMatchObject({ events: [], agent_revision: 0 })
 }
 
 type Box = { x: number; y: number; width: number; height: number }
@@ -752,21 +610,16 @@ async function expect_layer_label(page: Page, text: string, id = 'a') {
 }
 
 // Chromium on a desktop runner has no software keyboard. Drive its visualViewport contract while
-// keeping the layout viewport fixed, and check that only the note follows the inset: the slip
-// moves up into what can still be seen, and no canvas is resized or zoomed.
+// keeping the layout viewport fixed, and check that only the chat follows the inset: the
+// composer moves up into what can still be seen, and no view is resized.
 async function keyboard_geometry(page: Page, info: TestInfo) {
-  const field = note(page)
-  const paper = page.locator('.composer')
-  const sketch = page.locator('.views__pane--sketch')
-  await composer_open(page)
-  await field.fill('One\nTwo\nThree\nFour\nFive\nSix')
-  const before = await sketch.boundingBox()
-  const rested = await paper.boundingBox()
-  const zoom = () =>
-    sketch
-      .locator('.tl-container')
-      .evaluate((e) => getComputedStyle(e).getPropertyValue('--tl-zoom'))
-  const initial = await zoom()
+  const composer = page.locator('.chat__composer')
+  const views = page.locator('.views')
+  await chat_open(page)
+  await field(page).fill('One\nTwo\nThree\nFour\nFive\nSix')
+  const before = await views.boundingBox()
+  const rested = await composer.boundingBox()
+  const visible_px = page.viewportSize()!.height - 245
   await page.evaluate(() => {
     Object.defineProperty(visualViewport, 'height', {
       configurable: true,
@@ -774,59 +627,54 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
     })
     visualViewport!.dispatchEvent(new Event('resize'))
   })
-  const rail = await field.boundingBox()
-  const lifted = await paper.boundingBox()
-  expect(rail!.y + rail!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 245 + 0.5)
+  const bottom = async () => {
+    const box = await composer.boundingBox()
+    return box!.y + box!.height
+  }
 
-  // The whole slip is in what the keyboard leaves in sight, and it moved up to get there.
+  // The whole composer is in what the keyboard leaves in sight, and it moved up to get there.
+  await expect.poll(bottom).toBeLessThanOrEqual(visible_px + 0.5)
+  const lifted = await composer.boundingBox()
   expect(lifted!.y).toBeGreaterThanOrEqual(0)
-  expect(lifted!.y + lifted!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 245)
   expect(lifted!.y).toBeLessThan(rested!.y)
 
   // Five lines of 22px and the field's own padding; the sixth line scrolls.
-  expect(rail!.height).toBeLessThanOrEqual(132.5)
-  expect(await field.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)
-  expect(await sketch.boundingBox()).toEqual(before)
-  expect(await zoom()).toBe(initial)
+  expect((await field(page).boundingBox())!.height).toBeLessThanOrEqual(132.5)
+  expect(await field(page).evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)
+  expect(await views.boundingBox()).toEqual(before)
   await info.attach('keyboard-inset', { body: await page.screenshot(), contentType: 'image/png' })
   await page.evaluate(() => {
     Reflect.deleteProperty(visualViewport!, 'height')
     visualViewport!.dispatchEvent(new Event('resize'))
   })
 
-  // With the keyboard gone the slip is back where it rested.
-  await expect.poll(() => paper.boundingBox()).toEqual(rested)
-  await field.fill('')
-  await composer_close(page)
+  // With the keyboard gone the composer is back where it rested.
+  await expect.poll(() => composer.boundingBox()).toEqual(rested)
+  await field(page).fill('')
 }
 
-// Every tab and button here is pressed with the note shut: `delivery` leaves it put away,
-// and each geometry check puts it away again after looking at it open.
+// The Agent canvas on both screens, and the tabs that lead to it: Sketchboard, Agent canvas
+// and Chat, and nothing the board had before its chat. The stage, which presents and was not
+// looking at the chat, has the agent's answers waiting there as news.
 async function agent_views(ipad: Page, stage: Page, info: TestInfo) {
   for (const page of [ipad, stage]) {
     await page.getByRole('tab', { name: 'Agent canvas' }).click()
     await expect_layer_label(page, 'Request')
     await expect(page.getByRole('group', { name: 'Agent layer' })).toHaveCount(0)
     await expect_layer_label(page, 'What about retries?', 'b')
-
-    // The note, its button and the bell are the iPad's. The stage only presents. The note
-    // is hidden until asked for, so the dialog is counted on the page, not found by role.
-    await expect(page.locator('dialog.notepad')).toHaveCount(page === ipad ? 1 : 0)
-    await expect(note(page)).toHaveCount(0)
-    await expect(chat(page)).toHaveCount(page === ipad ? 1 : 0)
-    await expect(bell(page)).toHaveCount(page === ipad ? 1 : 0)
+    await expect(retired_controls(page)).toHaveCount(0)
+    await expect(page.getByRole('tab')).toHaveText(['Sketchboard', 'Agent canvas', /^Chat/])
   }
 
-  // With only the Agent canvas on screen the two buttons wait in the band above the views,
-  // and tldraw's notice in that canvas is untouched, with the note shut and with it open.
-  await geometry_ipad(ipad, info, 'ipad-portrait', 'band', 1)
+  await expect(stage.getByTestId('chat-unread')).toBeVisible()
+  await expect(chat_tab(stage)).toHaveAccessibleName(/^Chat\W+2 new answers$/)
+  await geometry_ipad(ipad, info, 'ipad-portrait')
   await geometry_stage(stage, info, 'mac-stage')
 
-  // Turned on its side with both canvases on screen: each has its own notice, the sketch is
-  // too short for a column of buttons over the strip, and Replace keeps the canvas's head.
+  // Turned on its side, the Agent canvas keeps its head and Replace, and the chat its column.
   await soon(ipad.setViewportSize(ipad_landscape))
-  await ipad.getByRole('tab', { name: 'Side by side' }).tap()
   await expect_layer_label(ipad, 'What about retries?', 'b')
-  await geometry_ipad(ipad, info, 'ipad-landscape-side-by-side', 'right', 2)
+  await geometry_ipad(ipad, info, 'ipad-landscape')
   await keyboard_geometry(ipad, info)
+  await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
 }

@@ -310,12 +310,15 @@ function board_pairing(
   return json_no_store(pairing_board(options.pairing, page))
 }
 
+// Anyone on the network may read this. It says where the newest request stands, never a word
+// of it or of the answer: the chat is read with the board's pairing, on its own route.
 function public_canvas_status(board: Board, linked: boolean) {
   const event = board.events.latest()
   const last_event = event && { id: event.id, kind: event.kind, state: event.state,
-    created_at_ms: event.created_at_ms, message: event.message }
+    created_at_ms: event.created_at_ms }
   if (last_event) {
     assert(!('text' in last_event), 'the paired note is never a public status message')
+    assert(!('message' in last_event), 'the answer is never a public status message')
     assert(!('request_id' in last_event), 'the replay key stays private')
   }
   return json_no_store({ ...board.cleaned_status(), linked, protocol: whiteboard_protocol,

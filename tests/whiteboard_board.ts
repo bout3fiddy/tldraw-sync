@@ -1,13 +1,9 @@
 // What the linked-board journeys share: a disposable board started through the real command
-// line, a Mac stage and a paired iPad page, and the handles a person has on the iPad: the note
-// button, the bell, the note itself and its one control. Nothing here touches a live board.
-//
-// The note is a modal dialog. While it is open the page behind it is inert: no press reaches
-// it, and it is out of the accessibility tree. What lies behind is then read from the page
-// itself, by attribute, and is never pressed. Pairing ends with the note put away, so every
-// journey starts on a board that can be drawn on and pressed.
+// line, a Mac stage and a paired iPad page, and the handles a person has on a board's chat:
+// the Chat tab, the field, Add sketch and Send. Nothing here touches a live board. Pairing
+// ends on the Sketchboard, so every journey starts on a board that can be drawn on.
 
-import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Browser, type Page } from '@playwright/test'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -137,235 +133,54 @@ export async function phases(settle: () => Promise<void>, list: readonly Phase[]
   throw first.error
 }
 
-export const chat = (page: Page) => page.getByRole('button', { name: /^Agent note/ })
-export const bell = (page: Page) => page.getByRole('button', { name: /^Notifications/ })
-export const note = (page: Page) => page.getByRole('textbox', { name: 'Note to agent' })
+// The board's chat: one tab among the views, a field, Add sketch and Send.
+export const chat_tab = (page: Page) => page.getByRole('tab', { name: /^Chat/ })
+export const field = (page: Page) => page.getByRole('textbox', { name: 'Message to agent' })
+export const send_button = (page: Page) => page.getByRole('button', { name: 'Send', exact: true })
+export const add_sketch = (page: Page) =>
+  page.getByRole('button', { name: /^(Add sketch|Sketch added)$/ })
+export const messages = (page: Page) => page.getByRole('log', { name: 'Messages' })
+export const mine = (page: Page, text: string | RegExp) =>
+  messages(page).locator('.chat__mine').filter({ hasText: text })
+export const answers = (page: Page, text: string | RegExp) =>
+  messages(page).locator('.chat__answer').filter({ hasText: text })
 
-// The one control on the note: it sends the sketch, with the note when there is one.
-export const notify = (page: Page) => page.getByRole('button', { name: 'Send to agent' })
-export const inbox = (page: Page) => page.getByRole('dialog', { name: 'Notifications' })
-export const rows = (page: Page) => inbox(page).getByRole('listitem')
+// The controls the board had before its chat. None of them may come back.
+export const retired_controls = (page: Page) =>
+  page
+    .getByRole('button', { name: /^(Agent note|Notifications)/ })
+    .or(page.getByRole('tab', { name: 'Side by side' }))
+    .or(page.locator('dialog.notepad, .dock, .inbox'))
 
-// The same two buttons and the list, found on the page itself. With the note open they are
-// behind a modal dialog, where a role would not look for them: `chat`, `bell` and `inbox`,
-// which find them by role, are for when the note is shut.
-export const chat_behind = (page: Page) =>
-  page.locator('.dock__button[aria-controls="agent-composer"]')
-export const bell_behind = (page: Page) =>
-  page.locator('.dock__button[aria-controls="agent-inbox"]')
-export const inbox_behind = (page: Page) => page.locator('.inbox')
-
-// The note is closed until asked for. Opening it is a tap on the button by the tools, which
-// is pressed by role: it can be, with the note shut. Open, the note is the browser's own
-// modal dialog, and its button says so from behind it.
-export async function composer_open(page: Page) {
-  const state = chat_behind(page)
-  await expect(state).toBeVisible()
-
-  if ((await state.getAttribute('aria-expanded')) !== 'true') await chat(page).tap()
-
-  await expect(state).toHaveAttribute('aria-expanded', 'true')
-  await expect(note(page)).toBeVisible()
-  const sheet = page.getByRole('dialog', { name: 'Agent note' })
-  expect(await sheet.evaluate((element) => element.matches(':modal'))).toBe(true)
+export async function chat_open(page: Page) {
+  await chat_tab(page).click()
+  await expect(chat_tab(page)).toHaveAttribute('aria-selected', 'true')
+  await expect(field(page)).toBeVisible()
 }
 
-// The note is put away with Escape, which is heard wherever the focus is. While the note is
-// open nothing else on the page can be pressed, so every step outside it starts here. Its
-// words and a request still on its way are kept.
-export async function composer_close(page: Page) {
-  const state = chat_behind(page)
-  await expect(state).toBeVisible()
+export async function sketch_open(page: Page) {
+  const tab = page.getByRole('tab', { name: /^(Sketchboard|Sketch)$/ })
+  await tab.click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+}
 
-  if ((await state.getAttribute('aria-expanded')) === 'true') {
-    await soon(page.keyboard.press('Escape'))
+// Writes `words` in the chat and sends them, the sketch with them if asked, and waits until the
+// Mac has them: the field is cleared only by a confirmed send.
+export async function chat_send(page: Page, words: string, with_sketch = false) {
+  await chat_open(page)
+
+  if (with_sketch && (await add_sketch(page).getAttribute('aria-pressed')) !== 'true') {
+    await add_sketch(page).click()
   }
 
-  await expect(state).toHaveAttribute('aria-expanded', 'false')
-  await expect(note(page)).toBeHidden()
+  await expect(add_sketch(page)).toHaveAttribute('aria-pressed', String(with_sketch))
+  await field(page).fill(words)
+  await send_button(page).click()
+  await expect(field(page)).toHaveValue('')
+  await expect(add_sketch(page)).toHaveAttribute('aria-pressed', 'false')
 }
-
-// The list never opens by itself, and a press anywhere else closes it: open it to look. The
-// bell can be pressed only with the note shut, so the note is put away first.
-export async function inbox_open(page: Page) {
-  await composer_close(page)
-  const trigger = bell(page)
-
-  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.tap()
-
-  await expect(inbox(page)).toBeVisible()
-}
-
-export async function inbox_close(page: Page) {
-  await composer_close(page)
-  const trigger = bell(page)
-
-  if ((await trigger.getAttribute('aria-expanded')) === 'true') await trigger.tap()
-
-  await expect(inbox(page)).toBeHidden()
-}
-
-// The one row that says `text`, with the note put away and the list opened to read it.
-export async function row_with(page: Page, text: string | RegExp): Promise<Locator> {
-  await inbox_open(page)
-  const row = rows(page).filter({ hasText: text })
-  await expect(row).toHaveCount(1)
-  return row
-}
-
-export const rows_about = (page: Page, subject: string, state?: string) =>
-  inbox(page).locator(`li[data-subject="${subject}"]${state ? `[data-state="${state}"]` : ''}`)
 
 export type Rect = Box & { width: number; height: number }
-
-// Where this app's pieces are on screen, in CSS pixels, read in one go so that they belong to
-// one frame. A piece that is not shown is null. `reach` is whether a press at the middle of
-// each of the agent's two buttons lands on that button. `marks` are tldraw's own notices.
-export type Layout = {
-  screen: Rect
-  views: Rect | null
-  pane: Rect | null
-  sheet: Rect | null
-  margin: Rect | null
-  strip: Rect | null
-  dock: Rect | null
-  chat: Rect | null
-  bell: Rect | null
-  tabs: Rect | null
-  boards: Rect | null
-  band: Rect | null
-  capsule: Rect | null
-  inbox: Rect | null
-  marks: Rect[]
-  reach: { chat: boolean; bell: boolean }
-}
-
-export function layout(page: Page): Promise<Layout> {
-  return page.evaluate(() => {
-    const rect = (element: Element | null) => {
-      if (element === null) return null
-
-      const r = element.getBoundingClientRect()
-      const shown = r.width > 0 && r.height > 0
-
-      if (!shown || getComputedStyle(element).visibility !== 'visible') return null
-
-      const { left, top, right, bottom, width, height } = r
-      return { left, top, right, bottom, width, height }
-    }
-    const one = (selector: string) => rect(document.querySelector(selector))
-    const reached = (element: Element | undefined) => {
-      if (element === undefined) return false
-
-      const r = element.getBoundingClientRect()
-      const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2)
-      return hit !== null && element.contains(hit)
-    }
-    const [chat, bell] = document.querySelectorAll('.dock__button')
-    const marks = [...document.querySelectorAll('[data-testid^="tl-watermark"]')].map(rect)
-    return {
-      screen: { left: 0, top: 0, right: innerWidth, bottom: innerHeight } as Rect,
-      views: one('.views'),
-      pane: one('.views__pane--sketch'),
-      sheet: one('.views__pane--sketch .tl-canvas'),
-      margin: one('.sheet__margin'),
-      strip: one('.strip'),
-      dock: one('.dock'),
-      chat: rect(chat ?? null),
-      bell: rect(bell ?? null),
-      tabs: one('.tabs'),
-      boards: one('.rail-toggle'),
-      band: one('.composer'),
-      capsule: one('.composer__capsule'),
-      inbox: one('.inbox'),
-      marks: marks.filter((mark) => mark !== null),
-      reach: { chat: reached(chat), bell: reached(bell) },
-    }
-  })
-}
-
-// Where the two buttons are meant to be: over the strip, at its right, at its left end, or,
-// with no strip on screen, in the band above the views.
-export type DockSide = 'above' | 'right' | 'left' | 'band'
-
-const dock_gap_px = 8
-const edge_tolerance_px = 0.5
-const near = (a: number, b: number) => Math.abs(a - b) <= edge_tolerance_px
-const overlap = (a: Box, b: Box) =>
-  a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
-const within = (a: Box, b: Box) =>
-  a.left >= b.left - edge_tolerance_px &&
-  a.top >= b.top - edge_tolerance_px &&
-  a.right <= b.right + edge_tolerance_px &&
-  a.bottom <= b.bottom + edge_tolerance_px
-
-// Whether the dock is fixed to the strip on the side asked: the gap between them and the
-// edge they share. An empty list means it is.
-function side_problems(dock: Rect, strip: Rect, side: Exclude<DockSide, 'band'>): string[] {
-  const fixed = {
-    above: [strip.top - dock.bottom, dock.left - strip.left],
-    right: [dock.left - strip.right, dock.top - strip.top],
-    left: [strip.left - dock.right, dock.bottom - strip.bottom],
-  }[side] as [number, number]
-  const problems: string[] = []
-
-  if (!near(fixed[0], dock_gap_px)) problems.push(`${side}: gap to the strip is ${fixed[0]}px`)
-
-  if (!near(fixed[1], 0)) problems.push(`${side}: out of line with the strip by ${fixed[1]}px`)
-
-  return problems
-}
-
-// Everything wrong with where the agent's two buttons are, in words. Pure, so that it can be
-// shown to catch a bad placing without a browser.
-export function dock_problems(seen: Layout, side: DockSide): string[] {
-  const { dock, chat, bell, strip, pane, views } = seen
-
-  if (dock === null || chat === null || bell === null) return ['the two buttons are not shown']
-
-  const problems: string[] = []
-  const covered = { tabs: seen.tabs, Boards: seen.boards, 'the note band': seen.band }
-
-  for (const [name, button] of Object.entries({ note: chat, bell })) {
-    if (button.width < 44 || button.height < 44) problems.push(`${name} button is under 44px`)
-
-    if (!within(button, seen.screen)) problems.push(`${name} button is off the screen`)
-
-    if (!seen.reach[name === 'note' ? 'chat' : 'bell']) {
-      problems.push(`a press on the ${name} button lands on something else`)
-    }
-  }
-
-  if (overlap(chat, bell)) problems.push('the two buttons overlap')
-
-  for (const [name, other] of Object.entries(covered)) {
-    if (other !== null && overlap(dock, other)) problems.push(`the buttons cover ${name}`)
-  }
-
-  if (seen.marks.some((mark) => overlap(dock, mark))) problems.push('the buttons cover the link')
-
-  if (side === 'band') {
-    if (strip !== null) problems.push('band: the strip is on screen')
-
-    if (views === null || dock.bottom > views.top) problems.push('band: the buttons hang below it')
-
-    return problems
-  }
-
-  if (strip === null || pane === null) return [...problems, 'the strip is not on screen']
-
-  if (overlap(dock, strip)) problems.push('the buttons cover the strip')
-
-  if (!within(dock, pane)) problems.push('the buttons are cut off by the sketch pane')
-
-  return [...problems, ...side_problems(dock, strip, side)]
-}
-
-// The two buttons are fixed to the strip on the side asked, whole, uncovered and reachable.
-// Polled: a new window size is laid out a frame or two after it is asked for.
-export async function expect_dock(page: Page, side: DockSide) {
-  await expect.poll(async () => dock_problems(await layout(page), side)).toEqual([])
-}
 
 export type Mark = {
   own: boolean
@@ -382,7 +197,7 @@ export type Mark = {
 // how many pieces of this app's chrome overlap it, and where it sits in its own pane.
 export function marks(page: Page): Promise<Mark[]> {
   return page.evaluate(() => {
-    const chrome = '.dock, .inbox, .composer:not([hidden]), .strip, .tabs, .notice'
+    const chrome = '.chat, .strip, .tabs, .notice'
     const round = (value: number) => Math.round(value * 100) / 100
     const found: Mark[] = []
 
@@ -432,15 +247,10 @@ export function marks(page: Page): Promise<Mark[]> {
   })
 }
 
-// The notice with everything about it but whether a press reaches it: while the note is
-// open, the browser keeps every press from the page behind it.
-export const mark_placed = ({ own: _own, ...rest }: Mark) => rest
-
 // Every notice on screen is whole, reachable and clear of this app's chrome. Where it rests
 // is tldraw's choice: the sketch is tldraw's canvas as it comes, so its notice lies over the
 // drawing surface, in the corner tldraw keeps it in. The branding is tldraw's: these journeys
-// only ever look at it and press it, as a person would. Asked with the note shut, when a
-// press can reach the page.
+// only ever look at it and press it, as a person would.
 export async function expect_marks_clear(page: Page, count: number): Promise<Mark[]> {
   const wrong = (mark: Mark) =>
     !mark.own || mark.covered > 0 || mark.width <= 0 || mark.height <= 0
@@ -519,10 +329,9 @@ export async function stroke(
 }
 
 // Link a board as a pih host does, then pair the iPad by scanning the stage QR. Before the
-// scan the note can be written but not sent, and says why where the note would be typed.
-// The scan is read while the note is open, and a reload shuts the note. Pairing ends with
-// the note put away and its button holding the focus, so no journey starts behind a modal
-// dialog, where a pen stroke would only put the note away and draw nothing.
+// scan the chat can be written in but neither read nor sent, and says why. The scan is read
+// with the chat open, and a reload keeps the pairing and drops it from the address. Pairing
+// ends on the Sketchboard, where a pen stroke draws.
 export async function pair(root: string, file: string, stage: Page, ipad: Page) {
   const link = () =>
     command(root, 'whiteboard-link', '--protocol', protocol, '--owner', 'e2e', '--out', file)
@@ -538,25 +347,29 @@ export async function pair(root: string, file: string, stage: Page, ipad: Page) 
   const paired = await scan(stage)
   expect(paired.hash.startsWith('#pair=')).toBe(true)
   await ipad.goto(new URL(linked.stage_url).origin + paired.pathname)
-  await composer_open(ipad)
-  await expect(notify(ipad)).toBeDisabled()
-  await expect(note(ipad)).toHaveAttribute('placeholder', 'Scan the Mac stage QR to send requests.')
+  await chat_open(ipad)
+  await expect(field(ipad)).toHaveAttribute('placeholder', 'Scan the Mac stage QR to chat here')
+  await expect(ipad.locator('.chat__standing')).toContainText('Not paired')
+  await field(ipad).fill('Hello')
+  await expect(send_button(ipad)).toBeDisabled()
   await ipad.evaluate((hash) => {
     location.hash = hash
   }, paired.hash)
-  await expect(notify(ipad)).toBeEnabled()
-  await expect(note(ipad)).toHaveAttribute('placeholder', 'Add a note (optional)')
+  await expect(send_button(ipad)).toBeEnabled()
+  await expect(ipad.locator('.chat__standing')).toContainText('Agent linked on this Mac')
   await ipad.reload()
 
-  // A reload closes the note again: hidden is where it starts.
-  await expect(chat(ipad)).toHaveAttribute('aria-expanded', 'false')
-  await expect(note(ipad)).toBeHidden()
-  await composer_open(ipad)
-  await expect(notify(ipad)).toBeEnabled()
+  // The words, the pairing and the view outlive the reload; the pairing leaves the address.
+  await expect(chat_tab(ipad)).toHaveAttribute('aria-selected', 'true')
+  await expect(field(ipad)).toHaveValue('Hello')
+  await expect(send_button(ipad)).toBeEnabled()
   expect(new URL(ipad.url()).hash.length).toBe(0)
-  await composer_close(ipad)
-  await expect(chat(ipad)).toHaveAttribute('aria-expanded', 'false')
-  await expect(chat(ipad)).toBeFocused()
+
+  // Opening the chat raised no keyboard: nothing in it took the focus by itself.
+  await expect(field(ipad)).not.toBeFocused()
+  await field(ipad).fill('')
+  await expect(send_button(ipad)).toBeDisabled()
+  await sketch_open(ipad)
   return linked
 }
 

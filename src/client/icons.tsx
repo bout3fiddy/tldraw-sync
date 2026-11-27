@@ -3,11 +3,11 @@
 // tldraw's icon font is not loaded, because its interface is hidden.
 
 import type { Icon } from '@phosphor-icons/react'
+import { ArrowClockwise } from '@phosphor-icons/react/dist/csr/ArrowClockwise'
 import { ArrowUp } from '@phosphor-icons/react/dist/csr/ArrowUp'
+import { ArrowUpRight } from '@phosphor-icons/react/dist/csr/ArrowUpRight'
 import { ArrowUUpLeft } from '@phosphor-icons/react/dist/csr/ArrowUUpLeft'
 import { ArrowUUpRight } from '@phosphor-icons/react/dist/csr/ArrowUUpRight'
-import { Bell } from '@phosphor-icons/react/dist/csr/Bell'
-import { ChatCircle } from '@phosphor-icons/react/dist/csr/ChatCircle'
 import { Cursor } from '@phosphor-icons/react/dist/csr/Cursor'
 import { DotsThreeVertical } from '@phosphor-icons/react/dist/csr/DotsThreeVertical'
 import { Eraser } from '@phosphor-icons/react/dist/csr/Eraser'
@@ -16,6 +16,7 @@ import { Pen } from '@phosphor-icons/react/dist/csr/Pen'
 import { Plus } from '@phosphor-icons/react/dist/csr/Plus'
 import { PushPin } from '@phosphor-icons/react/dist/csr/PushPin'
 import { QrCode } from '@phosphor-icons/react/dist/csr/QrCode'
+import { Scribble } from '@phosphor-icons/react/dist/csr/Scribble'
 import { SidebarSimple } from '@phosphor-icons/react/dist/csr/SidebarSimple'
 import { Trash } from '@phosphor-icons/react/dist/csr/Trash'
 import { X } from '@phosphor-icons/react/dist/csr/X'
@@ -36,14 +37,19 @@ export const icon_clear = glyph(Trash)
 export const icon_boards = glyph(SidebarSimple)
 export const icon_plus = glyph(Plus, 20)
 export const icon_close = glyph(X)
+export const icon_close_small = glyph(X, 20)
 export const icon_pin = glyph(PushPin)
 export const icon_actions = glyph(DotsThreeVertical)
 export const icon_delete = glyph(Trash, 20)
 export const icon_rename = glyph(PencilSimpleLine, 20)
-export const icon_chat = glyph(ChatCircle)
-export const icon_bell = glyph(Bell)
 export const icon_pair = glyph(QrCode)
 
-// The glyph on the note's paper keeps one small size whatever the note grows to. The arrow
-// is set on solid ink, where a light stroke would thin out, so it alone is drawn bold.
+// The chat's: adding the sketch, a sent sketch's place, sending again, opening the canvas.
+export const icon_sketch = glyph(Scribble)
+export const icon_sketch_small = glyph(Scribble, 20)
+export const icon_retry = glyph(ArrowClockwise, 20)
+export const icon_open = glyph(ArrowUpRight, 20)
+
+// The send arrow keeps one small size whatever the message grows to. It is set on solid ink,
+// where a light stroke would thin out, so it alone is drawn bold.
 export const icon_send = <ArrowUp size={18} weight="bold" aria-hidden="true" focusable="false" />

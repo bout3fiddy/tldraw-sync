@@ -2,7 +2,7 @@
 // says what the board is and how to get the drawing; each command's help has the detail.
 
 import { board_name_length_max, port_default, proposal_size_bytes_max } from '../shared/constants'
-import { whiteboard_protocol } from '../shared/whiteboard'
+import { message_length_max, text_code_points_max, whiteboard_protocol } from '../shared/whiteboard'
 import { scene_schema_text } from './scene_prompt'
 
 export const commands = [
@@ -112,10 +112,12 @@ scene.json, a scene proposal ready to edit. scene.json holds what the Agent canv
 already tied to this snapshot: its "session", "snapshot" and "base_revision". A sketch with
 nothing on it still has a snapshot: its image is a blank page and "shapes_count" is 0.
 
-A request from the board is a note in the person's words, or no words at all. Read the sketch
-and decide what they asked for. If they are talking with you, answer in the conversation and
-publish nothing. If they asked for something drawn, edit scene.json, look at it with
-whiteboard-preview, then publish it with whiteboard-publish.
+A request from the board's chat is a message in the person's words. When it carries the sketch
+("include_sketch" absent or true), take this snapshot, read the sketch and decide what they
+asked for; when it is words alone, answer them without a snapshot. If they are talking with
+you, publish nothing. If they asked for something drawn, edit scene.json, look at it with
+whiteboard-preview, then publish it with whiteboard-publish. Either way, end the request with
+whiteboard-ack --state updated --message "<your answer>": that answer is what the chat shows.
 
 Scene (JSON, not code):
 ${scene_schema_text}
@@ -215,10 +217,29 @@ Linking again with the same owner and file returns the same board.`,
   'whiteboard-poll': `Usage: tldraw-sync whiteboard-poll --protocol ${protocol}
     --binding <file> --json
 
-Lists the requests still waiting. Each is a "sketch_notify": the hash of the sketch the person
-sent and, when they wrote one, their note in "text". A request publishes nothing by itself.`,
+Lists the requests still waiting. Each is a "sketch_notify" from the board's chat, with the
+person's words in "text" when they wrote some. "include_sketch" says what went with them:
+  absent  the sketch as it was, named by "sketch_hash" (an earlier pad; the words are optional)
+  true    the same: take a snapshot to see the sketch
+  false   words alone: take no snapshot; "text" is never empty, and "sketch_hash" is only the
+          board's sketch at that moment, for the record
+A request publishes nothing by itself.
+
+Example:
+  {"events": [{"id": "…", "kind": "sketch_notify", "include_sketch": false,
+               "text": "Say the gateway times out instead", "state": "queued", …}]}`,
   'whiteboard-ack': `Usage: tldraw-sync whiteboard-ack --binding <file> --event <id>
-    --state <received|working|updated|failed> [--message <text>] --json`,
+    --state <received|working|updated|failed> [--message <text>] --json
+
+Moves a request on. received and working take an optional status line of up to
+${message_length_max} characters. updated and failed end the request: their --message is the answer
+shown to the person in the board's chat, in plain words, 1 to ${text_code_points_max} characters
+(16 KiB). Say what you did or why it failed; say so when you drew on the Agent canvas. A
+status line is never the answer. Repeating an acknowledgement changes nothing.
+
+Example:
+  tldraw-sync whiteboard-ack --binding /private/binding.json --event <id> --state updated \\
+    --message "The lower path loses fewer orders. I drew both on the Agent canvas." --json`,
   'whiteboard-snapshot': help_snapshot,
   'whiteboard-preview': help_preview,
   'whiteboard-publish': help_publish,

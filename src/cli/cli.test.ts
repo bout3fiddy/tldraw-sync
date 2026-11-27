@@ -541,6 +541,73 @@ test('the canvas commands need a binding, and a wrong one reads and opens nothin
   expect(await status_json(directory, session)).toMatchObject({ agent_revision: 0 })
 }, 60_000)
 
+// The protocol as a pih host speaks it, through the public command line only, with a pad
+// paired the way the Mac stage pairs one: words alone and the sketch, the poll, a status line,
+// and the answer the board's chat then shows under the words it answers.
+test('a scripted host answers the board chat through the command line', async () => {
+  const host = await host_link()
+  const { port, session, bound } = host
+  const base = `http://127.0.0.1:${port}/api/whiteboard`
+  const stage = await fetch(`${base}/stage?session=${session}`, {
+    headers: { 'x-board-stage': 'chat' },
+  })
+  const { token } = (await stage.json()) as Json
+  const pad = (action: string, body?: Json) =>
+    fetch(`${base}/${action}?session=${session}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+  const text = 'Say the gateway times out instead'
+  const words = {
+    kind: 'sketch_notify',
+    request_id: '00000000-0001-7aaa-8000-000000000001',
+    include_sketch: false,
+    text,
+  }
+  expect((await pad('event/v2', words)).status).toBe(200)
+  const { document_hash } = await status_json(host.directory, session)
+  const request_id = '00000000-0002-7aaa-8000-000000000002'
+  const sketch = {
+    kind: 'sketch_notify',
+    request_id,
+    include_sketch: true,
+    sketch_hash: document_hash,
+  }
+  expect((await pad('event/v2', sketch)).status).toBe(200)
+
+  const polled = await bound('poll', '--protocol', protocol)
+  expect(polled.json.events).toMatchObject([
+    { include_sketch: false, text, state: 'queued' },
+    { include_sketch: true, sketch_hash: document_hash, state: 'queued' },
+  ])
+  const [alone, drawn] = polled.json.events as Json[]
+  const ack = (state: string, ...message: string[]) =>
+    bound('ack', '--event', String(alone!.id), '--state', state, ...message)
+  expect((await ack('received')).json).toMatchObject({ code: 'acknowledged' })
+  expect((await ack('working', '--message', 'Reading')).json).toMatchObject({ state: 'working' })
+
+  // A status line that is too long, or an answer that is, is refused before it is sent.
+  expect((await ack('working', '--message', 'x'.repeat(281))).json).toMatchObject({
+    code: 'usage_error',
+  })
+  expect((await ack('updated', '--message', '🌱'.repeat(4001))).json).toMatchObject({
+    code: 'usage_error',
+  })
+
+  const answer = 'The lower path loses fewer orders.\nI drew nothing.'
+  expect((await ack('updated', '--message', answer)).json).toMatchObject({ state: 'updated' })
+  const next = await bound('poll', '--protocol', protocol)
+  expect((next.json.events as Json[]).map((event) => event.id)).toEqual([drawn!.id])
+  expect(next.stdout).not.toContain('lower path')
+
+  const chat = (await (await pad('chat')).json()) as Json
+  expect(chat.items).toMatchObject([
+    { id: alone!.id, text, reply: answer, answer_seq: 1, state: 'updated' },
+    { id: drawn!.id, include_sketch: true, state: 'queued', reply: null },
+  ])
+}, 60_000)
+
 test('implicit capture follows home but an explicit retired target never does', async () => {
   const directory = directory_create()
   const port = port_any()

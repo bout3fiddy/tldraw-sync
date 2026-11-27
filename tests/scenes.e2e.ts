@@ -11,7 +11,7 @@
 // - A free variation uses every kind of element an agent places itself. The person copies it
 //   into the sketch in one step, as shapes of their own, and Undo brings their ink back.
 // - A request for the retired Interpret, left unconfirmed in a tab from before the upgrade,
-//   is never sent again. Its words stay, and the next Send sends them as a note.
+//   is never sent again. Its words stay, and the next Send sends them as a message.
 //
 // The pictures of the drafts and the screens are attached to the test results for review. A
 // picture of the Agent canvas is taken only once the whole scene is in view and at rest.
@@ -26,16 +26,16 @@ import { scene_format } from '../src/shared/scene_types'
 import { pixels_read } from './screen_pixels'
 import {
   action_ms,
+  answers,
   board_linked,
-  chat,
-  composer_close,
-  composer_open,
+  chat_open,
+  chat_send,
   draw,
-  inbox_close,
+  field,
   ipad_landscape,
-  note,
-  notify,
-  row_with,
+  mine,
+  send_button,
+  sketch_open,
   soon,
   step,
   step_long_ms,
@@ -57,10 +57,6 @@ const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtur
 const night_city = JSON.parse(
   fs.readFileSync(path.join(fixtures, 'night_city.scene.json'), 'utf8'),
 ) as Json[]
-
-// The shapes of that scene which reach past the middle of a landscape screen it is fitted to:
-// what a pane of half the screen cuts until its camera follows. In order of their ids.
-const cut_at_half = ['boat', 'cloud', 'ground', 'hall', 'moon', 'river', 'star', 'to-moon']
 
 const png_signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
@@ -123,22 +119,9 @@ type Framing = { shapes: number; cut: string[]; boxes: string }
 // from its extent, and by its box where it is lettering. A group draws nothing of its own.
 // What can be seen of the canvas is its box, less whatever an ancestor or the window clips.
 //
-// The measure is taken on the next animation frame, so two measures are a frame or more
-// apart. Given a tab to press, it is taken instead at the instant the views change: before
-// the browser has told the canvas its new size, so before the camera can have followed.
-async function framing_read(region: Element, press: Element | null): Promise<Framing> {
-  if (press === null) {
-    await new Promise((resolve) => requestAnimationFrame(resolve))
-  } else {
-    await new Promise<void>((resolve) => {
-      const changed = new MutationObserver(() => {
-        changed.disconnect()
-        resolve()
-      })
-      changed.observe(region.closest('.views')!, { attributeFilter: ['data-view'] })
-      press.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-    })
-  }
+// The measure is taken on the next animation frame, so two measures are a frame or more apart.
+async function framing_read(region: Element): Promise<Framing> {
+  await new Promise((resolve) => requestAnimationFrame(resolve))
 
   const canvas = region.querySelector('.tl-container')!
   const seen = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
@@ -196,7 +179,7 @@ async function scene_framed(page: Page, shapes_count: number) {
   await expect
     .poll(
       async () => {
-        const { boxes, ...scene } = await soon(region.evaluate(framing_read, null))
+        const { boxes, ...scene } = await soon(region.evaluate(framing_read))
         const still = boxes === boxes_last
         boxes_last = boxes
         return { ...scene, still }
@@ -212,12 +195,6 @@ async function scene_capture(page: Page, info: TestInfo, name: string, shapes_co
   await capture(page, info, name)
 }
 
-// Presses a view's tab and says how the scene sat at the instant the views changed.
-async function view_pressed(page: Page, name: string): Promise<Framing> {
-  const tab = await page.getByRole('tab', { name }).elementHandle()
-  return soon(canvas_region(page).evaluate(framing_read, tab))
-}
-
 function scene_edit(file: string, change: (scene: Json) => void): Json {
   const scene = JSON.parse(fs.readFileSync(file, 'utf8')) as Json
   change(scene)
@@ -229,18 +206,21 @@ function ack(bound: Cli, event: string, state: string, ...rest: string[]) {
   expect(bound('ack', '--event', event, '--state', state, ...rest).status).toBe('success')
 }
 
-// The person's side of every request: the note is opened, written and sent with its one
-// control, and put away again. The Mac confirms the request, which clears the note.
+// The person's side of every request about the drawing: in the chat, the sketch is added and
+// the words written and sent. The Mac confirms the request, which clears the field and takes
+// the sketch off. The person goes back to the Sketchboard.
 async function send(ipad: Page, bound: Cli, words: string): Promise<Json> {
   const waiting = bound('poll').events.length
-  await composer_open(ipad)
-  await note(ipad).fill(words)
-  await notify(ipad).tap()
+  await chat_send(ipad, words, true)
   await expect.poll(() => bound('poll').events.length).toBe(waiting + 1)
-  await expect(note(ipad)).toHaveValue('')
-  await composer_close(ipad)
+  await sketch_open(ipad)
   const event = bound('poll').events.at(-1) as Json
-  expect(event).toMatchObject({ kind: 'sketch_notify', state: 'queued', text: words })
+  expect(event).toMatchObject({
+    kind: 'sketch_notify',
+    state: 'queued',
+    text: words,
+    include_sketch: true,
+  })
   return event
 }
 
@@ -382,12 +362,12 @@ async function conversation(board: Linked, info: TestInfo, hash: string) {
 
   ack(bound, event.id, 'updated', '--message', answer)
 
-  // The answer is the last word of that request's one row. No canvas was written for it.
-  const row = await row_with(ipad, answer)
-  await expect(row).toHaveAttribute('data-state', 'updated')
-  await expect(row).toHaveAttribute('data-subject', 'sketch_notify')
+  // The answer is shown under the question it answers. No canvas was written for it.
+  await chat_open(ipad)
+  await expect(answers(ipad, answer)).toBeVisible()
+  await expect(mine(ipad, question).locator('.chat__receipt')).toContainText('Done')
+  await expect(answers(ipad, answer).locator('.chat__canvas')).toHaveCount(0)
   await capture(ipad, info, 'conversation-answer-ipad')
-  await inbox_close(ipad)
   expect(bound('poll')).toMatchObject({ agent_revision: 0, events: [] })
   expect(cli('status', '--session', session)).toMatchObject({
     agent_revision: 0,
@@ -625,18 +605,18 @@ async function creative(board: Linked, info: TestInfo) {
   await scene_capture(stage, info, 'creative-agent-canvas-mac', night_city.length)
   await soon(ipad.setViewportSize(ipad_landscape))
   await scene_framed(ipad, night_city.length)
+  await scene_capture(ipad, info, 'creative-agent-canvas-ipad-landscape', night_city.length)
 
-  // Side by side, the canvas has half the screen at once and its camera follows a moment
-  // later. At that instant the scene is still framed for the whole screen, so the half of it
-  // past the middle is out of the pane: the Hall is cut by the pane's edge, and the Tower,
-  // the title, the smoke and the bridge are whole. The Hall's label can be seen all the
-  // while, which is all that a picture once waited for, and why one was taken of a cut scene.
-  // The measure has to refuse that picture, and say which shapes are wrong in it.
-  const early = await view_pressed(ipad, 'Side by side')
-  expect(early.shapes).toBe(night_city.length)
-  expect([...early.cut].sort()).toEqual(cut_at_half)
-  await expect(canvas_words(ipad, 'hall', 'Hall')).toBeVisible()
-  await scene_capture(ipad, info, 'creative-side-by-side-ipad', night_city.length)
+  // The answer says the canvas moved while the request was open, and leads there.
+  await chat_open(ipad)
+  const drawn = answers(ipad, 'Drawn on the Agent canvas.')
+  await expect(drawn.locator('.chat__canvas')).toContainText('revision 3')
+  await drawn.getByRole('button', { name: 'Open' }).click()
+  await expect(ipad.getByRole('tab', { name: 'Agent canvas' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  )
+  await scene_framed(ipad, night_city.length)
 
   // Only the person replaces the sketch: one step, shapes of their own, and one Undo back.
   const ink_hash = status().document_hash
@@ -668,27 +648,38 @@ async function retired_request(board: Linked) {
   const sketch_hash = cli('status', '--session', session).document_hash as string
   const pending = { kind: 'interpret_request', sketch_hash, request_id: old_key, text: words }
   const saved = JSON.stringify({ text: words, interpret: true, pending })
+
+  // The tab as a page from before the upgrade left it: its note in the tab, and nothing yet in
+  // this device's own keeping for the board.
   await soon(
     ipad.evaluate(
-      ([key, value]) => sessionStorage.setItem(key!, value!),
-      [`tldraw-sync.notify.${session}`, saved],
+      ([key, value, current]) => {
+        sessionStorage.setItem(key!, value!)
+        localStorage.removeItem(current!)
+      },
+      [`tldraw-sync.notify.${session}`, saved, `tldraw-sync.chat.${session}`],
     ),
   )
   await ipad.reload()
-  await expect(chat(ipad)).toHaveAccessibleName('Agent note, draft saved')
   expect(bound('poll').events).toEqual([])
-  await composer_open(ipad)
-  await expect(note(ipad)).toHaveValue(words)
-  await expect(note(ipad)).toBeEnabled()
+  await chat_open(ipad)
+  await expect(field(ipad)).toHaveValue(words)
+  await expect(field(ipad)).toBeEnabled()
 
-  // Nothing is waiting to be sent again: the send is described as an ordinary one.
-  await expect(ipad.locator('#agent-composer-hint')).toHaveText('')
+  // Nothing is waiting to be sent again: no message is shown as unconfirmed, and the tab
+  // holds nothing of the earlier page's.
+  await expect(ipad.locator('.chat__mine[data-local="true"]')).toHaveCount(0)
+  await expect(ipad.locator('.chat__caption')).not.toContainText('waiting above')
+  const left = await soon(
+    ipad.evaluate((key) => sessionStorage.getItem(key!), `tldraw-sync.notify.${session}`),
+  )
+  expect(left).toBeNull()
   expect(bound('poll').events).toEqual([])
-  await notify(ipad).tap()
-  await expect(note(ipad)).toHaveValue('')
+  await send_button(ipad).click()
+  await expect(field(ipad)).toHaveValue('')
   const events = bound('poll').events as Json[]
   expect(events).toHaveLength(1)
-  expect(events[0]).toMatchObject({ kind: 'sketch_notify', text: words })
+  expect(events[0]).toMatchObject({ kind: 'sketch_notify', text: words, include_sketch: false })
   expect(events[0]!.request_id).not.toBe(old_key)
-  await composer_close(ipad)
+  await sketch_open(ipad)
 }
