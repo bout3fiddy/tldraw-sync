@@ -96,8 +96,19 @@ export const svg_print = {
     )
     const startup_ms = Date.now() - started
 
-    // The key brings the whole print into view; the camera settles before anything is timed.
-    await page.locator('.key [data-layer="agent"]').click()
+    // Fit through the board's own camera action. Older release baselines offer it in the key.
+    const legacy_fit = page.locator('.key [data-layer="agent"]')
+
+    if (await legacy_fit.isVisible()) {
+      await legacy_fit.click()
+    } else {
+      await page.getByRole('button', { name: 'Boards', exact: true }).click()
+      const rail = page.getByRole('complementary', { name: 'Boards' })
+      const active = rail.locator('li', { has: page.locator('[aria-current="page"]') })
+      await active.getByRole('button', { name: /^Actions for / }).click()
+      await active.getByRole('menuitem', { name: 'Fit agent drawing', exact: true }).click()
+    }
+
     await page.getByRole('radiogroup').first().waitFor()
     await page.waitForTimeout(600)
     return { page, errors, startup_ms }
