@@ -1,12 +1,11 @@
-// The Mac presentation view: the one canvas, the person's ink over the agent's print, fitted
-// to the window. It only presents: nothing on it can be drawn on or taken. Until an iPad is
-// connected it also shows how to connect one.
+// The Mac follows the whole board until the viewer navigates. Nothing can be drawn on or taken.
+// The pairing sheet opens only when the viewer asks for it.
 
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
-import { atom, useEditor, useValue, type Atom, type Editor } from 'tldraw'
+import { atom, useValue, type Atom, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
 import { path_pairing } from '../shared/constants'
-import { BoardKey } from './board_key'
+import { PrintNotice } from './print_notice'
 import { use_board_store } from './board_store'
 import { ChatButton, ChatDrawer, use_chat_open } from './chat_drawer'
 import { ChatPane } from './chat_pane'
@@ -22,7 +21,7 @@ import { ViewSwitch } from './view_switch'
 import { stage_mount } from './stage_mount'
 import { Surface } from './surface'
 
-type Pairing = { url: string; modules: string[] }
+type Pairing = { modules: string[] }
 const offline_notice = 'The board has stopped. Start it again with “tldraw-sync start”.'
 
 // The sketch canvas stays mounted while the chat is open: it renders the image agents fetch.
@@ -33,7 +32,6 @@ export function StagePage({ session, title }: { session: string; title: string }
   const [chat_open, chat_open_set] = use_chat_open('stage')
   const cleaned = use_cleaned(session)
   const linked = cleaned.status?.linked === true
-  const pairing = use_pairing(session)
   const extent = useMemo(() => atom<PrintExtent | null>('print extent', null), [])
   const choice = use_interactive(session, cleaned.document)
   const print_choice = use_print_choice(choice)
@@ -56,16 +54,15 @@ export function StagePage({ session, title }: { session: string; title: string }
       <ViewChoiceProvider value={choice}>
         <PrintProvider document={cleaned.document} extent={extent} choice={print_choice}>
           <Surface store={board.store} onMount={mount}>
-            <StageGuide pairing={pairing} extent={extent} />
             <StageTap />
             <ViewSwitch />
           </Surface>
-          <BoardKey editor={editor} notice="" linked={linked} interactive={false} />
+          <PrintNotice />
         </PrintProvider>
       </ViewChoiceProvider>
       <StageFit following={following} editor={editor} />
       <div className="corner">
-        {linked && <StagePair pairing={pairing} />}
+        <StagePair key={session} session={session} />
         <ChatButton
           open={chat_open}
           unread={talk.unread}
@@ -131,7 +128,7 @@ const pair_sheet_id = 'stage-pair'
 
 // Pairing an iPad with a linked board: one instrument at the top right, beside Chat. Pressed,
 // it shows the stage's QR on a sheet under it; pressed again, or Escape, puts the sheet away.
-function StagePair({ pairing }: { pairing: Pairing | null }) {
+function StagePair({ session }: { session: string }) {
   const [open, open_set] = useState(false)
   const key_down = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape' || !open) return
@@ -140,90 +137,66 @@ function StagePair({ pairing }: { pairing: Pairing | null }) {
     open_set(false)
   }
   return (
-    <div className="pair" onKeyDown={key_down}>
+    <div className="pair" onKeyDown={key_down} onBlur={() => open_set(false)}>
       <div className="pair__frame">
         <button
           type="button"
           className="pair__button"
+          title="Pair iPad"
+          aria-label="Pair iPad"
           aria-expanded={open}
           aria-controls={pair_sheet_id}
-          onClick={() => open_set(!open)}
+          onClick={(event) => {
+            event.currentTarget.focus()
+            open_set(!open)
+          }}
         >
           {icon_pair}
-          Pair iPad
         </button>
       </div>
-      {open && (
-        <aside id={pair_sheet_id} className="pair__sheet" aria-label="Pair iPad">
-          {pairing === null ? (
-            <p className="pair__caption">The pairing code has not loaded. Reload this page.</p>
-          ) : (
-            <>
-              <QrCode modules={pairing.modules} />
-              <p className="pair__caption">Scan for sketchboard controls</p>
-            </>
-          )}
-        </aside>
-      )}
+      {open && <PairSheet session={session} />}
     </div>
   )
 }
 
-// Shown only while it is useful: large on an empty board, tucked in a corner once there is
-// a drawing, and gone the moment a pen connects.
-type GuideProps = { pairing: Pairing | null; extent: Atom<PrintExtent | null> }
-
-function StageGuide({ pairing, extent }: GuideProps) {
-  const editor = useEditor()
-  const pen_connected = useValue(
-    'pen connected',
-    () => editor.getCollaborators().some((collaborator) => collaborator.userName === 'draw'),
-    [editor],
-  )
-  const empty = useValue(
-    'empty board',
-    () => editor.getCurrentPageShapeIds().size === 0 && extent.get()?.bounds == null,
-    [editor, extent],
-  )
-
-  if (pen_connected) {
-    return empty ? <p className="guide guide--hint">Draw on your iPad. It appears here.</p> : null
-  }
-
-  if (pairing === null) return null
-
+function PairSheet({ session }: { session: string }) {
+  const pairing = use_pairing(session)
   return (
-    <aside className={empty ? 'guide guide--card' : 'guide guide--corner'}>
-      <QrCode modules={pairing.modules} />
-      <div className="guide__text">
-        <p className="guide__title">{empty ? 'Scan with your iPad to draw' : 'Scan to draw'}</p>
-        {empty && <p className="guide__address">{pairing.url}</p>}
-      </div>
+    <aside id={pair_sheet_id} className="pair__sheet" aria-label="Pair iPad">
+      {pairing && <QrCode modules={pairing.modules} />}
+      <p className="pair__caption">
+        {pairing === undefined
+          ? 'Loading pairing code…'
+          : pairing === null
+            ? 'Could not load the code. Close and reopen to retry.'
+            : 'Scan for sketchboard controls'}
+      </p>
     </aside>
   )
 }
 
 // Each board has a QR code of its own, which leads the iPad to that board.
-function use_pairing(session: string): Pairing | null {
-  const [pairing, pairing_set] = useState<Pairing | null>(null)
+function use_pairing(session: string): Pairing | null | undefined {
+  const [pairing, pairing_set] = useState<Pairing | null>()
   useEffect(() => {
-    let cancelled = false
-    fetch(`${path_pairing}?${board_query(session)}`, { headers: { 'x-board-stage': 'qr' } })
+    const controller = new AbortController()
+    const headers = { 'x-board-stage': 'qr' }
+    fetch(`${path_pairing}?${board_query(session)}`, { headers, signal: controller.signal })
       .then((response) => (response.ok ? (response.json() as Promise<Pairing>) : null))
       .then((loaded) => {
-        if (!cancelled) pairing_set(loaded)
+        if (!controller.signal.aborted) pairing_set(loaded)
       })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
+      .catch(() => {
+        if (!controller.signal.aborted) pairing_set(null)
+      })
+    return () => controller.abort()
   }, [session])
   return pairing
 }
 
 // One path for all dark modules. Crisp edges keep the squares exact, which scanners need.
 function QrCode({ modules }: { modules: string[] }) {
-  const quiet = 2
+  const quiet = 4
   const size = modules.length + quiet * 2
   let path = ''
   modules.forEach((row, y) => {

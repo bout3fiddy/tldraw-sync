@@ -14,7 +14,7 @@ import {
   board_linked,
   chat_button,
   chat_open,
-  key,
+  expect_revision,
   navigation_ms,
   print_shape,
   sketch_open,
@@ -74,7 +74,7 @@ function publish({ bound, root, session }: Linked) {
 async function clicks({ cli, session, origin }: Linked, mac: Page) {
   const status = () => cli('status', '--session', session)
   const before = status()
-  await expect(key(mac)).toContainText('Agent · revision 1')
+  await expect_revision(mac, 1)
   await print_fit(mac, 'a')
   expect((await painted(mac, 'a')).violet).toBeGreaterThan(50)
 

@@ -1,5 +1,5 @@
 // The iPad workspace: one canvas, where the person's ink lies over the agent's print in one
-// camera, with the drawing tools floating at the left, the key at the foot and Chat at the top
+// camera, with the drawing tools floating at the left, and Chat at the top
 // right. No band runs across the top: every instrument floats over the canvas.
 // Everything else tldraw offers is hidden. There are no layers to switch between: the chat
 // slides over the canvas, and the canvas never stops. Only a drawing the agent made
@@ -8,7 +8,7 @@
 import { useCallback, useLayoutEffect, useMemo, useState } from 'react'
 import { atom, DefaultSizeStyle, useValue, type Atom, type Editor } from 'tldraw'
 import { use_pair_token } from './board_pair'
-import { BoardKey, use_notice } from './board_key'
+import { PrintNotice, use_notice } from './print_notice'
 import { use_board_menu, type BoardMenuItem } from './board_menu'
 import { use_board_store } from './board_store'
 import { ChatButton, ChatDrawer, use_chat_open } from './chat_drawer'
@@ -19,9 +19,9 @@ import { use_cleaned } from './cleaned_state'
 import { Inspect } from './inspect'
 import { use_interactive, use_print_choice, ViewChoiceProvider } from './interactive_state'
 import { Notice } from './notice'
-import { PrintProvider, use_print, type PrintExtent } from './print_engine'
+import { PrintProvider, use_print, type Print, type PrintExtent } from './print_engine'
 import { Surface } from './surface'
-import { camera_fit } from './surface_fit'
+import { camera_fit, ink_box } from './surface_fit'
 import { sketch_hash, take_into_sketch, type TakeOutcome } from './take_apply'
 import { take_tools } from './take_tools'
 import { pen_ink_set, ToolStrip } from './tool_strip'
@@ -66,7 +66,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
             <Inspect onOutcome={(outcome) => notice_show(take_notice(outcome))} onAsk={ask} />
             <ViewSwitch />
           </Surface>
-          <BoardKey editor={editor} notice={notice} linked={linked} interactive />
+          <PrintNotice notice={notice} />
           <SketchMenu editor={editor} onNotice={notice_show} />
         </PrintProvider>
       </ViewChoiceProvider>
@@ -133,7 +133,7 @@ function chat_ask(composer: Composer, words: string, open: () => void) {
   window.requestAnimationFrame(() => document.getElementById(composer_field_id)?.focus())
 }
 
-// What the person hears after a take, in the key.
+// Feedback after an explicit take.
 export function take_notice(outcome: TakeOutcome): string {
   if (outcome.kind === 'taken') return 'Copied into your sketch. Undo takes it back.'
 
@@ -199,10 +199,41 @@ function SketchMenu({ editor, onNotice }: MenuProps) {
       list.push({ label, run: replace, disabled: !replace_possible || editor === null })
     }
 
-    return list
-  }, [editor, view, revision_current, empty, replace_possible, onNotice])
+    return list.concat(view_actions(editor, print, empty))
+  }, [editor, view, print, revision_current, empty, replace_possible, onNotice])
   use_board_menu(items)
   return null
+}
+
+// These actions change only this editor's view, never the board's records.
+function view_actions(editor: Editor | null, print: Print | null, empty: boolean): BoardMenuItem[] {
+  if (!editor) return []
+
+  const fit_ink = () => {
+    const box = ink_box(editor)
+
+    if (box) camera_fit(editor, box)
+  }
+  const items = [{ label: 'Fit my ink', run: fit_ink, disabled: empty }]
+  const bounds = print?.view?.bounds
+
+  if (bounds) {
+    items.push({
+      label: 'Fit agent drawing',
+      run: () => camera_fit(editor, bounds),
+      disabled: false,
+    })
+  }
+
+  if (print && print.revision_previous !== null) {
+    const label = print.showing_previous
+      ? `Back to revision ${print.revision_current}`
+      : `Show revision ${print.revision_previous}`
+    const run = print.showing_previous ? print.show_current : print.show_previous
+    items.push({ label, run, disabled: false })
+  }
+
+  return items
 }
 
 function draw_mount(editor: Editor): void {

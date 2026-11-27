@@ -5,7 +5,7 @@
 
 import { expect, type Locator, type Page } from '@playwright/test'
 import { pixels_read, type Box, type Pixels } from './screen_pixels'
-import { action_ms, key_agent, print_shape, soon } from './whiteboard_board'
+import { action_ms, print_shape, soon } from './whiteboard_board'
 
 type Json = Record<string, any>
 
@@ -53,9 +53,9 @@ export async function at_rest(page: Page, selector: string): Promise<string> {
   return last
 }
 
-// The key's name for the agent's print brings it into view, as a person asks for it.
+// Bring the print into view through the current board's menu.
 export async function print_fit(page: Page, id: string) {
-  await key_agent(page).click()
+  await board_menu(page, 'Fit agent drawing')
   await at_rest(page, `.print__shape[data-print-shape="shape:scene-${id}"]`)
 }
 

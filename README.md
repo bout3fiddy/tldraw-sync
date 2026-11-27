@@ -40,9 +40,9 @@ The tools float at the left: **Pen**, **Eraser**, **Undo** and **Redo**. Press t
 are holding to put it down and point instead: choose and move your own ink, or tap an agent shape,
 with the Pencil too. The pen writes in black; ink drawn in other colours before stays as it was.
 
-The pen and eraser only touch your ink. The key at the foot of the canvas says which revision of the
-agent's drawing is shown, and brings **Your ink** or **Agent** into view. When a new revision
-arrives the key says so, with the one before it a press away. Looking back restores nothing.
+The pen and eraser only touch your ink. To bring your ink or the agent's drawing into view, open
+**Boards** and choose a fit action from the current board's **⋮** menu. After a revision arrives,
+that menu also lets you inspect the previous revision and return. Looking back restores nothing.
 
 ## The whole board on your Mac
 
@@ -74,13 +74,14 @@ bun link
 tldraw-sync start
 ```
 
-The board opens on your Mac. With your iPad on the same network, scan the QR code and draw. Ask your
-agent to read `tldraw-sync --help`; it can then fetch your sketch whenever you mention it.
+The board opens on your Mac. Tap the QR icon at the top right, then scan the code with your iPad on
+the same network to draw. Ask your agent to read `tldraw-sync --help`; it can then fetch your sketch
+whenever you mention it.
 
 For Chat, link the board to an agent session: in a pih session with whiteboard support, run
-`/start_whiteboard`. Scan the QR code on the Mac stage and leave the stage open. **Chat** at the top
-right works on the iPad and the Mac; a violet square on it means an answer you have not read on that
-device.
+`/start_whiteboard`. Tap the QR icon on the Mac stage, scan the code and leave the stage open.
+**Chat** at the top right works on the iPad and the Mac; a violet square on it means an answer you
+have not read on that device.
 
 Switch boards with the button beside the board's name, at the top left. A board's **⋮** menu renames
 or deletes it; for the board on screen it also clears your ink or replaces it with the agent's

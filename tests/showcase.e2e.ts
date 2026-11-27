@@ -27,7 +27,7 @@ import {
   command,
   field,
   ipad_landscape,
-  key,
+  expect_revision,
   mine,
   navigation_ms,
   pair,
@@ -441,7 +441,7 @@ async function diagram({ bound, cli, session }: Board, frame: Frame) {
 // The print arrives under the ink without moving the view: the person's strokes and the
 // agent's violet diagram are both on screen, side by side and touching where they meet.
 async function together({ ipad }: Board) {
-  await expect(key(ipad)).toContainText('revision 1')
+  await expect_revision(ipad, 1)
 
   for (const id of ['signup', 'expired', 'resend', 'welcome']) {
     await expect(print_shape(ipad, id)).toBeVisible()

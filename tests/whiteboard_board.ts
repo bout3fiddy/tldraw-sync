@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import jsQR from 'jsqr'
 import { whiteboard_protocol } from '../src/shared/whiteboard'
-import type { Box } from './screen_pixels'
+import { pixels_read, type Box } from './screen_pixels'
 
 // The protocol a host names when it links and polls, as the command line takes it.
 export const protocol = String(whiteboard_protocol)
@@ -161,10 +161,11 @@ export const print_region = (page: Page) => page.getByRole('region', { name: 'Ag
 export const print_shape = (page: Page, id: string) =>
   page.locator(`.print__shape[data-print-shape="shape:scene-${id}"]`)
 
-// The key at the foot of the canvas, and its name for the agent's print, which brings the
-// print into view when pressed.
-export const key = (page: Page) => page.locator('.key')
-export const key_agent = (page: Page) => key(page).locator('[data-layer="agent"]')
+export async function expect_revision(page: Page, revision: number) {
+  await expect(print_region(page)).toHaveAttribute('data-revision', String(revision))
+  await expect(page.locator('.key')).toHaveCount(0)
+  await expect(page.getByText(/^(Your ink|Agent · revision \d+)/)).toHaveCount(0)
+}
 
 // Opens the chat if it is not open, and waits until its field is there.
 export async function chat_open(page: Page) {
@@ -297,29 +298,25 @@ export async function expect_marks_clear(page: Page, count: number): Promise<Mar
   return marks(page)
 }
 
-async function scan(stage: Page) {
-  const qr = stage.locator('.guide--card .guide__code')
+export async function scan(stage: Page) {
+  const pair = stage.getByRole('button', { name: 'Pair iPad' })
+  const qr = stage.locator('.guide__code')
+  await expect(pair).toBeVisible()
+  await expect(pair).toHaveText('')
+  await expect(pair).toHaveAttribute('title', 'Pair iPad')
+  await expect(qr).toHaveCount(0)
+  await expect(stage.locator('.guide__address')).toHaveCount(0)
+  await pair.press('Enter')
   await expect(qr).toBeVisible()
-  const pixels = await qr.evaluate(async (svg) => {
-    const blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' })
-    const url = URL.createObjectURL(blob)
-
-    try {
-      const image = new Image()
-      image.src = url
-      await image.decode()
-      const canvas = document.createElement('canvas')
-      canvas.width = canvas.height = 480
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = 'white'
-      ctx.fillRect(0, 0, 480, 480)
-      ctx.drawImage(image, 0, 0, 480, 480)
-      return Array.from(ctx.getImageData(0, 0, 480, 480).data)
-    } finally {
-      URL.revokeObjectURL(url)
-    }
-  })
-  const decoded = jsQR(new Uint8ClampedArray(pixels), 480, 480)
+  const { data, width, height } = await pixels_read(stage, action_ms)
+  const decoded = jsQR(
+    new Uint8ClampedArray(data.buffer, data.byteOffset, data.length),
+    width,
+    height,
+  )
+  await pair.press('Escape')
+  await expect(qr).toHaveCount(0)
+  await expect(pair).toBeFocused()
 
   if (!decoded) throw Error('The stage QR is unreadable.')
 
@@ -377,6 +374,7 @@ export async function pair(root: string, file: string, stage: Page, ipad: Page) 
   expect(fs.readFileSync(path.join(root, 'opened'), 'utf8')).toBe(linked.stage_url)
   await stage.goto(linked.stage_url)
   const paired = await scan(stage)
+  expect(paired.pathname).toBe(`/s/${linked.session}/draw`)
   expect(paired.hash.startsWith('#pair=')).toBe(true)
   await ipad.goto(new URL(linked.stage_url).origin + paired.pathname)
   await chat_open(ipad)

@@ -188,11 +188,14 @@ function menu_keys(event: KeyboardEvent<HTMLDivElement>, dismiss: () => void) {
 
   event.preventDefault()
   const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:enabled')
-  const first = buttons[0]!
-  const last = buttons[buttons.length - 1]!
-  const use_first = key === 'Home' || (key !== 'End' && event.target === last)
-  const target = use_first ? first : last
-  target.focus()
+  const count = buttons.length
+  const current = Array.prototype.indexOf.call(buttons, event.target) as number
+
+  if (count === 0 || current < 0) return
+
+  const step = key === 'ArrowUp' ? -1 : 1
+  const next = key === 'Home' ? 0 : key === 'End' ? count - 1 : (current + count + step) % count
+  buttons[next]!.focus()
 }
 
 function DeleteDialog({

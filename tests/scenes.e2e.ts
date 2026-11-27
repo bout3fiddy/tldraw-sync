@@ -9,7 +9,7 @@
 // - Once the sketch moves on, a scene made from the older sketch is refused, as a draft and
 //   as a publish, and a change to the canvas alone is still taken.
 // - A new revision reprints only the print, under the ink, without moving the person's view.
-//   It says so in the key, with the revision before it a press away to look at; looking back
+//   The board menu offers the revision before it for inspection; looking back
 //   restores and publishes nothing, and a shape chosen from the old print is let go.
 // - A free variation uses every kind of element an agent places itself. The person copies it
 //   into the sketch in one step, as shapes of their own, and Undo brings their ink back.
@@ -38,7 +38,7 @@ import {
   draw,
   field,
   ipad_landscape,
-  key,
+  expect_revision,
   mine,
   print_region,
   send_button,
@@ -87,7 +87,7 @@ async function empty_surface(page: Page) {
   await expect(canvas_region(page).locator('.print__shape')).toHaveCount(0)
   const grid = surface(page).locator('svg.tl-grid')
   await expect(grid).toBeVisible()
-  await key(page).locator('[data-layer="ink"]').click()
+  await board_menu(page, 'Fit my ink')
   await at_rest(page, '.tl-shape[data-shape-type="draw"]')
   const box = (await grid.boundingBox())!
   const side = 96
@@ -338,7 +338,7 @@ test('a question is answered in words; a tidy copy and a free variation are draw
         draft.summary = 'Cleared for the next drawing.'
       })
       expect(board.bound('publish', '--file', snap.scene_path)).toMatchObject({ code: 'published' })
-      await expect(key(ipad)).toContainText(/Agent · revision \d+/)
+      await expect_revision(ipad, snap.base_revision + 1)
       await empty_surface(ipad)
       await expect(ipad.getByText(scene.summary)).toHaveCount(0)
     })
@@ -378,16 +378,19 @@ async function conversation(board: Linked, info: TestInfo, hash: string) {
     document_hash: hash,
   })
 
-  // Nothing to print: the key says so, and the board's menu offers nothing to replace with.
+  // Nothing to print: the board's menu offers nothing to replace with.
   await sketch_open(ipad)
-  await expect(key(ipad)).toContainText('Agent · nothing yet')
+  await expect_revision(ipad, 0)
   await expect(canvas_region(ipad).locator('.print__shape')).toHaveCount(0)
   await ipad.getByRole('button', { name: 'Boards', exact: true }).click()
   const rail = ipad.getByRole('complementary', { name: 'Boards' })
   const active = rail.locator('li', { has: ipad.locator('[aria-current="page"]') })
   await active.getByRole('button', { name: /^Actions for / }).click()
   await expect(active.getByRole('menuitem', { name: /^Replace my sketch/ })).toHaveCount(0)
-  await expect(active.getByRole('menuitem', { name: 'Clear my ink' })).toBeEnabled()
+  await active.getByRole('menuitem', { name: 'Rename' }).press('ArrowDown')
+  await expect(active.getByRole('menuitem', { name: 'Clear my ink' })).toBeFocused()
+  await ipad.keyboard.press('ArrowDown')
+  await expect(active.getByRole('menuitem', { name: 'Fit my ink' })).toBeFocused()
   await ipad.keyboard.press('Escape')
   await rail.getByRole('button', { name: 'Close the list of boards' }).click()
   await expect(rail).toBeHidden()
@@ -610,22 +613,18 @@ async function moved_on(board: Linked, tidy_path: string) {
   expect(status()).toMatchObject({ agent_revision: 2, shapes_count: 2 })
 }
 
-// A new revision is said in the key, the ink untouched and the view where it was. The revision
+// A new revision leaves the ink untouched and the view where it was. The revision
 // before is a press away; it is shown in place, its shapes can be looked at but not taken, and
 // going back to the newest restores and publishes nothing.
 async function revision_arrival(ipad: Page, before: { ink: string; frame: string }) {
-  const arrived = ipad.locator('.key[data-state="arrived"]')
-  await expect(arrived).toContainText('Your ink, untouched')
-  await expect(arrived).toContainText('Agent · revision 2, just now')
+  await expect_revision(ipad, 2)
   expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(before.ink)
   expect(await at_rest(ipad, '.print__shape[data-print-shape="shape:scene-frame"]')).toBe(
     before.frame,
   )
 
-  await ipad.getByRole('button', { name: 'Show revision 1' }).tap()
-  await expect(ipad.locator('.key[data-state="previous"]')).toContainText(
-    'Agent · showing revision 1',
-  )
+  await board_menu(ipad, 'Show revision 1')
+  await expect_revision(ipad, 1)
   await expect(canvas_words(ipad, 'label', 'A bridge')).toBeVisible()
   await expect(canvas_region(ipad)).toHaveAttribute('data-showing', 'previous')
   expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(before.ink)
@@ -635,10 +634,10 @@ async function revision_arrival(ipad: Page, before: { ink: string; frame: string
   await ipad.keyboard.press('Escape')
   await expect(card).toHaveCount(0)
 
-  await ipad.getByRole('button', { name: 'Back to revision 2' }).tap()
+  await board_menu(ipad, 'Back to revision 2')
   await expect(canvas_words(ipad, 'label', 'Still a bridge')).toBeVisible()
   await expect(canvas_region(ipad)).toHaveAttribute('data-showing', 'current')
-  await expect(key(ipad)).toContainText('Agent · revision 2')
+  await expect_revision(ipad, 2)
   expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(before.ink)
 }
 
@@ -708,7 +707,7 @@ async function creative(board: Linked, info: TestInfo) {
 
   // The answer says the canvas moved while the request was open, and leads there: the chat
   // closes and the print is brought into view.
-  await key(ipad).locator('[data-layer="ink"]').click()
+  await board_menu(ipad, 'Fit my ink')
   await chat_open(ipad)
   const drawn = answers(ipad, 'Drawn on the Agent canvas.')
   await expect(drawn.locator('.chat__canvas')).toContainText('Revision 3')
@@ -719,7 +718,7 @@ async function creative(board: Linked, info: TestInfo) {
   // Only the person replaces the sketch: one step, shapes of their own, and one Undo back.
   const ink_hash = status().document_hash
   await board_menu(ipad, 'Replace my sketch with revision 3')
-  await expect(key(ipad)).toContainText('Sketch replaced. Undo restores your ink.')
+  await expect(ipad.getByText('Sketch replaced. Undo restores your ink.')).toBeVisible()
   await expect.poll(() => status().shapes_count).toBe(night_city.length)
   const copied = bound('snapshot', '--out', path.join(root, 'copied'))
   expect(copied.status).toBe('success')

@@ -16,7 +16,7 @@ import {
   action_ms,
   board_linked,
   chat_open,
-  key,
+  expect_revision,
   navigation_ms,
   print_shape,
   sketch_open,
@@ -144,7 +144,7 @@ async function drawing(page: Page, { origin, session }: Linked): Promise<Json[]>
 async function history(board: Linked, mac: Page) {
   const status = () => board.cli('status', '--session', board.session)
   const before = status()
-  await expect(key(mac)).toContainText('Agent · revision 1')
+  await expect_revision(mac, 1)
   await print_fit(mac, 'a')
   await mouse_stroke(mac, await beside_print(mac))
   await expect.poll(() => status().shapes_count).toBe(before.shapes_count + 1)
@@ -266,7 +266,7 @@ async function room(mac: Page) {
   )
   await expect.poll(() => drawer_width(mac)).toBe(design_screen.width)
   await expect(mac.getByRole('separator', { name: 'Chat width' })).toHaveCount(0)
-  await expect(key(mac)).toBeHidden()
+  await expect(mac.locator('.surface')).toBeHidden()
   await soon(
     mac.evaluate(() => {
       Reflect.deleteProperty(visualViewport!, 'height')

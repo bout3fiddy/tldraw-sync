@@ -13,15 +13,14 @@
 import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
-import { at_rest, print_choose, print_fit, published } from './one_canvas'
+import { at_rest, board_menu, print_choose, print_fit, published } from './one_canvas'
 import {
   action_ms,
   board_linked,
   chat_open,
   ipad_narrow,
   ipad_portrait,
-  key,
-  key_agent,
+  expect_revision,
   navigation_ms,
   print_region,
   print_shape,
@@ -152,7 +151,7 @@ async function static_drawing({ bound, root, ipad, stage }: Linked, asked: strin
   expect(bound('publish', '--file', snap.scene_path)).toMatchObject({ code: 'published' })
 
   for (const page of [ipad, stage]) {
-    await expect(key(page)).toContainText('Agent · revision 1')
+    await expect_revision(page, 1)
     await view_shown(page, '1')
   }
 
@@ -382,7 +381,7 @@ const apart = (a: Rect, b: Rect) =>
   b.y + b.height <= a.y + 1
 
 async function switch_arrives({ ipad, stage, session }: Linked, asked: string[], info: TestInfo) {
-  await expect(key(ipad)).toContainText('Agent · revision 2')
+  await expect_revision(ipad, 2)
   await print_fit(ipad, 'axis')
   await expect(radio(ipad, 'Approved')).toHaveAttribute('aria-checked', 'true')
   await view_shown(ipad, '2')
@@ -692,20 +691,18 @@ async function transitions({ ipad, stage, bound, cli, root, session }: Linked) {
     hold.text = 'Hold the order for 5 min'
   })
   expect(bound('publish', '--file', snap.scene_path)).toMatchObject({ revision: 3 })
-  await expect(key(ipad)).toContainText('Agent · revision 3, just now')
+  await expect_revision(ipad, 3)
   await view_shown(ipad, '3')
   await expect(radio(ipad, 'Approved')).toHaveAttribute('aria-checked', 'true')
 
   // The revision before is shown at rest, with no switch. Back on the current one, the
-  // switch returns with the view chosen of it. The key offers the revision before only for
-  // a moment after the new one arrives (`arrival_ms`), so the look back follows the choice
-  // at once rather than after its view is drawn.
+  // switch returns with the view chosen of it. Looking back doesn't change that choice.
   await radio(ipad, 'Declined').tap()
   await expect(radio(ipad, 'Declined')).toHaveAttribute('aria-checked', 'true')
-  await key(ipad).getByRole('button', { name: 'Show revision 2', exact: true }).tap()
+  await board_menu(ipad, 'Show revision 2')
   await view_shown(ipad, '2')
   await expect(ipad.getByRole('radio')).toHaveCount(0)
-  await key(ipad).getByRole('button', { name: 'Back to revision 3', exact: true }).tap()
+  await board_menu(ipad, 'Back to revision 3')
   await view_shown(ipad, '3 declined/first/off')
   await expect(radio(ipad, 'Declined')).toHaveAttribute('aria-checked', 'true')
 
@@ -715,7 +712,7 @@ async function transitions({ ipad, stage, bound, cli, root, session }: Linked) {
   expect(
     cli('cleanup-restore', '--session', session, '--base-revision', '3', '--revision', '2'),
   ).toMatchObject({ status: 'success' })
-  await expect(key(ipad)).toContainText('Agent · revision 4')
+  await expect_revision(ipad, 4)
   await view_shown(ipad, '4')
   await expect(radio(ipad, 'Approved')).toHaveAttribute('aria-checked', 'true')
   await view_shown(stage, '4')
@@ -787,7 +784,7 @@ async function beside_chat({ ipad }: Linked, errors: string[], info: TestInfo) {
 
 async function chat_beside(ipad: Page, info: TestInfo) {
   await soon(ipad.setViewportSize({ width: 1180, height: 820 }))
-  await key_agent(ipad).click()
+  await board_menu(ipad, 'Fit agent drawing')
   const camera = await camera_of(ipad)
   await chat_open(ipad)
   await switch_inside_canvas(ipad)

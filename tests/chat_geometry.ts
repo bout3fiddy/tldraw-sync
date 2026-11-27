@@ -98,11 +98,9 @@ export async function resize_chat({ ipad, cli, session }: Linked) {
   await mouse_drag(ipad, 10)
   await split(ipad, 720)
   await expect(edge(ipad)).toBeFocused()
-  await expect(ipad.locator('.key')).toBeHidden()
   await mouse_drag(ipad, 1190)
   await split(ipad, 320)
-  const key = (await ipad.locator('.key').boundingBox())!
-  expect(Math.round(key.x + key.width / 2)).toBe(440)
+  expect((await ipad.locator('.surface').boundingBox())?.width).toBe(880)
   await edge(ipad).press('ArrowLeft')
   await split(ipad, 344)
   await edge(ipad).press('ArrowRight')

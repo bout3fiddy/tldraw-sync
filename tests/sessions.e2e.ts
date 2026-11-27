@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { scene_format } from '../src/shared/scene_types'
 import { whiteboard_protocol } from '../src/shared/whiteboard'
 import { child_stop, contexts_close } from './board_child'
+import { expect_revision, scan } from './whiteboard_board'
 
 const repo_root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
@@ -322,6 +323,35 @@ async function delete_current(page: Page, origin: string) {
   await expect(list.locator('a[href="/s/default/draw"]')).toHaveAttribute('aria-current', 'page')
 }
 
+test('unlinked pairing retries on request and stays closed when the pen disconnects', async ({
+  page: stage,
+  context,
+}) => {
+  const origin = `http://127.0.0.1:${port}`
+  await stage.goto(origin)
+  await expect_revision(stage, 0)
+  const pair = stage.getByRole('button', { name: 'Pair iPad' })
+  const qr = stage.locator('.guide__code, .guide__address')
+  await expect(qr).toHaveCount(0)
+  await stage.route('**/api/pairing?*', (route) => route.fulfill({ status: 503 }), { times: 1 })
+  await pair.click()
+  await expect(stage.getByText('Could not load the code. Close and reopen to retry.')).toBeVisible()
+  await pair.click()
+  await expect(pair).toHaveAttribute('aria-expanded', 'false')
+  const address = await scan(stage)
+  expect(address.pathname).toBe('/s/default/draw')
+  expect(address.hash.length).toBe(0)
+  const pen = await context.newPage()
+  await pen.goto(origin + address.pathname)
+  await stroke(pen, 0)
+  await expect.poll(async () => (await status()).shapes_count).toBe(1)
+  await expect(stage.locator('.surface .tl-shape')).toHaveCount(1)
+  await pen.close()
+  await expect.poll(async () => (await status()).pen_connected).toBe(false)
+  await expect(pair).toHaveAttribute('aria-expanded', 'false')
+  await expect(qr).toHaveCount(0)
+})
+
 test('both role homes follow deletion through an empty list and a new first board', async ({
   page: ipad,
   context,
@@ -504,8 +534,8 @@ async function linked_boards_publish(
     await expect(shape_text(page, 'Payments client')).toHaveCount(shown)
   }
 
-  await expect(stages[0].locator('.key')).toContainText('Agent · revision 1')
-  await expect(stages[1].locator('.key')).toContainText('Agent · nothing yet')
+  await expect_revision(stages[0], 1)
+  await expect_revision(stages[1], 0)
   await expect(stages[0]).toHaveTitle('Payments · Board')
 }
 
@@ -580,9 +610,7 @@ async function restart_and_default(
   const fetched = cli('fetch', '--no-open')
   expect(fetched.json).toMatchObject({ code: 'image_saved', session: 'default' })
 
-  // Never linked and never published to: the canvas holds the person's ink alone, and the key
-  // names no agent.
-  await expect(ipad.locator('.key')).toContainText('Your ink')
-  await expect(ipad.locator('.key')).not.toContainText('Agent')
+  // Never linked and never published to: the canvas holds only the person's ink.
+  await expect_revision(ipad, 0)
   await expect(ipad.locator('.print__shape')).toHaveCount(0)
 }

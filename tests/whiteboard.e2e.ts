@@ -23,7 +23,7 @@ import {
   expect_marks_clear,
   field,
   ipad_landscape,
-  key,
+  expect_revision,
   mine,
   print_region,
   print_shape,
@@ -87,7 +87,7 @@ type Shown = { x: number; y: number; width: number; height: number }
 
 // What the iPad's one canvas is made of, as the design draws it: a surface from edge to edge,
 // the board's title and its Boards button at the top left, Chat at the top right, four tools at
-// the left, and the key at the foot. `retired_count` is every tab, layer switch or control the
+// the left, with no legend at the foot. `retired_count` is every tab, layer switch or control the
 // board had before; `footers_count` every band under the canvas.
 type CanvasSeen = {
   screen: { width: number; height: number }
@@ -123,10 +123,7 @@ function canvas_problems(seen: CanvasSeen): string[] {
 
   if (seen.tools.length !== 4) problems.push(`${seen.tools.length} tools, not 4`)
 
-  if (seen.key === null) problems.push('the key is missing')
-  else if (Math.abs((seen.key.left + seen.key.right) / 2 - screen.width / 2) > 2) {
-    problems.push('the key is not centred')
-  }
+  if (seen.key !== null) problems.push('the canvas legend is back')
 
   if (surface === null) return [...problems, 'the canvas is missing']
 
@@ -231,7 +228,6 @@ async function geometry_stage(stage: Page, info: TestInfo, name: string) {
   await expect(sheet).toContainText('Scan for sketchboard controls')
   expect(target_problems(await targets(stage, '.pair__sheet'), stage.viewportSize()!)).toEqual([])
   expect(await surface(stage).boundingBox()).toEqual(canvas)
-  await capture(stage, info, `${name}-pair`)
 
   await stage.keyboard.press('Escape')
   await expect(sheet).toHaveCount(0)
@@ -283,7 +279,7 @@ test('the one canvas check passes the design and names each old fault', () => {
     boards: [target(20, 20, 44, 44)],
     chat: [target(688, 20, 112, 44)],
     tools,
-    key: target(330, 1132, 160, 24),
+    key: null,
     surface: { x: 0, y: 0, width: 820, height: 1180 },
   }
   expect(canvas_problems(sound)).toEqual([])
@@ -318,9 +314,8 @@ test('the one canvas check passes the design and names each old fault', () => {
   expect(canvas_problems({ ...sound, boards: [target(20, 20, 40, 40)] })).toEqual([
     'control 0 is under 44px',
   ])
-  expect(canvas_problems({ ...sound, key: null })).toEqual(['the key is missing'])
   expect(canvas_problems({ ...sound, key: target(20, 1132, 160, 24) })).toEqual([
-    'the key is not centred',
+    'the canvas legend is back',
   ])
   expect(canvas_problems({ ...sound, surface: null })).toEqual(['the canvas is missing'])
 })
@@ -623,17 +618,19 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
 }
 
 // The print on both screens: in violet, under the ink, with no tab to reach it. The iPad's
-// camera stayed where the person left it when the revision arrived; the key offers to bring
+// camera stayed where the person left it when the revision arrived; the board menu can bring
 // the print into view. The stage, which presents, keeps all of it in view itself, and has the
 // agent's answers waiting as news.
 async function print_views(ipad: Page, stage: Page, info: TestInfo) {
   const ink = await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')
   await expect(print_shape(ipad, 'a')).toHaveCount(1)
   expect(await at_rest(ipad, '.tl-shape[data-shape-type="draw"]')).toBe(ink)
-  await expect(key(ipad)).toContainText('Agent · revision 1')
+  await expect_revision(ipad, 1)
   await print_fit(ipad, 'a')
 
   for (const page of [ipad, stage]) {
+    await expect_revision(page, 1)
+    await expect(page.locator('.guide__code, .guide__address')).toHaveCount(0)
     await expect_print_label(page, 'Request')
     await expect_print_label(page, 'What about retries?', 'b')
     await expect(retired_controls(page)).toHaveCount(0)
@@ -693,7 +690,7 @@ async function take_one(board: Linked, info: TestInfo, ink_hash: string) {
   expect(status().shapes_count).toBe(1)
   await capture(ipad, info, 'ipad-inspect')
   await card.getByRole('button', { name: 'Take into my sketch' }).tap()
-  await expect(key(ipad)).toContainText('Copied into your sketch. Undo takes it back.')
+  await expect(ipad.getByText('Copied into your sketch. Undo takes it back.')).toBeVisible()
   await expect.poll(() => status().shapes_count).toBe(2)
   await expect(print_shape(ipad, 'a')).toHaveAttribute('data-state', 'taken')
   await expect(card).toHaveCount(0)
@@ -737,7 +734,7 @@ async function taken_copy({ bound, root }: Linked): Promise<Json> {
 async function replace_all({ ipad, bound, cli, session, root }: Linked, ink_hash: string) {
   const status = () => cli('status', '--session', session)
   await board_menu(ipad, 'Replace my sketch with revision 1')
-  await expect(key(ipad)).toContainText('Sketch replaced. Undo restores your ink.')
+  await expect(ipad.getByText('Sketch replaced. Undo restores your ink.')).toBeVisible()
   await expect.poll(() => status().shapes_count).toBe(3)
   const snap = bound('snapshot', '--out', path.join(root, 'after'))
   expect(snap.status).toBe('success')

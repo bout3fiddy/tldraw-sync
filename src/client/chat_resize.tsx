@@ -7,7 +7,6 @@ const width_default_px = 440
 const width_min_px = 320
 const width_max_px = 720
 const canvas_min_px = 360
-const canvas_key_min_px = 660
 const key_step_px = 24
 
 function clamp(width: number, max: number): number {
@@ -65,7 +64,6 @@ export function ChatSize({ preferred, save, controls }: Preference & { controls:
     return () => {
       observer.disconnect()
       board.style.removeProperty('--drawer-width')
-      delete board.dataset.narrowCanvas
     }
   }, [])
 
@@ -73,8 +71,7 @@ export function ChatSize({ preferred, save, controls }: Preference & { controls:
     const board = handle.current?.closest<HTMLElement>('.board')
     assert(board != null, 'the drawer shares its width with the canvas')
     board.style.setProperty('--drawer-width', `${width}px`)
-    board.dataset.narrowCanvas = String(room - width <= canvas_key_min_px)
-  }, [room, width])
+  }, [width])
 
   const commit = (value: number) => {
     save(value)
