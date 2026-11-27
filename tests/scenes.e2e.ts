@@ -23,7 +23,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scene_format } from '../src/shared/scene_types'
+import { pixels_read } from './screen_pixels'
 import {
+  action_ms,
   board_linked,
   chat,
   composer_close,
@@ -76,6 +78,35 @@ const canvas_shape = (page: Page, id: string) =>
 
 const canvas_words = (page: Page, id: string, text: string) =>
   canvas_shape(page, id).getByText(text, { exact: true }).first()
+
+// Sample the center of an empty revision: a visible SVG alone does not prove dots were painted.
+async function empty_surface(page: Page) {
+  const pane = canvas_region(page)
+  await expect(pane.locator('.tl-shape')).toHaveCount(0)
+  const grid = pane.locator('svg.tl-grid')
+  await expect(grid).toBeVisible()
+  const box = (await grid.boundingBox())!
+  const side = 96
+  expect(Math.min(box.width, box.height)).toBeGreaterThan(side)
+  const x = Math.floor(box.x + (box.width - side) / 2)
+  const y = Math.floor(box.y + (box.height - side) / 2)
+  const pixels = await pixels_read(page, action_ms)
+  let vellum = 0
+  let dots = 0
+
+  for (let row = y; row < y + side; row++) {
+    for (let col = x; col < x + side; col++) {
+      const rgb = pixels.data.readUIntBE(4 * (row * pixels.width + col), 3)
+
+      if (rgb === 0xf6f7f4) vellum++
+
+      if (rgb >>> 16 < 235) dots++
+    }
+  }
+
+  expect(vellum).toBeGreaterThan(side * side * 0.9)
+  expect(dots).toBeGreaterThan(4)
+}
 
 async function capture(page: Page, info: TestInfo, name: string) {
   const file = info.outputPath(`${name}.png`)
@@ -299,6 +330,34 @@ test('a question is answered in words; a tidy copy and a free variation are draw
       () => creative(board, info),
       step_long_ms,
     )
+    await step('distant shapes share the initial Agent viewport', async () => {
+      const snap = board.bound('snapshot', '--out', path.join(board.root, 'wide'))
+      scene_edit(snap.scene_path, (scene) => {
+        scene.elements = [-500_000, 500_000].map((x, i) => ({
+          type: 'geo',
+          id: `end-${i}`,
+          x,
+          y: 0,
+          w: 10_000,
+          h: 10_000,
+        }))
+      })
+      expect(board.bound('publish', '--file', snap.scene_path)).toMatchObject({ code: 'published' })
+      await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
+      await expect(canvas_shape(ipad, 'end-0')).toHaveCount(1)
+      await scene_framed(ipad, 2)
+    })
+    await step('an empty revision shows dots on vellum without its summary', async () => {
+      const snap = board.bound('snapshot', '--out', path.join(board.root, 'empty'))
+      const scene = scene_edit(snap.scene_path, (draft) => {
+        draft.elements = []
+        draft.summary = 'Cleared for the next drawing.'
+      })
+      expect(board.bound('publish', '--file', snap.scene_path)).toMatchObject({ code: 'published' })
+      await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
+      await empty_surface(ipad)
+      await expect(canvas_region(ipad).getByText(scene.summary)).toHaveCount(0)
+    })
     await step('an Interpret left unconfirmed before the upgrade is never sent again', () =>
       retired_request(board),
     )
@@ -389,16 +448,25 @@ async function cleanup(board: Linked, info: TestInfo, hash: string): Promise<str
   })
   ack(bound, event.id, 'updated', '--message', 'Tidied on the Agent canvas.')
 
-  // Both screens show the label, the summary, and the stroke as a pen stroke of its own.
+  // The label and ink are scene content. The summary is metadata, not another label.
   for (const page of [ipad, stage]) {
     await page.getByRole('tab', { name: 'Agent canvas' }).click()
     await expect(canvas_words(page, 'label', 'A bridge')).toBeVisible()
+    await expect(canvas_region(page).locator('svg.tl-grid')).toBeVisible()
     await expect(canvas_shape(page, 'ink.0')).toHaveAttribute('data-shape-type', 'draw')
-    await expect(page.getByText('Your stroke, kept as drawn, with a label.')).toBeVisible()
+    expect.soft(await canvas_region(page).getByText(scene.summary).count()).toBe(0)
+    expect.soft(await canvas_region(page).getByRole('complementary').count()).toBe(0)
   }
 
   await scene_capture(ipad, info, 'cleanup-agent-canvas-ipad', published.shapes_count)
   await scene_capture(stage, info, 'cleanup-agent-canvas-mac', published.shapes_count)
+
+  await viewer_zoom(stage, false)
+  await viewer_zoom(ipad, true)
+  expect(board.cli('status', '--session', session)).toMatchObject({
+    document_hash: hash,
+    agent_revision: 1,
+  })
 
   // The canvas is handed back as the scene that was published, with where its ink came from.
   const next = bound('snapshot', '--out', path.join(root, 'tidied'))
@@ -412,6 +480,67 @@ async function cleanup(board: Linked, info: TestInfo, hash: string): Promise<str
   expect(held.elements[1]).toMatchObject({ type: 'sketch', strokes: [pen.id], source_hash: hash })
   expect(held.elements[1]).not.toHaveProperty('ink')
   return next.scene_path as string
+}
+
+// Exercise the input surface, not an editor API. Measure the width of the published frame
+// on screen so a page zoom, a swallowed gesture or a locked camera cannot pass.
+async function viewer_zoom(page: Page, touch: boolean) {
+  const frame = canvas_shape(page, 'frame')
+  const width = () => frame.evaluate((el) => el.getBoundingClientRect().width)
+  const fitted = await width()
+  const canvas = canvas_region(page).locator('.tl-canvas')
+  const bounds = await canvas.boundingBox()
+  expect(bounds).not.toBeNull()
+  const x = bounds!.x + bounds!.width / 2
+  const y = bounds!.y + bounds!.height / 2
+  await page.mouse.click(x, y)
+
+  if (touch) {
+    const input = await page.context().newCDPSession(page)
+    const fingers = (radius: number) => [
+      { x: x - radius, y, id: 1 },
+      { x: x + radius, y, id: 2 },
+    ]
+
+    try {
+      await input.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: fingers(40) })
+      await input.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(70) })
+      await expect.poll(width).toBeGreaterThan(fitted * 1.1)
+      await input.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(28) })
+      await expect.poll(width).toBeLessThan(fitted * 0.95)
+      await input.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    } finally {
+      await input.detach()
+    }
+  } else {
+    await page.keyboard.down('Control')
+
+    try {
+      await page.mouse.wheel(0, -100)
+      await expect.poll(width).toBeGreaterThan(fitted)
+
+      // tldraw clamps each wheel tick and may discard a gesture-end tick. Wheel past the
+      // initial fit and keep Control pressed until Chromium has rendered the smaller frame.
+
+      for (let tick = 0; tick < 4; tick++) await page.mouse.wheel(0, 100)
+
+      await expect.poll(width).toBeLessThan(fitted * 0.95)
+    } finally {
+      await page.keyboard.up('Control')
+    }
+  }
+
+  await expect.poll(width).toBeLessThan(fitted)
+
+  // Another navigation must preserve the user's scale rather than reapply the initial fit.
+  const left = () => frame.evaluate((el) => el.getBoundingClientRect().left)
+  const before = await left()
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + 45, y, { steps: 5 })
+  await page.mouse.up()
+  await expect.poll(left).toBeGreaterThan(before + 20)
+  expect(await width()).toBeLessThan(fitted)
 }
 
 // The person draws on. A scene made from the sketch as it was is refused, drafted or
@@ -433,7 +562,8 @@ async function moved_on(board: Linked, tidy_path: string) {
 
   expect(status()).toMatchObject({ agent_revision: 1, cleaned_stale: true })
   await ipad.getByRole('tab', { name: 'Agent canvas' }).click()
-  await expect(ipad.getByText('The sketch has changed since this was made.')).toBeVisible()
+  await expect(ipad.getByRole('tab', { name: /Agent canvas.*out of date/ })).toBeVisible()
+  await expect(canvas_region(ipad).getByRole('complementary')).toHaveCount(0)
   await expect(canvas_words(ipad, 'label', 'A bridge')).toBeVisible()
 
   scene_edit(tidy_path, (scene) => {

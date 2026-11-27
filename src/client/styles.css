@@ -67,7 +67,6 @@ body {
 .guide,
 .notice,
 .cleaned__empty,
-.caption,
 .rail,
 .dock,
 .inbox,
@@ -105,12 +104,13 @@ button {
   left: var(--rail-width);
 }
 
-/* The stage is for looking at. Nothing on it responds to the pointer but its tabs. */
+/* Keep the stage presentation passive, except for the tabs and Agent viewer. */
 .board--stage {
   pointer-events: none;
 }
 
-.board--stage .tabs {
+.board--stage .tabs,
+.board--stage .views__pane--cleaned {
   pointer-events: auto;
 }
 
@@ -237,8 +237,12 @@ button {
   background: var(--sheet);
 }
 
-.cleaned .tl-container.tl-theme__light,
-.cleaned .tl-theme__light {
+.cleaned--agent {
+  background: var(--vellum);
+}
+
+.cleaned:not(.cleaned--agent) .tl-container.tl-theme__light,
+.cleaned:not(.cleaned--agent) .tl-theme__light {
   --tl-color-background: var(--sheet);
 }
 
@@ -254,48 +258,6 @@ button {
   line-height: 1.5;
   text-align: center;
   text-wrap: balance;
-}
-
-/* The caption: the agent's description of the diagram, set on the sheet like a figure's
-   caption. It keeps clear of the corner tldraw's notice occupies. */
-
-.caption {
-  position: absolute;
-  bottom: calc(env(safe-area-inset-bottom) + var(--edge));
-  left: var(--edge);
-  z-index: 400;
-  box-sizing: border-box;
-  max-width: min(34rem, calc(100% - 2 * var(--edge) - 112px));
-  border: 1px solid var(--ink);
-  border-radius: var(--radius);
-  background: var(--sheet);
-  line-height: 1.45;
-}
-
-.caption p {
-  margin: 0;
-  padding: 11px 16px 12px;
-  text-wrap: pretty;
-}
-
-/* Out of date: said in words, set apart by a rule and a square of ink, never by colour. */
-.caption__stale {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 600;
-}
-
-.caption__summary + .caption__stale {
-  border-top: 1px solid var(--rule);
-}
-
-.caption__stale::before {
-  content: '';
-  flex: none;
-  width: 6px;
-  height: 6px;
-  background: var(--ink);
 }
 
 .tl-container.tl-theme__light,

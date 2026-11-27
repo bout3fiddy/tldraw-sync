@@ -31,7 +31,7 @@ export function stage_mount(editor: Editor, session: string): () => void {
   // Locked against the viewer. The fit below moves the camera with `force`.
   editor.setCameraOptions({ isLocked: true, zoomSteps: [fit_zoom_min, fit_zoom_max] })
 
-  const fit_stop = fit_start(editor, fit_inset_px)
+  const fit_stop = fit_start(editor, fit_inset_px, fit_duration_ms)
   const upload_stop = upload_start(editor, session)
   return () => {
     fit_stop()
@@ -41,7 +41,7 @@ export function stage_mount(editor: Editor, session: string): () => void {
 
 // The stage never follows the pen's zoom. It shows the whole drawing, and refits only when
 // the drawing's extent or the window's size changes. The cleaned canvas fits the same way.
-export function fit_start(editor: Editor, inset_px: number): () => void {
+export function fit_start(editor: Editor, inset_px: number, duration_ms: number): () => void {
   let key_fitted = ''
   let frame = 0
 
@@ -53,7 +53,7 @@ export function fit_start(editor: Editor, inset_px: number): () => void {
       force: true,
       inset: inset_px,
       targetZoom: fit_zoom_max,
-      animation: { duration: key_fitted === '' ? 0 : fit_duration_ms },
+      animation: { duration: key_fitted === '' ? 0 : duration_ms },
     })
   }
 

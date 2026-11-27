@@ -382,7 +382,7 @@ export type Mark = {
 // how many pieces of this app's chrome overlap it, and where it sits in its own pane.
 export function marks(page: Page): Promise<Mark[]> {
   return page.evaluate(() => {
-    const chrome = '.dock, .inbox, .composer:not([hidden]), .caption, .strip, .tabs, .notice'
+    const chrome = '.dock, .inbox, .composer:not([hidden]), .strip, .tabs, .notice'
     const round = (value: number) => Math.round(value * 100) / 100
     const found: Mark[] = []
 

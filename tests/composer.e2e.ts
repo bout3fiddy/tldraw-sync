@@ -1122,7 +1122,6 @@ function replace_seen(page: Page): Promise<ReplaceSeen> {
       '.inbox': 'the list',
       '.rail-toggle': 'Boards',
       '.notice--floating': 'a notice',
-      '.views__pane--cleaned .caption': 'the caption',
       '.views__pane--cleaned .tl-canvas': 'the diagram',
       '[data-testid^="tl-watermark"]': 'the link',
     }

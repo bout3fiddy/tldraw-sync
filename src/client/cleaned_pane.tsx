@@ -1,5 +1,5 @@
-// The Agent canvas: read-only, fitted to its pane, with the agent's description of it and
-// whether the sketch has changed since. Its records live in a local store of their own, never
+// The Agent canvas: read-only, initially fitted to its pane, then free to navigate.
+// Its records live in a local store of their own, never
 // in the sync room, so nothing shown here can reach the human ink. They are native tldraw
 // records, shown as they were published, whatever format they were published in. Bringing
 // back an earlier revision is the agent's job, through `tldraw-sync cleanup-restore`.
@@ -45,23 +45,24 @@ export function CleanedPane({ cleaned }: { cleaned: CleanedState }) {
     )
   }
 
-  // A published canvas with nothing on it. There is nothing for tldraw to fit or draw, so the
-  // pane says so in words.
-  if (!document.records.some((record) => record.typeName === 'shape')) {
+  // The linked viewer shows the drawing surface even when its published revision is empty.
+  if (!status.linked && !document.records.some((record) => record.typeName === 'shape')) {
     return (
       <div className="cleaned">
         <p className="cleaned__empty">
-          {status.linked ? 'The agent canvas is empty.' : 'The cleaned diagram is empty.'}
+          The cleaned diagram is empty.
         </p>
-        <CleanedCaption summary={document.current.summary} stale={status.stale} />
       </div>
     )
   }
 
   return (
-    <div className="cleaned">
-      <CleanedCanvas key={document.revision} document={document} />
-      <CleanedCaption summary={document.current.summary} stale={status.stale} />
+    <div className={status.linked ? 'cleaned cleaned--agent' : 'cleaned'}>
+      <CleanedCanvas
+        key={`${document.revision}:${status.linked}`}
+        document={document}
+        grid={status.linked}
+      />
     </div>
   )
 }
@@ -85,7 +86,7 @@ export function canvas_store(records: readonly CanvasRecord[]): TLStore {
 }
 
 // One store per revision: a new revision replaces the canvas whole, as it was published.
-function CleanedCanvas({ document }: { document: CleanedDocument }) {
+function CleanedCanvas({ document, grid }: { document: CleanedDocument; grid: boolean }) {
   const store = useMemo(() => canvas_store(document.records), [document])
 
   return (
@@ -94,31 +95,26 @@ function CleanedCanvas({ document }: { document: CleanedDocument }) {
       hideUi
       assetUrls={asset_urls}
       components={components_quiet}
-      onMount={cleaned_mount}
+      onMount={(editor) => cleaned_mount(editor, grid)}
     />
   )
 }
 
-function cleaned_mount(editor: Editor): () => void {
+function cleaned_mount(editor: Editor, grid: boolean): () => void {
   editor.user.updateUserPreferences({ colorScheme: 'light' })
-  editor.updateInstanceState({ isReadonly: true })
-  editor.setCameraOptions({ isLocked: true })
-  return fit_start(editor, fit_inset_cleaned_px)
-}
+  editor.updateInstanceState({ isReadonly: true, isGridMode: grid })
+  editor.setCurrentTool('hand')
 
-// The one thing written over the canvas: what the agent says it shows, and a line when the
-// sketch has moved on since. Nothing is shown when there is nothing to say.
-function CleanedCaption({ summary, stale }: { summary: string; stale: boolean }) {
-  if (summary === '' && !stale) return null
+  // Even distant shapes must fit together in a narrow pane. Allow the scene's longest
+  // dimension to shrink to one pixel without losing tldraw's normal navigation steps.
+  const bounds = editor.getCurrentPageBounds()
+  const steps = editor.getCameraOptions().zoomSteps
 
-  return (
-    <aside className="caption" aria-label="About this canvas">
-      {summary !== '' && <p className="caption__summary">{summary}</p>}
-      {stale && (
-        <p className="caption__stale" role="status">
-          The sketch has changed since this was made.
-        </p>
-      )}
-    </aside>
-  )
+  if (bounds) {
+    const minimum = 1 / Math.max(1, bounds.w, bounds.h)
+
+    if (minimum < steps[0]!) editor.setCameraOptions({ zoomSteps: [minimum, ...steps] })
+  }
+
+  return fit_start(editor, fit_inset_cleaned_px, 0)
 }
