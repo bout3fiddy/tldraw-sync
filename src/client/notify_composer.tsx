@@ -1,7 +1,9 @@
-// The note to the agent: a slip of paper with a field, the Interpret switch and one send
-// button, laid over the board as a modal dialog of the browser's own. It shows no words of
-// its own. What became of a request is told by the bell's list, so a failure never moves or
-// resizes the field, and a draft is only ever cleared by a confirmed send.
+// The note to the agent: a slip of paper with a field and one send button, laid over the
+// board as a modal dialog of the browser's own. A send is the sketch as it is and whatever
+// was written, or the sketch alone: the words say what is wanted, so there is nothing else
+// to choose. The slip shows no words of its own. What became of a request is told by the
+// bell's list, so a failure never moves or resizes the field, and a draft is only ever
+// cleared by a confirmed send.
 
 import {
   useLayoutEffect,
@@ -15,7 +17,7 @@ import {
 import type { Editor } from 'tldraw'
 import { assert, AssertionError } from '../shared/assert'
 import type { BoardEvent } from '../shared/whiteboard'
-import { icon_interpret, icon_send } from './icons'
+import { icon_send } from './icons'
 import {
   draft_key,
   draft_length_max,
@@ -101,7 +103,6 @@ function use_draft({ session, post }: Delivery) {
 function request_stage(
   editor: Editor,
   draft: Draft,
-  interpret: boolean,
   save: (value: Draft) => void,
 ): Send | string {
   if (draft.pending) return draft.pending
@@ -109,7 +110,7 @@ function request_stage(
   let request: Send
 
   try {
-    request = send_prepare(editor, interpret ? 'interpret_request' : 'sketch_notify', draft.text)
+    request = send_prepare(editor, draft.text)
   } catch (error) {
     if (error instanceof SendError) return error.message
 
@@ -140,14 +141,10 @@ async function request_fly(session: string, token: string, request: Send): Promi
 }
 
 // The draft to keep once the Mac has answered. The note is cleared only if the Mac confirmed
-// exactly what is still written. Interpret is for one send; a refused send has not happened.
+// exactly what is still written. A refused send has not happened: its words stay.
 function draft_settled(draft: Draft, request: Send, confirmed: boolean, unedited: boolean): Draft {
   const clear = confirmed && unedited && draft.text === (request.text ?? '')
-  return {
-    text: clear ? '' : draft.text,
-    pending: null,
-    interpret: confirmed ? false : draft.interpret === true,
-  }
+  return { text: clear ? '' : draft.text, pending: null }
 }
 
 function use_mounted() {
@@ -164,9 +161,6 @@ function use_mounted() {
 // One request in flight at a time. A second tap or key while it flies does nothing.
 function use_send(props: Delivery, notes: Notes) {
   const { initial, draft, edits, save, keep, text_set } = notes
-  const [interpret, interpret_set] = useState(
-    () => draft.current.interpret ?? draft.current.pending?.kind === 'interpret_request',
-  )
   const [busy, busy_set] = useState(false)
   const [refusals_count, refusals_count_set] = useState(0)
   const locked = useRef(false)
@@ -182,10 +176,9 @@ function use_send(props: Delivery, notes: Notes) {
       return refuse({ ...row, state: 'unconfirmed', detail: outcome.message })
     }
 
-    const next = draft_settled({ ...draft.current, interpret }, request, outcome.ok, unedited)
+    const next = draft_settled(draft.current, request, outcome.ok, unedited)
     keep(next)
     text_set(next.text)
-    interpret_set(next.interpret === true)
 
     if (outcome.ok) return props.post({ type: 'confirm', key: row.key, event: outcome.event })
 
@@ -201,11 +194,11 @@ function use_send(props: Delivery, notes: Notes) {
     const generation = edits.current
 
     try {
-      const request = request_stage(editor, draft.current, interpret, save)
+      const request = request_stage(editor, draft.current, save)
 
       if (typeof request === 'string') {
-        const subject = interpret ? 'interpret_request' : 'sketch_notify'
-        return refuse({ key: 'unsent', subject, state: 'refused', detail: request })
+        const row = { key: 'unsent', subject: 'sketch_notify' } as const
+        return refuse({ ...row, state: 'refused', detail: request })
       }
 
       const { request_id: key, kind: subject } = request
@@ -218,7 +211,7 @@ function use_send(props: Delivery, notes: Notes) {
       busy_set(false)
     }
   }
-  return { send, busy, interpret, interpret_set, refusals_count }
+  return { send, busy, refusals_count }
 }
 
 export type Composer = ReturnType<typeof use_composer>
@@ -227,19 +220,10 @@ export function use_composer(props: Delivery) {
   const notes = use_draft(props)
   const flight = use_send(props, notes)
   const pending = notes.draft.current.pending
-  const interpret_choose = (value: boolean) => {
-    flight.interpret_set(value)
-    notes.keep({ ...notes.draft.current, interpret: value })
-  }
   return {
     text: notes.text,
     change: notes.change,
     send: flight.send,
-    interpret: pending ? pending.kind === 'interpret_request' : flight.interpret,
-    interpret_choose,
-
-    // An unconfirmed request is sent again as it was: its kind is no longer a choice.
-    interpret_locked: pending !== null || flight.busy,
     disabled: !notes.initial || flight.busy || !props.editor || !props.token || !props.online,
     available: notes.initial !== null,
     waiting: pending !== null,
@@ -507,28 +491,16 @@ export function NotifyComposer({ form, open, hint, news, onDismiss, onClosed }: 
   )
 }
 
-// Two fixed targets on the paper's bottom line: the switch for the next send, and the send.
+// One fixed target on the paper's bottom line: the send.
 function ComposerControls({ form, describe }: { form: Composer; describe: string }) {
   return (
     <>
       <button
         type="button"
-        role="switch"
-        className="composer__icon composer__interpret"
-        aria-checked={form.interpret}
-        aria-label="Interpret"
-        title="Interpret: ask for a faithful, typeset copy with the next send"
-        disabled={form.interpret_locked}
-        onClick={() => form.interpret_choose(!form.interpret)}
-      >
-        <span className="composer__plate">{icon_interpret}</span>
-      </button>
-      <button
-        type="button"
         className="composer__icon composer__send"
-        aria-label="Notify agent"
+        aria-label="Send to agent"
         aria-describedby={describe === '' ? undefined : hint_id}
-        title="Notify agent"
+        title="Send to agent"
         disabled={form.disabled}
         onClick={() => void form.send()}
       >

@@ -3,20 +3,23 @@ import { board_query } from '../shared/board_session'
 import { path_status, document_hash_pattern } from '../shared/constants'
 import { document_hash } from '../shared/document_hash'
 import {
+  event_kind_retired,
   event_kinds,
   event_states,
   request_id_pattern,
   request_size_bytes_max,
   request_text_valid,
   whiteboard_path,
+  whiteboard_protocol,
   type BoardEvent,
   type EventKind,
 } from '../shared/whiteboard'
 
+// Every Send is one kind of request: the sketch as it is, and the note when there is one.
 export type Send = { kind: EventKind; sketch_hash: string; request_id: string; text?: string }
 
-// `interpret` is the switch for the next send. Drafts saved before it existed leave it out.
-export type Draft = { text: string; pending: Send | null; interpret?: boolean }
+// The note being written, and the request not yet confirmed, if there is one.
+export type Draft = { text: string; pending: Send | null }
 
 // A failure whose words are written for the person sending. Anything else that is thrown, such
 // as a lost connection, a timeout or an unreadable reply, is reported as a missing confirmation.
@@ -33,19 +36,24 @@ export function draft_load(key: string): Draft {
   const draft = JSON.parse(raw) as Draft
   const p = draft.pending
 
+  if (typeof draft.text !== 'string' || draft.text.length > draft_length_max) {
+    throw Error('Cannot read this tab’s draft. Check status before sending.')
+  }
+
+  // A request for an interpretation, left unconfirmed by a page from before the upgrade, is
+  // dropped here and never sent again. The words that were written stay.
+  if (p !== null && event_kind_retired(p.kind)) return { text: draft.text, pending: null }
+
   if (
-    typeof draft.text !== 'string' ||
-    draft.text.length > draft_length_max ||
-    (draft.interpret !== undefined && typeof draft.interpret !== 'boolean') ||
-    (p !== null &&
-      (!event_kinds.includes(p.kind) ||
-        !document_hash_pattern.test(p.sketch_hash) ||
-        !request_id_pattern.test(p.request_id) ||
-        (p.text !== undefined && !request_text_valid(p.text))))
+    p !== null &&
+    (!event_kinds.includes(p.kind) ||
+      !document_hash_pattern.test(p.sketch_hash) ||
+      !request_id_pattern.test(p.request_id) ||
+      (p.text !== undefined && !request_text_valid(p.text)))
   )
     throw Error('Cannot read this tab’s pending request. Check status before sending.')
 
-  return draft
+  return { text: draft.text, pending: p }
 }
 
 // The replay key of this tab's unconfirmed request on a board, if it has one that can be read.
@@ -77,7 +85,7 @@ function request_id(): string {
   )
 }
 
-export function send_prepare(editor: Editor, kind: EventKind, text: string): Send {
+export function send_prepare(editor: Editor, text: string): Send {
   if (!request_text_valid(text)) {
     throw new SendError('Use up to 4000 characters without control marks.')
   }
@@ -85,7 +93,7 @@ export function send_prepare(editor: Editor, kind: EventKind, text: string): Sen
   const types = editor.store.scopedTypes.document
   const records = editor.store.allRecords().filter((r) => types.has(r.typeName))
   const body = {
-    kind,
+    kind: event_kinds[0],
     sketch_hash: document_hash(records),
     request_id: request_id(),
     ...(text ? { text } : {}),
@@ -107,7 +115,7 @@ export async function send_event(session: string, token: string, send: Send) {
 
   const capability = await status.json()
 
-  if (capability.protocol !== 2 || capability.session !== session) {
+  if (capability.protocol !== whiteboard_protocol || capability.session !== session) {
     throw new SendError('Upgrade and restart the Mac board before sending. Your note is kept.')
   }
 

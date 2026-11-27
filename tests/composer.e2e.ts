@@ -19,7 +19,9 @@
 //   finger tap is compared with the same tap on tldraw's canvas on the stage.
 // - Each request is one row under the bell, changed in place from the Mac's receipt to the
 //   agent's last word. Nothing opens by itself and the note shows no words about it.
-// - A draft, the Interpret switch and the rows belong to one board.
+// - The note has one control, the send. A send is the sketch and whatever was written; no
+//   switch chooses what it means.
+// - A draft and the rows belong to one board.
 //
 // Two disposable boards serve the journeys, to keep the browser gate short. The first journey
 // runs in phases that each start from the same settled screen and are judged separately, so
@@ -61,7 +63,6 @@ import {
   dock_problems,
   inbox,
   inbox_behind,
-  interpret,
   ipad_landscape,
   ipad_narrow,
   ipad_portrait,
@@ -434,15 +435,15 @@ async function expect_fitted(field: Locator): Promise<number> {
   return needed
 }
 
-// Where the note's two controls are, relative to its paper, and how big their glyphs are.
-// Equal results before and after an edit mean the controls did not move or change size.
+// Where the note's one control is, relative to its paper, and how big its glyph is. Equal
+// results before and after an edit mean the control did not move or change size.
 function controls_read(page: Page) {
   return page.evaluate(() => {
     const paper = document.querySelector('.composer')!.getBoundingClientRect()
     const round = (value: number) => Math.round(value * 100) / 100
-    return ['.composer__interpret', '.composer__send'].map((selector) => {
-      const target = document.querySelector(selector)!.getBoundingClientRect()
-      const glyph = document.querySelector(`${selector} svg`)!.getBoundingClientRect()
+    return [...document.querySelectorAll('.composer button')].map((button) => {
+      const target = button.getBoundingClientRect()
+      const glyph = button.querySelector('svg')!.getBoundingClientRect()
       return {
         width: round(target.width),
         height: round(target.height),
@@ -459,10 +460,12 @@ const controls = (page: Page) => soon(controls_read(page))
 
 type Still = Awaited<ReturnType<typeof controls>>
 
-// Two 44px targets on the paper's bottom line, each around a small square glyph. They sit a
-// frame and a hairline in from the paper's outer edge, as a tool does in its instrument.
+// One 44px target on the paper's bottom line, around a small square glyph: the send. It sits
+// a frame and a hairline in from the paper's outer edge, as a tool does in its instrument.
 async function expect_controls_fixed(page: Page): Promise<Still> {
   const still = await controls(page)
+  expect(still).toHaveLength(1)
+  expect(await page.locator('.composer button.composer__send').count()).toBe(1)
 
   for (const control of still) {
     expect(control).toMatchObject({ width: 44, height: 44, from_bottom: 4 })
@@ -640,7 +643,7 @@ test('the note opens over the board and closes without a mark; the pen draws to 
 
 // Hidden is where the note starts: no dialog, no field, no band under the views, and the
 // whole screen for the sketch, down to its last row. Asking for it shows a modal dialog in
-// the middle of the screen: one empty line and two 44px targets on its bottom line. Nothing
+// the middle of the screen: one empty line and one 44px target on its bottom line. Nothing
 // behind it moves, is resized or is dimmed, and the field does not have the focus. Shut, the
 // note button is found by role and can be pressed; open, no press reaches it or the bell.
 async function opens_quietly(ipad: Page, info: TestInfo) {
@@ -696,7 +699,7 @@ async function opens_quietly(ipad: Page, info: TestInfo) {
   await expect_controls_fixed(ipad)
 
   // The sheet is drawn like the board's instruments: an ink hairline, square-cut corners on
-  // it, its dialog and both plates, and no shadow. Behind it there is no scrim at all.
+  // it, its dialog, its button and the plate, and no shadow. Behind it there is no scrim.
   const edge = await ipad.locator('.composer').evaluate((element) => {
     const style = getComputedStyle(element)
     const dialog = element.parentElement!
@@ -711,7 +714,7 @@ async function opens_quietly(ipad: Page, info: TestInfo) {
   expect(edge.outline).toBe('none')
   expect(edge.shadow).toBe('none')
   expect(edge.behind).toBe('rgba(0, 0, 0, 0)')
-  expect(edge.radii).toHaveLength(6)
+  expect(edge.radii).toHaveLength(4)
   expect(new Set(edge.radii)).toEqual(new Set(['0px']))
   const open_px = await shot_pixels(ipad, info, 'note-open-empty-portrait')
   await paper_painted(ipad, open_px, open)
@@ -721,13 +724,9 @@ async function opens_quietly(ipad: Page, info: TestInfo) {
   const patch: Box = { left: left + 250, right: left + 450, top: top + 100, bottom: top + 260 }
   expect(ink_in(open_px, patch, glyph_light_max)).toEqual(ink_in(closed_px, patch, glyph_light_max))
 
-  // Interpret on is a plate of solid ink the size of the send plate; off again, a glyph.
-  await interpret(ipad).tap()
-  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'true')
-  const on_px = await shot_pixels(ipad, info, 'note-interpret-on-portrait')
-  expect_plate(ink_in(on_px, await rect_of(interpret(ipad)), ink_light_max))
-  await interpret(ipad).tap()
-  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'false')
+  // Nothing on the note chooses what a send means: no switch, no checkbox, one button.
+  await expect(ipad.locator('.notepad [role="switch"], .notepad input')).toHaveCount(0)
+  await expect(ipad.locator('.notepad button')).toHaveCount(1)
 }
 
 // The foot of the screen as it was painted: the sketch's own vellum, lighter than the band
@@ -753,8 +752,8 @@ function expect_plate(plate: ReturnType<typeof ink_in>) {
 }
 
 // The open, empty note as it was painted: white paper inside an ink hairline, a square plate
-// of ink carrying a light arrow, a small quiet broom, and the button that opened it now in
-// solid ink. Only the paper is judged: the sketch around it has a grid.
+// of ink carrying a light arrow, and the button that opened it now in solid ink. Only the
+// paper is judged: the sketch around it has a grid.
 async function paper_painted(ipad: Page, pixels: Pixels, seen: Layout) {
   const paper = seen.band!
   const middle = (paper.top + paper.bottom) / 2
@@ -802,13 +801,6 @@ async function paper_painted(ipad: Page, pixels: Pixels, seen: Layout) {
   }
   expect(ink_in(pixels, corner, ink_light_max).light_max).toBeLessThan(ink_light_max)
   expect(ink_in(pixels, inset(send, 15), ink_light_max).light_max).toBeGreaterThan(150)
-
-  const broom = ink_in(pixels, await rect_of(interpret(ipad)), quiet_light_max)
-  expect(broom.dark_count).toBeGreaterThan(15)
-  expect(broom.dark_width).toBeGreaterThanOrEqual(8)
-  expect(broom.dark_width).toBeLessThanOrEqual(24)
-  expect(broom.dark_height).toBeGreaterThanOrEqual(8)
-  expect(broom.dark_height).toBeLessThanOrEqual(24)
 
   const pressed = ink_in(pixels, seen.chat!, ink_light_max)
   expect(pressed.dark_count).toBeGreaterThan(pressed.pixels_count * 0.6)
@@ -1894,20 +1886,21 @@ test('each request is one row under the bell, and a board keeps its own note and
       await shot(ipad, info, 'list-failed-portrait')
     })
 
-    await step('an empty Interpret and a note are each their own row', async () => {
+    await step('a bare send and a note are each their own row', async () => {
 
       // Asking for the note shuts the list that was left open: gone from the page behind.
       await note_open(ipad)
       await expect(inbox_behind(ipad)).toHaveCount(0)
-      await interpret(ipad).tap()
-      await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'true')
       await notify(ipad).tap()
-      await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'false', { timeout: mac_ms })
+
+      // The first request has ended, so the bare send is the one request still waiting.
+      await expect.poll(() => bound('poll').events.length, { timeout: mac_ms }).toBe(1)
+      await expect(notify(ipad)).toBeEnabled({ timeout: mac_ms })
       await field.fill('Check the retry arrow.')
       await sent_while_put_away(ipad)
       await expect.poll(() => bound('poll').events.length, { timeout: mac_ms }).toBe(2)
       const [second, third] = bound('poll').events
-      expect(second).toMatchObject({ kind: 'interpret_request' })
+      expect(second).toMatchObject({ kind: 'sketch_notify' })
       expect(second.text).toBeUndefined()
       expect(third).toMatchObject({ kind: 'sketch_notify', text: 'Check the retry arrow.' })
 
@@ -1918,7 +1911,8 @@ test('each request is one row under the bell, and a board keeps its own note and
       await expect(rows_about(ipad, 'sketch_notify', 'updated')).toContainText('Done', {
         timeout: mac_ms,
       })
-      await expect(rows_about(ipad, 'interpret_request', 'queued')).toContainText('last known')
+      await expect(rows_about(ipad, 'sketch_notify', 'queued')).toHaveCount(1)
+      await expect(rows_about(ipad, 'sketch_notify', 'queued')).toContainText('last known')
       await expect(rows_about(ipad, 'sketch_notify', 'failed')).toHaveCount(1)
 
       // The words of a note are sent to the agent, never shown again in the list.
@@ -1933,7 +1927,7 @@ test('each request is one row under the bell, and a board keeps its own note and
     })
 
     await step(
-      'a board keeps its own note, switch and rows',
+      'a board keeps its own note and rows',
       () => boards_keep_their_own(board),
       step_long_ms,
     )
@@ -1999,7 +1993,7 @@ async function bell_corner_ink(ipad: Page, info: TestInfo, name: string): Promis
   return ink_in(pixels, corner, ink_light_max).dark_count
 }
 
-// A draft, the Interpret switch and the rows belong to one board. Runs on the board the
+// A draft and the rows belong to one board. Runs on the board the
 // lifecycle journey leaves behind: three rows, and one request still waiting on the Mac. The
 // list of boards and the bell are pressed only with the note shut.
 async function boards_keep_their_own({ ipad, bound, cli, session, stage }: Linked) {
@@ -2020,17 +2014,16 @@ async function boards_keep_their_own({ ipad, bound, cli, session, stage }: Linke
   expect(listed).toBeGreaterThan(0)
   await inbox_close(ipad)
 
-  // A draft with the switch on. Writing a note draws nothing, here or on the Mac.
+  // A draft. Writing a note draws nothing, here or on the Mac.
   const ink_hash = drawn()
   await note_open(ipad)
   await field.fill(draft)
-  await interpret(ipad).tap()
-  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'true')
+  await expect(field).toHaveValue(draft)
   expect(drawn()).toBe(ink_hash)
   await expect(stage.locator('section[aria-label="Sketchboard"] .tl-shape')).toHaveCount(0)
 
-  // Another board: the note is closed and empty, the switch is off, the list has no rows,
-  // and without a scan of its own stage nothing can be sent from it.
+  // Another board: the note is closed and empty, the list has no rows, and without a scan
+  // of its own stage nothing can be sent from it.
   const other = String(cli('session-create').session.id)
   await board_open(other)
   await expect(chat(ipad)).toHaveAccessibleName('Agent note')
@@ -2038,7 +2031,6 @@ async function boards_keep_their_own({ ipad, bound, cli, session, stage }: Linke
   await expect(bell(ipad)).toHaveAccessibleName('Notifications')
   await note_open(ipad)
   await expect(field).toHaveValue('')
-  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'false')
   await expect(notify(ipad)).toBeDisabled()
   await field.fill('Only for the other board')
   await note_close(ipad)
@@ -2048,7 +2040,7 @@ async function boards_keep_their_own({ ipad, bound, cli, session, stage }: Linke
   await expect(inbox(ipad)).toContainText('Nothing sent from this board yet.')
   await inbox_close(ipad)
 
-  // Back on the first board: its own words, switch and rows, exactly as they were left.
+  // Back on the first board: its own words and rows, exactly as they were left.
   await board_open(session)
   await expect(chat(ipad)).toHaveAccessibleName('Agent note, draft saved')
   await inbox_open(ipad)
@@ -2056,14 +2048,13 @@ async function boards_keep_their_own({ ipad, bound, cli, session, stage }: Linke
   await inbox_close(ipad)
   await note_open(ipad)
   await expect(field).toHaveValue(draft)
-  await expect(interpret(ipad)).toHaveAttribute('aria-checked', 'true')
 
   // Sending from here sends this board's note to this board, once, as written.
   await notify(ipad).tap()
   await expect(field).toHaveValue('', { timeout: mac_ms })
   await expect.poll(() => bound('poll').events.length, { timeout: mac_ms }).toBe(waiting + 1)
   const sent = bound('poll').events.at(-1)
-  expect(sent).toMatchObject({ kind: 'interpret_request', text: draft })
+  expect(sent).toMatchObject({ kind: 'sketch_notify', text: draft })
   expect(drawn()).toBe(ink_hash)
   await board_open(other)
   await note_open(ipad)

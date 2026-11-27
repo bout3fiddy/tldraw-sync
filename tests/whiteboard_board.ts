@@ -1,6 +1,6 @@
 // What the linked-board journeys share: a disposable board started through the real command
 // line, a Mac stage and a paired iPad page, and the handles a person has on the iPad: the note
-// button, the bell, the note itself and its two controls. Nothing here touches a live board.
+// button, the bell, the note itself and its one control. Nothing here touches a live board.
 //
 // The note is a modal dialog. While it is open the page behind it is inert: no press reaches
 // it, and it is out of the accessibility tree. What lies behind is then read from the page
@@ -13,7 +13,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import jsQR from 'jsqr'
+import { whiteboard_protocol } from '../src/shared/whiteboard'
 import type { Box } from './screen_pixels'
+
+// The protocol a host names when it links and polls, as the command line takes it.
+export const protocol = String(whiteboard_protocol)
 
 // Every wait in these journeys is bounded. A control that cannot be reached, a page that does
 // not load or a window that does not open fails in seconds, under the name of its step, and
@@ -136,8 +140,9 @@ export async function phases(settle: () => Promise<void>, list: readonly Phase[]
 export const chat = (page: Page) => page.getByRole('button', { name: /^Agent note/ })
 export const bell = (page: Page) => page.getByRole('button', { name: /^Notifications/ })
 export const note = (page: Page) => page.getByRole('textbox', { name: 'Note to agent' })
-export const notify = (page: Page) => page.getByRole('button', { name: 'Notify agent' })
-export const interpret = (page: Page) => page.getByRole('switch', { name: 'Interpret' })
+
+// The one control on the note: it sends the sketch, with the note when there is one.
+export const notify = (page: Page) => page.getByRole('button', { name: 'Send to agent' })
 export const inbox = (page: Page) => page.getByRole('dialog', { name: 'Notifications' })
 export const rows = (page: Page) => inbox(page).getByRole('listitem')
 
@@ -167,7 +172,7 @@ export async function composer_open(page: Page) {
 
 // The note is put away with Escape, which is heard wherever the focus is. While the note is
 // open nothing else on the page can be pressed, so every step outside it starts here. Its
-// words, its switch and a request still on its way are kept.
+// words and a request still on its way are kept.
 export async function composer_close(page: Page) {
   const state = chat_behind(page)
   await expect(state).toBeVisible()
@@ -520,7 +525,7 @@ export async function stroke(
 // dialog, where a pen stroke would only put the note away and draw nothing.
 export async function pair(root: string, file: string, stage: Page, ipad: Page) {
   const link = () =>
-    command(root, 'whiteboard-link', '--protocol', '2', '--owner', 'e2e', '--out', file)
+    command(root, 'whiteboard-link', '--protocol', protocol, '--owner', 'e2e', '--out', file)
   const opener = path.join(root, process.platform === 'darwin' ? 'open' : 'xdg-open')
   fs.writeFileSync(opener, '#!/bin/sh\nexit 1\n', { mode: 0o700 })
   expect(link().code).toBe('stage_closed')
@@ -565,7 +570,7 @@ export async function board_linked(browser: Browser, journey: (board: Linked) =>
       `whiteboard-${action}`,
       '--binding',
       file,
-      ...(action === 'poll' ? ['--protocol', '2'] : []),
+      ...(action === 'poll' ? ['--protocol', protocol] : []),
       ...args,
     )
   const stage = await browser.newPage({ viewport: { width: 1440, height: 900 } })

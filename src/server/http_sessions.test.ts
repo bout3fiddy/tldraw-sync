@@ -10,7 +10,7 @@ import { board_default_id } from '../shared/board_session'
 import { time_real } from '../shared/time'
 import { registry_environment_simulated } from '../simulation/simulated_registry'
 import { test_pen_draw } from '../simulation/test_pen'
-import { proposal_example } from '../simulation/test_sketch'
+import { scene_example } from '../simulation/test_sketch'
 import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
 import { pairing_create } from './pairing'
@@ -116,7 +116,7 @@ test('every board has its own address, and old addresses are the default board',
   ).toBe(404)
 })
 
-test('ink, images and cleanups stay on their own board', async () => {
+test('ink, images and canvases stay on their own board', async () => {
   const id = await board_new()
   const port = server.port as number
   const status = (session: string) => get(`/api/status?session=${session}`)
@@ -138,18 +138,29 @@ test('ink, images and cleanups stay on their own board', async () => {
   expect((await fetch(`${origin}/api/drawing.png?session=${id}`)).status).toBe(200)
   expect((await fetch(`${origin}/api/drawing.png`)).status).toBe(404)
 
-  const sketch = await get(`/api/sketch.json?document_hash=${hash}&session=${id}`)
-  expect(sketch).toMatchObject({ session: id, title_wanted: true, document_hash: hash })
+  // The address the retired formats were sent to takes nothing, on any board.
+  const scene = { ...scene_example(hash, 0, 'Order flow', id), title: 'Order flow' }
 
-  // The same proposal to the wrong board is refused, then accepted by its own, and titles it.
-  const proposal = { ...proposal_example(hash, 0), session: id, title: 'Order flow' }
-  const wrong = await post('/api/cleaned.json', proposal)
-  expect(wrong.status).toBe(409)
-  expect(await json(wrong)).toMatchObject({ code: 'session_mismatch', session: 'default' })
-  const right = await post(`/api/cleaned.json?session=${id}`, proposal)
-  expect(await json(right)).toMatchObject({ kind: 'published', revision: 1, title_applied: true })
+  for (const target of ['/api/cleaned.json', `/api/cleaned.json?session=${id}`]) {
+    const retired = await post(target, scene)
+    expect(retired.status).toBe(410)
+    expect(await json(retired)).toMatchObject({ code: 'retired' })
+  }
+
+  expect(await status(id)).toMatchObject({ session_name: null, cleaned_revision: 0 })
+
+  // The same scene is refused by the wrong board, then accepted by its own, and titles it.
+  expect(registry.publish(board_default_id, scene)).toMatchObject({ kind: 'session_mismatch' })
+  expect(registry.publish(id, scene)).toMatchObject({
+    kind: 'published',
+    revision: 1,
+    title_applied: true,
+  })
   expect(await status(id)).toMatchObject({ session_name: 'Order flow', cleaned_revision: 1 })
   expect(await status(board_default_id)).toMatchObject({ cleaned_revision: 0 })
+  const shown = await get(`/api/cleaned.json?session=${id}`)
+  expect((shown.records as unknown[]).length).toBe(6)
+  expect(((await get('/api/cleaned.json')).records as unknown[]).length).toBe(0)
   const restored = await post(`/api/cleaned/restore?session=${id}`, { base_revision: 1 })
   expect(restored.status).toBe(404)
 })

@@ -11,12 +11,14 @@ export type Disk = {
   write_atomic(name: FileName, bytes: Uint8Array): void
 }
 
-// A board's four files live in one directory: the data directory itself for the default board,
+// A board's files live in one directory: the data directory itself for the default board,
 // and a directory of its own for every other board session. The registry of sessions lives
-// only in the data directory.
+// only in the data directory. The archives are canvases saved in retired formats, kept as
+// they were when the board moved on from them.
 export const file_names = [
   'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'sessions.registry',
   'ideas.state', 'events.state', 'whiteboard.key', 'interpretation.archive', 'ideas.archive',
+  'canvas.archive',
 ] as const
 export type FileName = (typeof file_names)[number]
 

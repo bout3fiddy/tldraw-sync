@@ -1,10 +1,10 @@
-// The cleaned diagram as a page sees it. A page asks for the small status on a fixed interval,
+// The Agent canvas as a page sees it. A page asks for the small status on a fixed interval,
 // one request at a time, and fetches the records only when the revision changes. The status
 // also says whether the sketch has moved on since the diagram was made from it.
 
 import { useEffect, useState } from 'react'
 import { board_query } from '../shared/board_session'
-import type { CleanedDocument, CleanedStatus } from '../shared/cleanup_types'
+import type { CleanedDocument, CleanedStatus } from '../shared/canvas_types'
 import {
   cleaned_poll_interval_ms,
   path_cleaned_json,

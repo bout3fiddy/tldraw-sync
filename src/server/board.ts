@@ -16,9 +16,10 @@ import { board_default_id, board_id_pattern } from '../shared/board_session'
 import type {
   CleanedDocument,
   CleanedStatus,
+  PreviewJob,
   SketchBounds,
   SketchSnapshot,
-} from '../shared/cleanup_types'
+} from '../shared/canvas_types'
 import {
   document_hash_pattern,
   fetch_wait_ms_max,
@@ -26,6 +27,7 @@ import {
   image_bounds_units_max,
   image_padding_px,
   image_size_bytes_max,
+  preview_wait_ms_max,
   restart_clock_jump,
   save_delay_ms,
   save_delay_ms_max,
@@ -34,12 +36,17 @@ import {
   type Role,
 } from '../shared/constants'
 import { document_hash, shapes_count, type DocumentRecord } from '../shared/document_hash'
+import { png_blank, png_signed } from '../shared/png'
 import type { Time, TimerHandle } from '../shared/time'
-import { Cleaned, type PublishResult, type RestoreResult } from './cleaned'
-import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
-
-import type { EventKind, EventRequest, Layer } from '../shared/whiteboard'
+import type { EventRequest } from '../shared/whiteboard'
 import { BoardEvents } from './board_events'
+import {
+  Cleaned,
+  type PublishRefusal,
+  type PublishResult,
+  type RestoreResult,
+} from './cleaned'
+import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
 export { StorageError } from './storage'
 
@@ -62,6 +69,28 @@ type Image = { document_hash: string; bytes: Uint8Array; bounds: SketchBounds | 
 type DocumentState = { clock: number; hash: string; shapes_count: number }
 type Waiter = { resolve: (result: ImageResult) => void; timer: TimerHandle }
 
+// A draft the stage has been asked to render, and its rendering once the stage has sent it.
+// It is never saved: a draft is not a revision, and a restart forgets it.
+type Preview = { id: string; records: DocumentRecord[]; image: Uint8Array | null }
+type PreviewWaiter = { id: string; resolve: (result: PreviewImage) => void; timer: TimerHandle }
+
+// What a preview was accepted as: its id, and what a publish of the same proposal would save.
+export type PreviewResult =
+  | {
+      kind: 'preview'
+      preview: string
+      base_revision: number
+      snapshot: string
+      shapes_count: number
+      records_hash: string
+    }
+  | PublishRefusal
+
+export type PreviewImage =
+  | { kind: 'image'; bytes: Uint8Array }
+  | { kind: 'unknown' }
+  | { kind: 'stale'; reason: 'stage_absent' | 'stage_slow' | 'busy' }
+
 const board_label = '-'
 const page_index = 'a1' as TLPage['index']
 const schema = createTLSchema()
@@ -69,6 +98,8 @@ const schema = createTLSchema()
 export class Board {
   private readonly sessions = new Map<string, Session>()
   private readonly waiters: Waiter[] = []
+  private readonly preview_waiters: PreviewWaiter[] = []
+  private preview: Preview | null = null
   private document_state_cached: DocumentState | null = null
   private save_timer: TimerHandle | null = null
   private save_deadline_ms: number | null = null
@@ -161,7 +192,8 @@ export class Board {
   idle(): boolean {
     assert(!this.closed, 'board is open')
     assert(this.waiters.length <= fetch_waiters_count_max, 'waiters are bounded')
-    return this.sessions.size === 0 && this.waiters.length === 0
+    const waiting = this.waiters.length + this.preview_waiters.length
+    return this.sessions.size === 0 && waiting === 0
   }
 
   sessions_count(role: Role): number {
@@ -270,12 +302,11 @@ export class Board {
     assert(this.waiters.length === 0, 'every waiter was settled')
   }
 
-  // Cleanup. The cleaned diagram is a document of its own: nothing here touches the room.
+  // The Agent canvas. It is a document of its own: nothing here touches the room.
 
   // The records of the sketch as it is, but only while it is the sketch the caller saw in its
   // image. Null means the sketch has moved on, and the caller must fetch the image again.
-  sketch_snapshot(hash: string, layer: Layer = 'interpretation'):
-    Omit<SketchSnapshot, 'title_wanted'> | null {
+  sketch_snapshot(hash: string): Omit<SketchSnapshot, 'title_wanted'> | null {
     assert(!this.closed, 'board is open')
     assert(document_hash_pattern.test(hash), 'hash is well formed')
     const state = this.document_state()
@@ -290,25 +321,28 @@ export class Board {
         r.typeName === 'binding'),
       bounds,
       image_padding: image_padding_px,
-      cleaned_revision: canvas.revision,
       agent_revision: canvas.revision,
       agent_history: canvas.history,
       agent_source_hash: canvas.current?.source_hash ?? null,
-      ...(layer === 'canvas' ? { legacy_diagrams: this.cleaned.legacy_diagrams() } : {}),
-      diagram_previous: this.cleaned.diagram_current(),
-      drawings_previous: this.cleaned.drawings_current(),
+      scene: this.cleaned.scene_current(),
+      canvas_legacy: canvas.current?.legacy === true,
     }
   }
 
-  queue_event(kind: EventKind, hash: string, request: EventRequest = {}) {
-    const replay = this.events.replay(kind, hash, request)
+  // A Send from the iPad: a note for the agent about the sketch as it is, saved before it is
+  // acknowledged. It writes nothing to either canvas.
+  queue_event(hash: string, request: EventRequest = {}) {
+    const replay = this.events.replay('sketch_notify', hash, request)
     if (replay !== null) return replay
     const current = this.document_state()
     if (current.hash !== hash) return 'syncing'
     if (this.clock_saved !== current.clock) this.save()
     assert(this.clock_saved === current.clock, 'the referenced sketch is durable')
     const now = this.environment.time.now_ms()
-    return this.events.queue(kind, hash, now, crypto.randomUUID(), request)
+    const revision = this.cleaned.status(hash).revision
+    const queued = this.events.queue('sketch_notify', hash, now, crypto.randomUUID(), request)
+    assert(this.cleaned.status(hash).revision === revision, 'a Send publishes nothing')
+    return queued
   }
 
   cleaned_status(): CleanedStatus {
@@ -325,17 +359,100 @@ export class Board {
     return document
   }
 
-  cleaned_publish(input: unknown, layer: Layer = 'interpretation'): PublishResult {
+  cleaned_publish(input: unknown): PublishResult {
     assert(!this.closed, 'board is open')
     const before = this.document_state()
     const now_ms = this.environment.time.now_ms()
-    // A drawing on the canvas copies its strokes from the sketch as it is at this moment.
+    // A scene copies sketch strokes from the sketch as it is at this moment.
     const sketch = () => this.document_records()
-    const result = this.cleaned.publish(input, before.hash, this.session, now_ms, layer, sketch)
-    // Pair assertion: publishing a cleanup leaves the human ink exactly as it was.
+    const result = this.cleaned.publish(input, before.hash, this.session, now_ms, sketch)
+    // Pair assertion: publishing a canvas leaves the human ink exactly as it was.
     const after = this.document_state()
     assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')
     return result
+  }
+
+  // Drafts. A draft is checked and made exactly as a publish is, and then only rendered: the
+  // stage draws its records and sends back the picture. Nothing of it is saved or shown.
+
+  // One draft at a time: a new one replaces the one before it, whose waiters are told.
+  preview_create(input: unknown): PreviewResult {
+    assert(!this.closed, 'board is open')
+    const before = this.document_state()
+    const revision = this.cleaned.status(before.hash).revision
+    const sketch = () => this.document_records()
+    const draft = this.cleaned.draft(input, before.hash, this.session, sketch)
+    const after = this.document_state()
+    assert(after.clock === before.clock && after.hash === before.hash, 'ink is untouched')
+    assert(this.cleaned.status(before.hash).revision === revision, 'a draft publishes nothing')
+    if (draft.kind !== 'draft') return draft
+
+    const { records, kind: _, ...facts } = draft
+    // An empty canvas has nothing for the stage to draw: its picture is a blank page.
+    const image = draft.shapes_count === 0 ? png_blank() : null
+    this.preview_waiters_settle({ kind: 'unknown' })
+    this.preview = { id: crypto.randomUUID(), records, image }
+    return { kind: 'preview', preview: this.preview.id, ...facts }
+  }
+
+  // What the stage is asked to render, if anything. `have` is the draft it already has.
+  preview_job(have: string | null): PreviewJob {
+    assert(!this.closed, 'board is open')
+    const preview = this.preview
+    if (preview === null || preview.image !== null) return { id: null }
+    assert(preview.records.length > 0, 'a draft waiting to be drawn has something to draw')
+    return preview.id === have ? { id: preview.id } : { id: preview.id, records: preview.records }
+  }
+
+  // The stage's rendering of the draft it was given. False when that draft has been replaced.
+  preview_put(id: string, bytes: Uint8Array): boolean {
+    assert(!this.closed, 'board is open')
+    assert(png_signed(bytes) && bytes.byteLength <= image_size_bytes_max, 'a bounded PNG')
+    const preview = this.preview
+    if (preview === null || preview.id !== id) return false
+    if (preview.image === null) preview.image = bytes
+    this.preview_waiters_settle({ kind: 'image', bytes: preview.image })
+    return true
+  }
+
+  // Resolves at once when the draft has been rendered. Otherwise it waits, for a bounded
+  // time, for the stage to render it.
+  preview_get(id: string): Promise<PreviewImage> {
+    assert(!this.closed, 'board is open')
+    assert(id.length > 0, 'a preview is named')
+    const preview = this.preview
+    if (preview === null || preview.id !== id) return Promise.resolve({ kind: 'unknown' })
+    if (preview.image !== null) return Promise.resolve({ kind: 'image', bytes: preview.image })
+    if (this.sessions_count('stage') === 0) {
+      return Promise.resolve({ kind: 'stale', reason: 'stage_absent' })
+    }
+    if (this.preview_waiters.length === fetch_waiters_count_max) {
+      return Promise.resolve({ kind: 'stale', reason: 'busy' })
+    }
+
+    return new Promise((resolve) => {
+      const waiter: PreviewWaiter = {
+        id,
+        resolve,
+        timer: this.environment.time.timeout_set(() => {
+          const index = this.preview_waiters.indexOf(waiter)
+          assert(index >= 0, 'a waiter that times out is still waiting')
+          this.preview_waiters.splice(index, 1)
+          resolve({ kind: 'stale', reason: 'stage_slow' })
+        }, preview_wait_ms_max),
+      }
+      this.preview_waiters.push(waiter)
+      assert(this.preview_waiters.length <= fetch_waiters_count_max, 'waiters are bounded')
+    })
+  }
+
+  private preview_waiters_settle(result: PreviewImage): void {
+    assert(this.preview_waiters.length <= fetch_waiters_count_max, 'waiters are bounded')
+    for (const waiter of this.preview_waiters.splice(0)) {
+      this.environment.time.timeout_clear(waiter.timer)
+      waiter.resolve(result)
+    }
+    assert(this.preview_waiters.length === 0, 'every waiter was settled')
   }
 
   cleaned_restore(base_revision: number, revision: number | null): RestoreResult {
@@ -407,6 +524,8 @@ export class Board {
       time.timeout_clear(waiter.timer)
       waiter.resolve({ kind: 'stale', reason: 'busy' })
     }
+    this.preview_waiters_settle({ kind: 'stale', reason: 'busy' })
+    this.preview = null
     this.sessions.clear()
     this.room.close()
     assert(this.waiters.length === 0, 'no fetch is left waiting')

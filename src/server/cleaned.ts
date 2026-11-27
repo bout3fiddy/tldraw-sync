@@ -1,178 +1,188 @@
-// The cleaned diagram: a separate document an external agent publishes whole. It never touches
-// the sync room, so human ink stays exactly as drawn. A publish is accepted only when it was
-// made from the sketch as it is now (the source hash) and from the cleaned revision as it is
-// now (compare-and-swap). The new state is written to disk before it replaces the old one, so a
-// failed write leaves the previous diagram in place, in memory and on disk.
+// The Agent canvas: a separate document an external agent publishes whole, as a scene. It never
+// touches the sync room, so human ink stays exactly as drawn. A publish is accepted only from
+// the canvas revision as it is now (compare-and-swap) and, when it was made from the sketch,
+// only from the sketch as it is now (the source hash). The new state is written to disk
+// before it replaces the old one, so a failed write leaves the previous canvas in place, in
+// memory and on disk.
+//
+// A draft is prepared by the same steps as a publish, up to but not including the write. So a
+// preview shows exactly the records a publish of the same proposal would save, and a draft
+// that would be refused is refused as a draft.
 //
 // Prior revisions are kept, up to a bound, for an explicit restore. A restore is itself a new
 // revision and goes through the same compare-and-swap, so it cannot clobber a newer publish.
+// A revision published in a retired format is kept as the native records it was shown as
+// (see `canvas_migration.ts`): it can be shown and restored, and has no scene to edit.
 //
-// A published canvas may be empty: the faithful reading of a sketch with nothing left on it. It
-// is a revision like any other. A drawing on the canvas holds the person's own strokes, which
-// the board copies from the sketch itself (see `cleaned_ink.ts`).
+// A published canvas may be empty. It is a revision like any other.
 
 import type { TLRecord } from '@tldraw/tlschema'
-import type { Layer } from '../shared/whiteboard'
-import {
-  archive_manifest,
-  archived_diagrams,
-  archives_read,
-  migration_state,
-  type Archives,
-} from './canvas_migration'
 import { assert } from '../shared/assert'
-import { board_default_id, board_id_pattern } from '../shared/board_session'
+import { board_id_pattern } from '../shared/board_session'
+import type {
+  CanvasRecord,
+  CleanedDocument,
+  CleanedProvenance,
+  CleanedStatus,
+} from '../shared/canvas_types'
 import {
+  canvas_records_count_max,
   cleaned_history_count_max,
   document_hash_pattern,
-  proposal_shapes_count_max,
 } from '../shared/constants'
+import { document_hash } from '../shared/document_hash'
+import { JsonReader } from '../shared/json_reader'
+import type { SceneElement } from '../shared/scene_types'
+import { canvas_migrate, type MigratedVersion } from './canvas_migration'
+import { canvas_records_problem, canvas_shapes_count } from './canvas_records'
 import {
-  proposal_format,
-  proposal_format_styled,
-  type CleanedDocument,
-  type CleanedProvenance,
-  type CleanedStatus,
-  type Diagram,
-  type DrawingPrevious,
-  type ProposalShape,
-  type ProposalStyle,
-} from '../shared/cleanup_types'
-import { sketch_graph } from '../shared/diagram_check'
-import { drawings_list, ink_resolve, type SketchRecords } from './cleaned_ink'
-import { proposal_parse, proposal_records } from './cleanup_proposal'
-import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
+  canvas_file_name,
+  damaged,
+  history_input_read,
+  object_read,
+  provenance_read,
+  revision_valid,
+  state_coherent,
+  state_decode,
+  type Json,
+  type Provenance,
+} from './canvas_state'
+import { ink_resolve, type SketchRecords } from './scene_ink'
+import { scene_elements_read, scene_elements_write, scene_parse } from './scene_proposal'
+import { scene_records } from './scene_records'
+import { envelope_encode, type Disk } from './storage'
 
-// A published result carries the title the proposal offered, for the board's registry to apply
-// to a board that is still unnamed. The cleaned diagram itself keeps no title.
-export type PublishResult =
-  | { kind: 'published'; revision: number; shapes_count: number; title: string | null }
+export type PublishRefusal =
   | { kind: 'invalid'; path: string; message: string }
   | { kind: 'session_mismatch'; session: string }
   | { kind: 'sketch_changed'; sketch_hash: string }
   | { kind: 'revision_conflict'; revision: number }
+
+// A published result carries the title the proposal offered, for the board's registry to apply
+// to a board that is still unnamed. The canvas itself keeps no title. `records_hash` names the
+// records that were saved: the same proposal, previewed first, gave the same hash.
+export type PublishResult =
+  | {
+      kind: 'published'
+      revision: number
+      shapes_count: number
+      records_hash: string
+      title: string | null
+    }
+  | PublishRefusal
+
+// A draft: the records a publish of the same proposal would save now, and nothing saved.
+export type DraftResult =
+  | {
+      kind: 'draft'
+      base_revision: number
+      snapshot: string
+      shapes_count: number
+      records_hash: string
+      records: TLRecord[]
+    }
+  | PublishRefusal
 
 export type RestoreResult =
   | { kind: 'restored'; revision: number; restored_from: number }
   | { kind: 'revision_conflict'; revision: number }
   | { kind: 'not_found' }
 
-// A version keeps the semantic diagram it was composed from, if any, so the next snapshot can
-// offer it to the agent and a restore brings it back with the shapes. It keeps the style it was
-// published in, so it renders the same way after a restart or a restore.
-export type Version = Omit<CleanedProvenance, 'shapes_count'> & {
-  shapes: ProposalShape[]
-  style: ProposalStyle
-  diagram: Diagram | null
-  migrated?: boolean
-  agent_style?: ProposalStyle
-}
-export type State = { revision: number; current: Version | null; history: Version[] }
+// One revision. `scene` is what the agent published, with the strokes the board copied, and
+// null for a revision from a retired format. `records` is what is shown for it.
+type Version = Provenance & { scene: SceneElement[] | null; records: TLRecord[] }
+type State = { revision: number; current: Version | null; history: Version[] }
+type Prepared = { version: Omit<Version, 'revision' | 'published_at_ms'>; title: string | null }
 
-const file_name = 'cleaned.state'
-const legacy_format = 'tldraw-sync.cleaned.v1'
-const state_format = 'tldraw-sync.canvas.v2'
+const state_format = 'tldraw-sync.canvas.v3'
 const label = '-'
 
 export class Cleaned {
-  private records_current: TLRecord[]
-
   private constructor(
     private readonly disk: Disk,
     private state: State,
-    private readonly archives: Archives,
-  ) {
-    this.records_current = state.current === null ? [] : proposal_records(state.current)
-  }
+  ) {}
 
-  // A board saved before cleanup existed has no file: it opens with nothing published.
+  // A board that never had a canvas has no file: it opens with nothing published. A canvas
+  // saved in a retired format is brought to native records here, once.
   static open(disk: Disk): Cleaned {
-    const bytes = disk.read(file_name)
-    const json = bytes && state_decode(bytes)
-    const migrating = json?.format !== state_format
-    const archives = archives_read(disk, migrating, (b) => state_read(state_decode(b)))
-    const state = migrating ? migration_state(archives) : state_read(json!, archives)
-    const cleaned = new Cleaned(disk, state, archives)
+    const bytes = disk.read(canvas_file_name)
+    const json = bytes === null ? null : state_decode(bytes)
 
-    if (migrating && Object.keys(archives).length) cleaned.persist(state)
+    if (json !== null && json.format === state_format) return new Cleaned(disk, state_read(json))
+
+    const migrated = canvas_migrate(disk, bytes, json)
+    const state: State =
+      migrated === null
+        ? { revision: 0, current: null, history: [] }
+        : {
+            revision: migrated.revision,
+            current: migrated.current === null ? null : version_migrated(migrated.current),
+            history: migrated.history.map(version_migrated),
+          }
+    const cleaned = new Cleaned(disk, state)
+
+    if (migrated !== null) cleaned.persist(state)
 
     assert(cleaned.state.revision >= 0, 'a revision is never negative')
     assert(cleaned.state.history.length <= cleaned_history_count_max, 'history is bounded')
     return cleaned
   }
 
-  // `session` is the board this diagram belongs to. A proposal is bound to the session of its
+  // `session` is the board this canvas belongs to. A proposal is bound to the session of its
   // snapshot: two boards can hold the same sketch at the same revision, so the hash and the
-  // revision alone cannot tell a proposal for one from a replay against the other. Only the
-  // default board accepts a proposal that names no session, as every proposal once did.
-  // `sketch` gives the sketch's records as they are now, for a drawing to copy its strokes from.
+  // revision alone cannot tell a proposal for one from a replay against the other. `sketch`
+  // gives the sketch's records as they are now, for a scene to copy strokes from.
   publish(
     input: unknown,
     sketch_hash: string,
     session: string,
     now_ms: number,
-    layer: Layer = 'interpretation',
     sketch: SketchRecords = () => [],
   ): PublishResult {
-    assert(document_hash_pattern.test(sketch_hash), 'the sketch hash is well formed')
-    assert(board_id_pattern.test(session), 'the board session is well formed')
     assert(Number.isFinite(now_ms), 'time is a number')
-    const parsed = proposal_parse(input)
+    const prepared = this.prepare(input, sketch_hash, session, sketch)
 
-    if (!parsed.ok) return { kind: 'invalid', path: parsed.path, message: parsed.message }
-
-    const { proposal } = parsed
-
-    if ((proposal.session ?? board_default_id) !== session) {
-      return { kind: 'session_mismatch', session }
-    }
-
-    const current = this.state.current
-    const refusal = layer_refusal(layer, proposal.diagram, current)
-
-    if (refusal !== null) return refusal
-
-    const source_edit =
-      layer === 'interpretation' ||
-      has_raw_shapes(current) ||
-      sketch_graph(current?.diagram) !== sketch_graph(proposal.diagram)
-
-    if (source_edit && proposal.snapshot !== sketch_hash)
-      return { kind: 'sketch_changed', sketch_hash }
-
-    if (proposal.base_revision !== this.state.revision) {
-      return { kind: 'revision_conflict', revision: this.state.revision }
-    }
-
-    // A new reading of the sketch takes its drawings' strokes from the sketch as it is now.
-    // A publish that changes only the agent's own items keeps the strokes the canvas holds.
-    const shapes = ink_resolve(proposal.shapes, source_edit ? sketch : null, current?.shapes ?? [])
-
-    if (!Array.isArray(shapes)) return { kind: 'invalid', ...shapes }
+    if ('kind' in prepared) return prepared
 
     const version: Version = {
+      ...prepared.version,
       revision: this.state.revision + 1,
-      source_hash: source_edit ? proposal.snapshot : (current?.source_hash ?? null),
-      agent: proposal.agent,
-      summary: proposal.summary,
       published_at_ms: now_ms,
-      restored_from: null,
-      shapes,
-      style: proposal.style,
-      diagram: proposal.diagram,
     }
-    assert(
-      source_edit || version.source_hash === (current?.source_hash ?? null),
-      'agent-only commits cannot mark the sketch as interpreted',
-    )
-    assert(!source_edit || version.source_hash === sketch_hash, 'source edits name the live ink')
     this.commit(version)
     assert(this.state.current === version, 'the published version is current')
     return {
       kind: 'published',
       revision: version.revision,
-      shapes_count: version.shapes.length,
-      title: proposal.title,
+      shapes_count: canvas_shapes_count(version.records),
+      records_hash: document_hash(version.records),
+      title: prepared.title,
+    }
+  }
+
+  // Everything a publish checks and makes, and nothing a publish writes.
+  draft(
+    input: unknown,
+    sketch_hash: string,
+    session: string,
+    sketch: SketchRecords = () => [],
+  ): DraftResult {
+    const before = this.state
+    const prepared = this.prepare(input, sketch_hash, session, sketch)
+
+    if ('kind' in prepared) return prepared
+
+    const { records } = prepared.version
+    assert(this.state === before, 'a draft changes nothing')
+    assert(records.length <= canvas_records_count_max, 'a draft is bounded')
+    return {
+      kind: 'draft',
+      base_revision: this.state.revision,
+      snapshot: sketch_hash,
+      shapes_count: canvas_shapes_count(records),
+      records_hash: document_hash(records),
+      records,
     }
   }
 
@@ -216,42 +226,78 @@ export class Cleaned {
     return status
   }
 
-  // The semantic diagram behind the current revision, stale or not: identities to reuse.
-  diagram_current(): Diagram | null {
-    const { current } = this.state
-    const diagram = current === null ? null : current.diagram
-    assert(diagram === null || current !== null, 'a diagram belongs to a published version')
-    assert(
-      diagram === null || diagram.nodes.length > 0 || diagram.edges.length === 0,
-      'connections join nodes',
-    )
-    return diagram
-  }
-
-  // The drawings of the current revision: what each keeps and the box it fills.
-  drawings_current(): DrawingPrevious[] {
-    const { current } = this.state
-    const drawings = current === null ? [] : drawings_list(current.shapes)
-    assert(current !== null || drawings.length === 0, 'drawings belong to a published version')
-    assert(drawings.length <= proposal_shapes_count_max, 'drawings are bounded')
-    return drawings
-  }
-
-  legacy_diagrams() {
-    return archived_diagrams(this.archives)
+  // The scene behind the current revision, as an agent may send it again: without the copied
+  // strokes, which an agent only ever names. Null when there is none to edit.
+  scene_current(): Json[] | null {
+    const scene = this.state.current?.scene ?? null
+    const written = scene === null ? null : scene_elements_write(scene, 'without_ink')
+    assert(written === null || written.length === scene?.length, 'every element is offered')
+    assert(written === null || this.state.current !== null, 'a scene belongs to a revision')
+    return written
   }
 
   document(sketch_hash: string): CleanedDocument {
     const status = this.status(sketch_hash)
-    const records = this.records_current
+    const records: CanvasRecord[] = this.state.current?.records ?? []
     assert(status.current !== null || records.length === 0, 'records belong to the current')
+    assert(records.length <= canvas_records_count_max, 'a served canvas is bounded')
     return { ...status, records }
+  }
+
+  // The checks of a publish, in the order their refusals matter, and the version it would
+  // save. Nothing is written.
+  private prepare(
+    input: unknown,
+    sketch_hash: string,
+    session: string,
+    sketch: SketchRecords,
+  ): Prepared | PublishRefusal {
+    assert(document_hash_pattern.test(sketch_hash), 'the sketch hash is well formed')
+    assert(board_id_pattern.test(session), 'the board session is well formed')
+    const parsed = scene_parse(input)
+
+    if (!parsed.ok) return { kind: 'invalid', path: parsed.path, message: parsed.message }
+
+    const { proposal } = parsed
+    const current = this.state.current
+    const from_sketch = proposal.basis === 'sketch'
+
+    if (proposal.session !== session) return { kind: 'session_mismatch', session }
+
+    if (from_sketch && proposal.snapshot !== sketch_hash) {
+      return { kind: 'sketch_changed', sketch_hash }
+    }
+
+    if (proposal.base_revision !== this.state.revision) {
+      return { kind: 'revision_conflict', revision: this.state.revision }
+    }
+
+    // A scene made from the sketch takes its strokes from the sketch as it is now. A change
+    // to the canvas alone keeps the strokes the canvas holds.
+    const scene = ink_resolve(
+      proposal.elements,
+      from_sketch
+        ? { kind: 'sketch', records: sketch, hash: sketch_hash }
+        : { kind: 'canvas', held: current?.scene ?? null },
+    )
+
+    if (!Array.isArray(scene)) return { kind: 'invalid', ...scene }
+
+    const source_hash = from_sketch ? proposal.snapshot : (current?.source_hash ?? null)
+    assert(!from_sketch || source_hash === sketch_hash, 'a sketch reading names the live ink')
+    assert(
+      from_sketch || source_hash === (current?.source_hash ?? null),
+      'a canvas change cannot mark the sketch as read',
+    )
+    const { agent, summary, title } = proposal
+    const records = scene_records(scene)
+    return { version: { source_hash, agent, summary, restored_from: null, scene, records }, title }
   }
 
   // Write first, then swap. A throwing disk leaves the state, and the file, as they were.
   private commit(version: Version): void {
     assert(version.revision === this.state.revision + 1, 'revisions grow one at a time')
-    const records = proposal_records(version)
+    assert(canvas_records_problem(version.records) === null, 'a committed canvas can be served')
     const previous = this.state.current
     const history =
       previous === null
@@ -261,53 +307,31 @@ export class Cleaned {
 
     this.persist(next)
     this.state = next
-    this.records_current = records
   }
 
   private persist(next: State): void {
-    const json = { ...state_json(next), archives: archive_manifest(this.archives) }
-    const payload = new TextEncoder().encode(JSON.stringify(json))
-    const file = file_name
+    const payload = new TextEncoder().encode(JSON.stringify(state_json(next)))
     const encoded = envelope_encode({ kind: 'cleaned', label, payload })
-    this.disk.write_atomic(file, encoded)
+    this.disk.write_atomic(canvas_file_name, encoded)
 
     // Pair assertion: the file now on disk reads back as the state about to be served.
-    const written = this.disk.read(file)
-    assert(written !== null, 'the cleaned state was written')
+    const written = this.disk.read(canvas_file_name)
+    assert(written !== null, 'the canvas state was written')
     assert(Buffer.from(written).equals(encoded), 'the durable state matches the prepared state')
   }
 }
 
 function provenance(version: Version): CleanedProvenance {
-  const { shapes, diagram: _, style: _style, migrated: _m, agent_style: _a, ...rest } = version
-  assert(shapes.length <= proposal_shapes_count_max, 'a published version is bounded')
+  const { scene, records, ...rest } = version
+  assert(records.length <= canvas_records_count_max, 'a published version is bounded')
   assert(rest.revision > 0, 'a published version has a revision')
-  return { ...rest, shapes_count: shapes.length }
+  return { ...rest, shapes_count: canvas_shapes_count(records), legacy: scene === null }
 }
 
-const has_agents = (diagram: Diagram | null | undefined) =>
-  diagram?.nodes.some((node) => node.origin === 'agent') ||
-  diagram?.edges.some((edge) => edge.origin === 'agent')
-
-// What a layer does not take, whatever the sketch and the revision: the unified canvas is
-// published as a semantic graph, and the plain cleaned diagram holds no agent's own items.
-function layer_refusal(
-  layer: Layer,
-  diagram: Diagram | null,
-  current: Version | null,
-): PublishResult | null {
-  assert(current === null || current.revision > 0, 'a current version was published')
-
-  if (layer === 'ideas' || (layer === 'canvas' && !diagram)) {
-    return { kind: 'invalid', path: 'layer', message: 'Publish a semantic graph to canvas.' }
-  }
-
-  if (layer === 'interpretation' && (has_agents(diagram) || has_agents(current?.diagram))) {
-    return { kind: 'invalid', path: 'origin', message: 'Use canvas for mixed origins.' }
-  }
-
-  assert(layer === 'canvas' || layer === 'interpretation', 'the layer takes this publish')
-  return null
+function version_migrated(version: MigratedVersion): Version {
+  assert(version.revision > 0, 'a migrated version has a revision')
+  assert(canvas_records_problem(version.records) === null, 'migrated records can be served')
+  return { ...version, scene: null }
 }
 
 function state_json(state: State): object {
@@ -317,192 +341,70 @@ function state_json(state: State): object {
   return { format: state_format, ...state, current, history: state.history.map(version_json) }
 }
 
-// Saved shapes carry every styling default, so each version is saved in the styled format,
-// whichever format it was published in. A version saved before that has no format: v1. The
-// style is saved only when it is not the default, so a plain version is saved byte for byte
-// as before styles existed, and reads back as plain.
+// A scene revision is saved as its scene, with the strokes the board copied, and its records
+// are made from that again when it is read. A revision from a retired format has no scene,
+// and is saved as its records.
 function version_json(version: Version): object {
-  const { diagram, style, ...rest } = version
-  assert(rest.shapes.length <= proposal_shapes_count_max, 'a saved version is bounded')
+  const { scene, records, ...rest } = version
   assert(rest.revision > 0, 'a saved version has a revision')
+  assert(records.length <= canvas_records_count_max, 'a saved version is bounded')
 
-  if (version.migrated) {
-    const { revision, published_at_ms, restored_from } = version
-    return { migrated: true, revision, published_at_ms, restored_from }
-  }
+  if (scene === null) return { ...rest, records }
 
-  const styled = style === 'plain' ? {} : { style }
-  return diagram === null
-    ? { ...rest, format: proposal_format_styled, ...styled }
-    : { ...rest, format: proposal_format_styled, ...styled, diagram }
+  return { ...rest, scene: scene_elements_write(scene, 'with_ink') }
 }
 
-// The saved file is untrusted like any input: each version is checked again with the same rules
-// as a publish. Damage stops the server instead of silently dropping a diagram.
-function state_decode(bytes: Uint8Array) {
-  const decoded = envelope_decode(bytes, 'cleaned')
-
-  if (!decoded.ok) throw new StorageError(`${file_name} is damaged: ${decoded.reason}`)
-
-  let parsed: unknown
-
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(decoded.envelope.payload))
-  } catch {
-    throw new StorageError(`${file_name} is damaged: it is not JSON`)
-  }
-
-  // Valid JSON need not be an object: null, a number, text or a list are refused here.
-
-  const json = object_read(parsed)
-
-  if (json === null) throw new StorageError(`${file_name} is damaged: it is not a JSON object`)
-
-  return json
-}
-
-function state_read(json: Record<string, unknown>, archives?: Archives): State {
-  if (archives && JSON.stringify(json.archives) !== JSON.stringify(archive_manifest(archives))) {
-    throw new StorageError('The active canvas does not match its archives.')
-  }
-
+// The saved file is untrusted like any input: each version is checked again with the same
+// rules as a publish. Damage stops the server instead of silently dropping a canvas.
+function state_read(json: Json): State {
   const revision = json.revision
 
-  const expected = archives ? state_format : legacy_format
-
-  if (json.format !== expected || !revision_valid(revision) || revision < 0) {
-    throw new StorageError(`${file_name} is damaged: unknown format or revision`)
+  if (json.format !== state_format || !revision_valid(revision) || revision < 0) {
+    throw damaged('unknown format or revision')
   }
 
-  const history_input = Array.isArray(json.history) ? (json.history as unknown[]) : null
+  const current = json.current === null ? null : version_read(json.current)
+  const history = history_input_read(json).map(version_read)
 
-  if (history_input === null || history_input.length > cleaned_history_count_max) {
-    throw new StorageError(`${file_name} is damaged: history is malformed`)
-  }
-
-  const read = (value: unknown) => {
-    const v = object_read(value)
-
-    if (!archives || v?.migrated !== true) return version_read(value, !!archives)
-
-    const base = migration_state(archives).current
-    const { revision, restored_from, published_at_ms } = v
-
-    if (
-      !base ||
-      !revision_valid(revision) ||
-      revision < base.revision ||
-      typeof published_at_ms !== 'number' ||
-      !Number.isFinite(published_at_ms) ||
-      (restored_from !== null &&
-        (!revision_valid(restored_from) || restored_from <= 0 || restored_from >= revision))
-    )
-      throw new StorageError('Damaged migration reference.')
-
-    return { ...base, revision, published_at_ms, restored_from }
-  }
-  const current = json.current === null ? null : read(json.current)
-  const history = history_input.map(read)
-
-  if (!state_coherent(revision, current, history)) {
-    throw new StorageError(`${file_name} is damaged: revisions do not agree`)
-  }
+  if (!state_coherent(revision, current, history)) throw damaged('revisions do not agree')
 
   assert(current === null || current.revision === revision, 'current is the latest revision')
-  assert(current !== null || history.length === 0, 'history follows a published diagram')
+  assert(current !== null || history.length === 0, 'history follows a published canvas')
   return { revision, current, history }
 }
 
-// Whether the three parts describe a state a publish or a restore can leave behind. Nothing
-// published means revision 0 and no history. Otherwise the current version is the revision, and
-// the history holds strictly older versions, oldest first.
-function state_coherent(revision: number, current: Version | null, history: Version[]): boolean {
-  assert(revision >= 0, 'a revision is never negative')
-  assert(history.length <= cleaned_history_count_max, 'history is bounded')
-
-  if (current === null) return revision === 0 && history.length === 0
-
-  if (current.revision !== revision) return false
-
-  let newer = current.revision
-
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const older = (history[index] as Version).revision
-
-    if (older >= newer) return false
-
-    newer = older
-  }
-
-  return true
-}
-
-function version_read(value: unknown, unified: boolean): Version {
+function version_read(value: unknown): Version {
   const version = object_read(value)
+  const provenance = version === null ? null : provenance_read(version, true)
 
-  if (version === null) throw new StorageError(`${file_name} is damaged: a version is malformed`)
+  if (version === null || provenance === null) throw damaged('a version is malformed')
 
-  const format = version.format ?? proposal_format
-  const input = {
-    format,
-    snapshot: unified && version.source_hash === null ? '0'.repeat(16) : version.source_hash,
-    base_revision: 0,
-    agent: version.agent,
-    summary: version.summary,
-    shapes: version.shapes,
-    ...(version.style === undefined ? {} : { style: version.style }),
-    ...(version.diagram === undefined ? {} : { diagram: version.diagram }),
+  const scened = version.scene !== undefined
+  const recorded = version.records !== undefined
+
+  if (scened === recorded) throw damaged('a version is malformed')
+
+  if (recorded) return { ...provenance, scene: null, records: records_read(version.records) }
+
+  const reader = new JsonReader()
+  const scene = scene_elements_read(reader, version.scene, 'held')
+
+  if (reader.problem !== null) throw damaged('a version is malformed')
+
+  assert(provenance.revision > 0, 'a read version has a revision')
+  assert(scene.length <= canvas_records_count_max, 'a read scene is bounded')
+  return { ...provenance, scene, records: scene_records(scene) }
+}
+
+function records_read(value: unknown): TLRecord[] {
+  if (!Array.isArray(value) || value.length > canvas_records_count_max) {
+    throw damaged('a version is malformed')
   }
 
-  // A saved drawing holds its strokes, and is read with them.
-  const parsed = proposal_parse(input, 'held')
-  const { revision, published_at_ms, restored_from } = version
-
-  // A restore copies a strictly older revision, so it can only name one below its own.
-  const valid =
-    parsed.ok &&
-    (version.source_hash !== null ||
-      (unified &&
-        parsed.proposal.diagram !== null &&
-        sketch_graph(parsed.proposal.diagram) === '')) &&
-    revision_valid(revision) &&
-    revision > 0 &&
-    typeof published_at_ms === 'number' &&
-    Number.isFinite(published_at_ms) &&
-    (restored_from === null ||
-      (revision_valid(restored_from) && restored_from > 0 && restored_from < revision))
-
-  if (!valid) throw new StorageError(`${file_name} is damaged: a version is malformed`)
-
-  assert(parsed.proposal.shapes.length <= proposal_shapes_count_max, 'a saved version is bounded')
-  assert(restored_from === null || restored_from < revision, 'a restore names an older revision')
-  return {
-    revision,
-    source_hash: version.source_hash === null ? null : parsed.proposal.snapshot,
-    agent: parsed.proposal.agent,
-    summary: parsed.proposal.summary,
-    published_at_ms,
-    restored_from,
-    shapes: parsed.proposal.shapes,
-    style: parsed.proposal.style,
-    diagram: parsed.proposal.diagram,
+  if (canvas_records_problem(value as CanvasRecord[]) !== null) {
+    throw damaged('a version is malformed')
   }
-}
 
-function has_raw_shapes(current: Version | null): boolean {
-  if (!current) return false
-
-  const d = current.diagram
-  return !d || d.nodes.length + d.edges.length !== current.shapes.length
-}
-
-function revision_valid(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value)
-}
-
-// A JSON object with named fields, or null for null, a list or any other JSON value.
-function object_read(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-
-  return value as Record<string, unknown>
+  assert(value.length <= canvas_records_count_max, 'read records are bounded')
+  return value as TLRecord[]
 }

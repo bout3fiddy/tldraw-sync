@@ -33,7 +33,7 @@ export type Options = BoardFlags & {
   readonly port: number | null
   readonly no_open: boolean
   readonly out: string | null
-  // The cleanup commands: a proposal file, and revisions for compare-and-swap and restore.
+  // The canvas commands: a scene file, and revisions for compare-and-swap and restore.
   readonly file: string | null
   readonly base_revision: number | null
   readonly revision: number | null
@@ -222,7 +222,7 @@ export async function status(options: Options): Promise<Outcome> {
     `  Draw      ${board.draw_url}  ${board.pen_connected ? 'iPad connected' : 'no iPad'}`,
     `  Present   ${board.stage_url}  ${board.stage_connected ? 'open' : 'not open'}`,
     `  Drawing   ${board.shapes_count} ${board.shapes_count === 1 ? 'shape' : 'shapes'}`,
-    `  Cleaned   ${cleaned_text(board)}`,
+    `  Canvas    ${cleaned_text(board)}`,
   ].join('\n')
   const { app: _, ...data } = board
   return success('running', human, board.draw_url, data)
@@ -300,7 +300,7 @@ export async function image_current(options: Options): Promise<ImageCurrent | Ou
 }
 
 // Opens the Mac page and waits for it to connect. Returns a failure, or null once connected.
-async function stage_open(
+export async function stage_open(
   board: BoardStatus,
   no_open: boolean,
   opened_before: boolean,

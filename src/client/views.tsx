@@ -1,4 +1,4 @@
-// Three ways to look at the board: the sketch, the cleaned diagram, or both side by side. The
+// Three ways to look at the board: the sketch, the Agent canvas, or both side by side. The
 // sketch canvas stays mounted in every view, so switching never interrupts the Pencil, loses
 // the iPad's zoom or undo history, or stops the stage rendering the image agents fetch. The
 // cleaned canvas exists only while it is shown.
@@ -86,7 +86,7 @@ export function ViewTabs({ view, linked, stale, onChoose }: ViewTabsProps) {
           {linked ? linked_labels[candidate.id] : candidate.label}
           {candidate.id === 'cleaned' && stale && (
             <>
-              <span className="tabs__stale" title="The sketch changed since this cleanup" />
+              <span className="tabs__stale" title="The sketch changed since this was made" />
               <span className="visually-hidden">, out of date</span>
             </>
           )}

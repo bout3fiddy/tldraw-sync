@@ -1,8 +1,9 @@
 // Several boards in real browsers against the real board: the default board drawn as before,
 // new boards made and switched from the side rail on the iPad, two boards presented at once in
-// two Mac tabs, an agent fetching and cleaning each with --session, a proposal refused by the
-// wrong board, a rename that beats the agent's title, a restart, and the default board at its
-// old addresses afterwards.
+// two Mac tabs and fetched with --session, two more linked as an agent's host links them, a
+// scene published to each with its own credentials and refused with the other's, a rename
+// that beats the agent's title, a restart, and the default board at its old addresses
+// afterwards.
 //
 // Run: bun run build && npx playwright test tests/sessions.e2e.ts
 
@@ -13,16 +14,35 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { scene_format } from '../src/shared/scene_types'
+import { whiteboard_protocol } from '../src/shared/whiteboard'
 import { child_stop, contexts_close } from './board_child'
 
 const repo_root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli_entry = path.join(repo_root, 'src', 'cli', 'main.ts')
 const bun = process.env.BUN ?? 'bun'
-const data_directory = fs.mkdtempSync(path.join(os.tmpdir(), 'board-sessions-e2e-'))
+const protocol = String(whiteboard_protocol)
+
+// Resolved, because a binding file is refused under a path that goes through a link.
+const data_directory = fs.realpathSync(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'board-sessions-e2e-')),
+)
 
 // The command line's temporary folder too, so default output paths stay inside the test.
 const out_directory = path.join(data_directory, 'out')
 fs.mkdirSync(out_directory, { recursive: true })
+
+// First on the command line's PATH, and holding a stand-in for the system's way of opening a
+// browser: linking a board whose stage is closed opens nothing real.
+const tools_directory = path.join(data_directory, 'tools')
+fs.mkdirSync(tools_directory, { recursive: true })
+
+for (const opener of ['open', 'xdg-open']) {
+  fs.writeFileSync(path.join(tools_directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+}
+
+// Where the bindings of the linked boards are kept. The link makes it, private.
+const private_directory = path.join(data_directory, 'private')
 const ready_wait_ms = 20_000
 
 let port = 0
@@ -33,7 +53,12 @@ type CliResult = { exit_code: number; json: Record<string, unknown> }
 function cli(...args: string[]): CliResult {
   const result = spawnSync(bun, [cli_entry, ...args, '--json'], {
     cwd: repo_root,
-    env: { ...process.env, BOARD_DATA_DIR: data_directory, TMPDIR: out_directory },
+    env: {
+      ...process.env,
+      BOARD_DATA_DIR: data_directory,
+      TMPDIR: out_directory,
+      PATH: `${tools_directory}:${process.env.PATH}`,
+    },
     encoding: 'utf8',
     timeout: 60_000,
   })
@@ -114,29 +139,47 @@ const rail_open = async (page: Page) => {
 }
 const board_link = (page: Page, name: RegExp) => rail(page).getByRole('link', { name })
 const board_id_of = (page: Page) => /\/s\/([0-9a-f]{16})/.exec(page.url())?.[1] ?? ''
-const shape_text = (page: Page, text: string) =>
-  page.locator('section[aria-label="Cleaned"] .tl-shape').getByText(text, { exact: true })
 
-function proposal_publish(snapshot: string, session: string, title: string, ...args: string[]) {
-  const file = path.join(out_directory, `${session}-${title.replace(/\W/g, '')}.json`)
-  fs.mkdirSync(out_directory, { recursive: true })
-  fs.writeFileSync(
-    file,
-    JSON.stringify({
-      format: 'tldraw-sync.cleanup.v1',
-      snapshot,
-      base_revision: 0,
-      session,
-      title,
-      agent: 'e2e-agent',
-      shapes: [
-        { kind: 'rectangle', id: 'client', x: 0, y: 0, w: 180, h: 90, text: `${title} client` },
-        { kind: 'ellipse', id: 'server', x: 320, y: 0, w: 160, h: 90, text: 'Server' },
-        { kind: 'arrow', id: 'calls', from: 'client', to: 'server', text: 'calls' },
-      ],
-    }),
-  )
-  return cli('cleanup-publish', '--file', file, ...args)
+// Words on the Agent canvas of a linked board: the shape itself, never the copy tldraw keeps
+// out of sight to measure its lettering.
+const shape_text = (page: Page, text: string) =>
+  page
+    .locator('section[aria-label="Agent canvas"] .tl-shape:not(.tl-shape-background)')
+    .getByText(text, { exact: true })
+
+type Host = { session: string; bound: (action: string, ...args: string[]) => CliResult }
+
+// A board linked as an agent's host links it: one board for each owner, and a private file
+// with its credentials. Only a linked board has an Agent canvas an agent can publish to.
+function host_link(owner: string): Host {
+  const binding = path.join(private_directory, `${owner}.json`)
+  const link = () =>
+    cli('whiteboard-link', '--protocol', protocol, '--owner', owner, '--out', binding)
+  const linked = link()
+  expect(linked.json).toMatchObject({ status: 'success', code: 'linked' })
+  const session = String(linked.json.session)
+
+  // Linking again with the same owner and file is the same board, not another.
+  expect(link().json).toMatchObject({ code: 'linked', session })
+  expect(fs.statSync(binding).mode & 0o777).toBe(0o600)
+  const bound = (action: string, ...args: string[]) =>
+    cli(`whiteboard-${action}`, '--binding', binding, ...args)
+  return { session, bound }
+}
+
+// The scene file a snapshot made ready, filled in and published with `sender`'s credentials.
+function scene_publish(scene_path: string, title: string, sender: Host): CliResult {
+  const scene = JSON.parse(fs.readFileSync(scene_path, 'utf8')) as Record<string, unknown>
+  expect(scene).toMatchObject({ format: scene_format, base_revision: 0 })
+  scene.title = title
+  scene.agent = 'e2e-agent'
+  scene.elements = [
+    { type: 'geo', id: 'client', x: 0, y: 0, w: 260, h: 90, text: `${title} client`, font: 'sans' },
+    { type: 'geo', id: 'server', geo: 'ellipse', x: 400, y: 0, w: 180, h: 90, text: 'Server' },
+    { type: 'arrow', id: 'calls', from: 'client', to: 'server', text: 'calls' },
+  ]
+  fs.writeFileSync(scene_path, JSON.stringify(scene))
+  return sender.bound('publish', '--file', scene_path)
 }
 
 test.beforeAll(async () => {
@@ -152,7 +195,7 @@ test.afterAll(async () => {
   }
 })
 
-test('boards: make, switch, present two at once, clean each, rename, restart', async ({
+test('boards: make, switch, present two at once, publish to each, rename, restart', async ({
   browser,
 }) => {
   const contexts = [
@@ -164,9 +207,12 @@ test('boards: make, switch, present two at once, clean each, rename, restart', a
     const ipad = await contexts[1]!.newPage()
     const [one, two] = await boards_make_and_switch(ipad)
     const stages = [await contexts[0]!.newPage(), await contexts[0]!.newPage()] as const
-    await boards_present_and_clean(stages, one, two)
-    await rename_beats_title(ipad, two)
-    await restart_and_default(ipad, stages, one, two)
+    await boards_present_and_fetch(stages, one, two)
+    const hosts = [host_link('sessions-payments'), host_link('sessions-mine')] as const
+    expect(new Set(['default', one, two, hosts[0].session, hosts[1].session]).size).toBe(5)
+    await linked_boards_publish(stages, hosts)
+    await rename_beats_title(ipad, hosts[1])
+    await restart_and_default(ipad, stages, [one, two], hosts)
   } finally {
     console.log(`contexts closed after ${await contexts_close(contexts)}ms`)
   }
@@ -217,8 +263,8 @@ async function boards_make_and_switch(ipad: Page): Promise<[string, string]> {
   return [one, two]
 }
 
-// Two Mac tabs present two boards at once; each is fetched and cleaned by its own id.
-async function boards_present_and_clean(
+// Two Mac tabs present two boards at once; each is fetched by its own id.
+async function boards_present_and_fetch(
   stages: readonly [Page, Page],
   one: string,
   two: string,
@@ -241,38 +287,77 @@ async function boards_present_and_clean(
   expect(fetched_two.json).toMatchObject({ session: two, document_hash: hash_two })
   expect(fetched_one.json.path).not.toBe(fetched_two.json.path)
 
-  // The first cleanup of an unnamed board asks for a title and names the board with it.
-  const snapshot = cli('cleanup-snapshot', '--session', one, '--no-open')
-  expect(snapshot.json).toMatchObject({ session: one, title_wanted: true })
-  expect(String(snapshot.json.publish_command)).toContain(`--session ${one}`)
-  const hash = String(snapshot.json.snapshot)
+  // A board nobody linked has no way in for an agent's drawing: the commands that drew on
+  // one are gone, and the canvas commands ask for a binding.
+  expect(cli('cleanup-snapshot', '--session', one).json).toMatchObject({ code: 'usage_error' })
+  expect(cli('whiteboard-snapshot', '--session', one).json).toMatchObject({ status: 'failure' })
+  expect(await status(one)).toMatchObject({ cleaned_revision: 0 })
+}
 
-  // Replayed against the other board, the same proposal is refused there.
-  const replay = proposal_publish(hash, one, 'Payments', '--session', two)
+// Two linked boards, each presented in its own Mac tab. A scene is published to the board
+// its snapshot came from, and is refused when sent with the other board's credentials.
+async function linked_boards_publish(
+  stages: readonly [Page, Page],
+  hosts: readonly [Host, Host],
+): Promise<void> {
+  const origin = `http://127.0.0.1:${port}`
+  const [first, second] = hosts
+  await stages[0].goto(`${origin}/s/${first.session}`)
+  await stages[1].goto(`${origin}/s/${second.session}`)
+  await expect.poll(async () => (await status(first.session)).stage_connected).toBe(true)
+  await expect.poll(async () => (await status(second.session)).stage_connected).toBe(true)
+
+  // The first snapshot of an unnamed board asks for a title. Nothing is drawn on it yet, and
+  // an empty sketch still has a snapshot and a scene file ready to fill in.
+  const snapshot = first.bound('snapshot', '--no-open')
+  expect(snapshot.json).toMatchObject({
+    code: 'snapshot_saved',
+    session: first.session,
+    title_wanted: true,
+    base_revision: 0,
+    shapes_count: 0,
+  })
+  expect(String(snapshot.json.publish_command)).toContain('whiteboard-publish --binding')
+  const scene_path = String(snapshot.json.scene_path)
+
+  // Sent with the other board's credentials, the same scene is refused there.
+  const replay = scene_publish(scene_path, 'Payments', second)
   expect(replay.exit_code).toBe(5)
   expect(replay.json).toMatchObject({ code: 'session_mismatch' })
-  const published = proposal_publish(hash, one, 'Payments')
-  expect(published.json).toMatchObject({ session: one, revision: 1, title_applied: true })
+  expect(await status(second.session)).toMatchObject({ cleaned_revision: 0 })
+  const published = scene_publish(scene_path, 'Payments', first)
+  expect(published.json).toMatchObject({
+    session: first.session,
+    revision: 1,
+    title_applied: true,
+  })
 
   for (const [page, shown] of [
     [stages[0], 1],
     [stages[1], 0],
   ] as const) {
-    await page.getByRole('tab', { name: 'Cleaned' }).click()
+    await page.getByRole('tab', { name: 'Agent canvas' }).click()
     await expect(shape_text(page, 'Payments client')).toHaveCount(shown)
   }
 
-  await expect(stages[1].getByText('No cleaned diagram yet.', { exact: false })).toBeVisible()
+  const nothing = stages[1].getByText('Nothing on the agent canvas yet.', { exact: false })
+  await expect(nothing).toBeVisible()
   await expect(stages[0]).toHaveTitle('Payments · Board')
 }
 
 // The agent snapshots an unnamed board; the person names it before the agent publishes.
-async function rename_beats_title(ipad: Page, two: string): Promise<void> {
-  const snapshot = cli('cleanup-snapshot', '--session', two, '--no-open')
+async function rename_beats_title(ipad: Page, host: Host): Promise<void> {
+  const two = host.session
+  const snapshot = host.bound('snapshot', '--no-open')
   expect(snapshot.json).toMatchObject({ session: two, title_wanted: true })
 
   await rail_open(ipad)
   await expect(board_link(ipad, /Payments/)).toBeVisible()
+  await rail(ipad).locator(`a[href="/s/${two}/draw"]`).click()
+  await expect(ipad).toHaveURL(new RegExp(`/s/${two}/draw$`))
+  await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toBeVisible()
+  await expect(rail(ipad)).toBeHidden()
+  await rail_open(ipad)
   const active = rail(ipad).locator('li', { has: ipad.locator('[aria-current="page"]') })
   await active.getByRole('button', { name: /^Rename/ }).click()
   const field = rail(ipad).getByRole('textbox', { name: 'Board name' })
@@ -281,7 +366,7 @@ async function rename_beats_title(ipad: Page, two: string): Promise<void> {
   await expect(board_link(ipad, /Mine/)).toHaveAttribute('aria-current', 'page')
   await expect.poll(async () => (await status(two)).session_name).toBe('Mine')
 
-  const published = proposal_publish(String(snapshot.json.snapshot), two, 'Agent title')
+  const published = scene_publish(String(snapshot.json.scene_path), 'Agent title', host)
   expect(published.json).toMatchObject({ session: two, revision: 1, title_applied: false })
   expect(await status(two)).toMatchObject({ session_name: 'Mine', cleaned_revision: 1 })
   await rail(ipad).getByRole('button', { name: 'Close the list of boards' }).click()
@@ -292,43 +377,43 @@ async function rename_beats_title(ipad: Page, two: string): Promise<void> {
 async function restart_and_default(
   ipad: Page,
   stages: readonly [Page, Page],
-  one: string,
-  two: string,
+  drawn: readonly [string, string],
+  hosts: readonly [Host, Host],
 ): Promise<void> {
+  const [one, two] = drawn
+  const [first, second] = hosts
   await server_stop()
   await server_start()
   await ipad.reload()
   await stages[0].reload()
-  await expect(ipad).toHaveURL(new RegExp(`/s/${two}/draw$`))
-  await expect(ipad.getByRole('tab', { name: 'Sketch' })).toBeVisible()
-  expect(await status(two)).toMatchObject({ shapes_count: 2, session_name: 'Mine' })
-  expect(await status(one)).toMatchObject({ shapes_count: 1, session_name: 'Payments' })
+  await expect(ipad).toHaveURL(new RegExp(`/s/${second.session}/draw$`))
+  await expect(ipad.getByRole('tab', { name: 'Sketchboard' })).toBeVisible()
+  expect(await status(one)).toMatchObject({ shapes_count: 1, cleaned_revision: 0 })
+  expect(await status(two)).toMatchObject({ shapes_count: 2, cleaned_revision: 0 })
+  expect(await status(first.session)).toMatchObject({
+    session_name: 'Payments',
+    cleaned_revision: 1,
+  })
+  expect(await status(second.session)).toMatchObject({ session_name: 'Mine', cleaned_revision: 1 })
   await expect(shape_text(stages[0], 'Payments client')).toBeVisible()
 
-  // The default board: its own ink, its old addresses, and a cleanup written before sessions.
+  // Each binding still speaks for its own board, and for no other.
+  for (const host of hosts) {
+    const polled = host.bound('poll', '--protocol', protocol)
+    expect(polled.json).toMatchObject({ code: 'polled', session: host.session, agent_revision: 1 })
+  }
+
+  // The default board: its own ink and its old addresses. It was never linked, so it has no
+  // Agent canvas to publish to, and nothing published elsewhere reached it.
   await stages[1].goto(`http://127.0.0.1:${port}/`)
   await expect.poll(async () => (await status()).stage_connected).toBe(true)
-  expect(await status()).toMatchObject({ shapes_count: 1, session: 'default' })
+  expect(await status()).toMatchObject({ shapes_count: 1, session: 'default', cleaned_revision: 0 })
   await rail_open(ipad)
-  await board_link(ipad, /Untitled board/).click()
+  await rail(ipad).locator('a[href="/draw"]').click()
   await expect(ipad).toHaveURL(/\/draw$/)
   expect(new URL(ipad.url()).pathname).toBe('/draw')
   const fetched = cli('fetch', '--no-open')
   expect(fetched.json).toMatchObject({ code: 'image_saved', session: 'default' })
-  const snapshot = cli('cleanup-snapshot', '--no-open')
-  expect(snapshot.json).toMatchObject({ session: 'default', base_revision: 0 })
-  const legacy = path.join(out_directory, 'legacy.json')
-  fs.writeFileSync(
-    legacy,
-    JSON.stringify({
-      format: 'tldraw-sync.cleanup.v1',
-      snapshot: snapshot.json.snapshot,
-      base_revision: 0,
-      shapes: [{ kind: 'text', id: 'title', x: 0, y: 0, text: 'Default still works' }],
-    }),
-  )
-  expect(cli('cleanup-publish', '--file', legacy).json).toMatchObject({ revision: 1 })
   await ipad.getByRole('tab', { name: 'Cleaned' }).click()
-  await expect(shape_text(ipad, 'Default still works')).toBeVisible()
-  expect(await status(one)).toMatchObject({ cleaned_revision: 1 })
+  await expect(ipad.getByText('No cleaned diagram on this board.')).toBeVisible()
 }

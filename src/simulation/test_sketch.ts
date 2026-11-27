@@ -1,5 +1,5 @@
-// Fixtures for cleanup tests: a disk holding a saved sketch of a few squares, as an older
-// version of the board would have left it, and a valid cleanup proposal for any snapshot.
+// Fixtures for canvas tests: a disk holding a saved sketch of a few squares, as an older
+// version of the board would have left it, and a valid scene proposal for any snapshot.
 
 import {
   createTLSchema,
@@ -11,7 +11,8 @@ import {
 } from '@tldraw/tlschema'
 import { envelope_encode } from '../server/storage'
 import { assert } from '../shared/assert'
-import { proposal_format } from '../shared/cleanup_types'
+import { board_default_id } from '../shared/board_session'
+import { scene_format } from '../shared/scene_types'
 import { SimulatedDisk } from './simulated_disk'
 
 const schema = createTLSchema()
@@ -75,19 +76,25 @@ export function sketch_disk(shapes: readonly TLRecord[]): SimulatedDisk {
   return disk
 }
 
-// A proposal with one of each kind: two boxes joined by a labelled arrow, and a title.
-export function proposal_example(snapshot: string, base_revision: number, title = 'Checkout') {
+// A scene with a title and two shapes joined by a labelled, bound arrow, for one board.
+export function scene_example(
+  snapshot: string,
+  base_revision: number,
+  title = 'Checkout',
+  session: string = board_default_id,
+) {
   return {
-    format: proposal_format,
+    format: scene_format,
+    session,
     snapshot,
     base_revision,
     agent: 'test-agent',
     summary: 'Two services and a title.',
-    shapes: [
-      { kind: 'text', id: 'title', x: 0, y: -80, text: title, size: 'l' },
-      { kind: 'rectangle', id: 'api', x: 0, y: 0, w: 160, h: 80, text: 'API' },
-      { kind: 'ellipse', id: 'db', x: 300, y: 0, w: 120, h: 80, text: 'DB', color: 'blue' },
-      { kind: 'arrow', id: 'writes', from: 'api', to: 'db', text: 'writes' },
-    ],
+    elements: [
+      { type: 'text', id: 'title', x: 0, y: -80, text: title, size: 'l' },
+      { type: 'geo', id: 'api', x: 0, y: 0, w: 160, h: 80, text: 'API' },
+      { type: 'geo', id: 'db', geo: 'ellipse', x: 300, y: 0, w: 120, h: 80, text: 'DB' },
+      { type: 'arrow', id: 'writes', from: 'api', to: 'db', text: 'writes' },
+    ] as Array<Record<string, unknown>>,
   }
 }

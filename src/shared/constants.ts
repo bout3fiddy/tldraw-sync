@@ -14,11 +14,14 @@ export const path_drawing_json = '/api/drawing.json'
 export const path_pairing = '/api/pairing'
 export const path_status = '/api/status'
 
-// The cleanup flow: a coherent sketch snapshot for an external agent, and the cleaned canvas.
-export const path_sketch_json = '/api/sketch.json'
+// The Agent canvas as pages read it, and the restore of an earlier revision.
 export const path_cleaned_json = '/api/cleaned.json'
 export const path_cleaned_status = '/api/cleaned/status'
 export const path_cleaned_restore = '/api/cleaned/restore'
+
+// A draft waiting to be rendered, and its rendering. Only the Mac's own stage uses these.
+export const path_preview_json = '/api/preview.json'
+export const path_preview_png = '/api/preview.png'
 
 // Board sessions: the list, a new one, and a rename. Every board route takes `?session=<id>`;
 // without it, a route serves the default board, which is the board from before sessions.
@@ -109,8 +112,8 @@ export const poll_interval_ms = 100
 // A fetch asks for the image at most this many times; the server waits on each request.
 export const fetch_attempts_count_max = 4
 
-// Cleanup proposals come from an external agent and are untrusted. The bounds keep one
-// proposal, its derived tldraw records, and the retained history small enough to validate and
+// Scene proposals come from an external agent and are untrusted. The bounds keep one
+// proposal, its native tldraw records, and the retained history small enough to validate and
 // write synchronously.
 export const proposal_size_bytes_max = 1024 * 1024
 export const proposal_shapes_count_max = 800
@@ -119,29 +122,28 @@ export const proposal_summary_length_max = 280
 export const proposal_coordinate_units_max = 1_000_000
 export const proposal_extent_units_max = 100_000
 
-// Semantic diagrams: what an agent says the sketch means, before the command line lays it out.
-// The bounds keep one layout well under a second, and keep the diagram together with its composed
-// shapes inside one proposal. Groups nest at most `diagram_depth_max` deep.
-export const diagram_nodes_count_max = 160
-export const diagram_edges_count_max = 320
-export const diagram_depth_max = 8
-export const diagram_label_length_max = 200
+// One path has at most this many points, and groups nest at most this deep.
+export const scene_path_points_count_max = 400
+export const scene_depth_max = 8
 
-// The largest coordinate or size an item's place in the sketch may have, in either unit.
-export const diagram_at_units_max = 10_000_000
+// Sketch strokes an agent may name, across the whole scene.
+export const scene_stroke_ids_count_max = 2000
 
-// Source stroke ids an agent may attach to its nodes and edges, across the whole diagram.
-export const diagram_stroke_ids_count_max = 2000
-
-// Drawings: parts of the sketch a cleanup keeps as the person's own pen strokes. A publish names
-// the strokes; the board copies them from the sketch itself. One canvas keeps at most this many
-// pen samples across its drawings, about 2 MB of saved strokes a revision, so the retained
-// history, nine revisions at most, still saves in one quick write.
+// Pen samples one canvas keeps, across the strokes copied from the sketch and the agent's own:
+// about 2 MB of saved strokes a revision, so the retained history, nine revisions at most,
+// still saves in one quick write.
 export const ink_points_count_max = 64_000
 
-// The sketch records a snapshot saves beside a diagram, which the command line reads back to
-// size the diagram's drawings. Larger than any sketch the board syncs in one message.
-export const sketch_file_size_bytes_max = 64 * 1024 * 1024
+// The native records of one canvas: a shape for each element, two bindings for each arrow and
+// a shape for each copied stroke.
+export const canvas_records_count_max =
+  proposal_shapes_count_max * 3 + scene_stroke_ids_count_max
+
+// One draft at a time waits for the stage to render it. The stage asks this often, and a
+// preview request waits this long for the image before it says the stage is slow.
+export const preview_poll_interval_ms = 500
+export const preview_wait_ms_max = 4000
+export const preview_attempts_count_max = 5
 
 // Stroke summaries in a cleanup snapshot: ids and bounds, not every pen sample.
 export const stroke_summaries_count_max = 2000
@@ -155,7 +157,7 @@ export const restore_request_size_bytes_max = 1024
 // How often a page asks whether the cleaned diagram changed or went stale.
 export const cleaned_poll_interval_ms = 1500
 
-// A cleanup snapshot retries when the sketch changes between its image and its records.
+// A snapshot retries when the sketch changes between its image and its records.
 export const snapshot_attempts_count_max = 4
 
 export const document_hash_length = 16
@@ -166,14 +168,11 @@ assert(render_delay_ms < fetch_wait_ms_max, 'render_delay_ms < fetch_wait_ms_max
 assert(poll_interval_ms < status_timeout_ms, 'poll_interval_ms < status_timeout_ms')
 assert(image_size_bytes_max <= 64 * 1024 * 1024, 'image fits comfortably in memory')
 assert(proposal_size_bytes_max < image_size_bytes_max, 'a proposal fits the request limit')
-assert(
-  diagram_nodes_count_max + diagram_edges_count_max <= proposal_shapes_count_max,
-  'a composed diagram fits a proposal',
-)
-assert(diagram_label_length_max <= proposal_text_length_max, 'a diagram label fits a shape')
-assert(diagram_depth_max < diagram_nodes_count_max, 'nesting is bounded by the nodes')
-assert(ink_points_count_max > 0, 'a drawing keeps some pen samples')
-assert(sketch_file_size_bytes_max > sync_message_size_bytes_max, 'a synced sketch can be read')
+assert(scene_depth_max < proposal_shapes_count_max, 'nesting is bounded by the elements')
+assert(scene_path_points_count_max >= 2, 'a path joins at least two points')
+assert(ink_points_count_max > 0, 'a canvas keeps some pen samples')
+assert(canvas_records_count_max <= 8192, 'one canvas stays quick to validate and save')
+assert(preview_poll_interval_ms < preview_wait_ms_max, 'the stage asks while a preview waits')
 assert(cleaned_poll_interval_ms >= poll_interval_ms, 'pages poll no faster than the command')
 assert(board_title_length_max <= board_name_length_max, 'a title fits a name')
 assert(boards_open_count_max <= board_sessions_count_max, 'open boards are listed boards')

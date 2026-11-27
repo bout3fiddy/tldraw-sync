@@ -7,7 +7,6 @@ import { ArrowUp } from '@phosphor-icons/react/dist/csr/ArrowUp'
 import { ArrowUUpLeft } from '@phosphor-icons/react/dist/csr/ArrowUUpLeft'
 import { ArrowUUpRight } from '@phosphor-icons/react/dist/csr/ArrowUUpRight'
 import { Bell } from '@phosphor-icons/react/dist/csr/Bell'
-import { Broom } from '@phosphor-icons/react/dist/csr/Broom'
 import { ChatCircle } from '@phosphor-icons/react/dist/csr/ChatCircle'
 import { Cursor } from '@phosphor-icons/react/dist/csr/Cursor'
 import { Eraser } from '@phosphor-icons/react/dist/csr/Eraser'
@@ -42,7 +41,6 @@ export const icon_chat = glyph(ChatCircle)
 export const icon_bell = glyph(Bell)
 export const icon_pair = glyph(QrCode)
 
-// The two glyphs on the note's paper keep one small size whatever the note grows to. The arrow
+// The glyph on the note's paper keeps one small size whatever the note grows to. The arrow
 // is set on solid ink, where a light stroke would thin out, so it alone is drawn bold.
-export const icon_interpret = glyph(Broom, 20)
 export const icon_send = <ArrowUp size={18} weight="bold" aria-hidden="true" focusable="false" />

@@ -149,6 +149,16 @@ button {
   border-left: 1px solid var(--ink);
 }
 
+/* The stage's workbench for an agent's draft: laid out at full size, like the hidden sketch,
+   so tldraw can draw it, and never seen or pressed. */
+
+.bench {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* A tall screen, such as an iPad held upright, stacks the two views instead. */
 @media (max-aspect-ratio: 1/1) {
   .views[data-view='side'] {
@@ -833,7 +843,7 @@ button {
 }
 
 /* The sheet is drawn like every instrument on the board: the white of a clean sheet with an
-   ink hairline, square-cut, and no shadow. Its two controls keep their size and stay on its
+   ink hairline, square-cut, and no shadow. Its one control keeps its size and stays on its
    bottom line while the note grows, from one line to five. */
 .composer {
   display: flex;
@@ -948,21 +958,6 @@ button {
   width: 32px;
   height: 32px;
   border-radius: 0;
-}
-
-/* Interpret is a switch for the next send: off, a quiet glyph; on, solid ink, like every
-   chosen thing on the board. */
-.composer__interpret {
-  color: var(--lead);
-}
-
-.composer__interpret[aria-checked='true'] .composer__plate {
-  background: var(--ink);
-  color: var(--vellum);
-}
-
-.composer__interpret:disabled[aria-checked='false'] {
-  color: var(--ink-quiet);
 }
 
 /* Send is always a plate of ink: an action, not a state. */
@@ -1429,7 +1424,6 @@ button {
   .strip__ink:hover,
   .dock__button:not([aria-expanded='true']):hover,
   .pair__button:not([aria-expanded='true']):hover,
-  .composer__interpret:not([aria-checked='true'], :disabled):hover .composer__plate,
   .rail__icon:not([aria-pressed='true']):hover,
   .rail__rename:hover,
   .rail__item:not([data-active='true']):hover {
@@ -1484,7 +1478,6 @@ button {
   .strip__button[aria-pressed='true'],
   .dock__button[aria-expanded='true'],
   .pair__button[aria-expanded='true'],
-  .composer__interpret[aria-checked='true'] .composer__plate,
   .rail__item[data-active='true'] {
     outline: 2px solid CanvasText;
     outline-offset: -2px;

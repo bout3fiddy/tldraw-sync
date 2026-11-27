@@ -11,7 +11,6 @@
         "@tldraw/sync": "4.2.3",
         "@tldraw/sync-core": "4.2.3",
         "@tldraw/tlschema": "4.2.3",
-        "elkjs": "0.12.1",
         "qrcode-generator": "^1.4.4",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
@@ -449,8 +448,6 @@
     "detect-node-es": ["detect-node-es@1.1.0", "", {}, "sha512-ypdmJU/TbBby2Dxibuv7ZLW3Bs1QEmM7nHjEANfohJLvE0XVujisn1qPJcZxg+qDucsr+bP6fLD1rPS3AhJ7EQ=="],
 
     "electron-to-chromium": ["electron-to-chromium@1.5.493", "", {}, "sha512-/Wto2sKd0EpepzMqwSP2il2TNc+rnBDF6k1poCvhRKpaSSD4sLGRBE+FydqHs2QwcW9cXKLVDqnauzJy1oByYw=="],
-
-    "elkjs": ["elkjs@0.12.1", "", {}, "sha512-IhMYKHE4S2vtx0QrhBP3lYOIKDeIiJXBrdq9MGYkuB8ZHqhrBnHNfSUndjXFewrX1CPK8chwq+2NA0K0hliYuw=="],
 
     "entities": ["entities@8.1.0", "", {}, "sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA=="],
 

@@ -1,0 +1,137 @@
+[
+  {
+    "type": "text",
+    "id": "title",
+    "x": 0,
+    "y": -130,
+    "text": "Night city",
+    "size": "l",
+    "font": "serif"
+  },
+  {
+    "type": "geo",
+    "id": "tower",
+    "x": 0,
+    "y": 0,
+    "w": 120,
+    "h": 260,
+    "text": "Tower",
+    "color": "blue",
+    "fill": "semi",
+    "dash": "solid",
+    "font": "sans"
+  },
+  {
+    "type": "geo",
+    "id": "hall",
+    "x": 220,
+    "y": 120,
+    "w": 200,
+    "h": 140,
+    "text": "Hall",
+    "color": "orange",
+    "fill": "pattern",
+    "font": "sans"
+  },
+  {
+    "type": "geo",
+    "id": "moon",
+    "geo": "ellipse",
+    "x": 460,
+    "y": -110,
+    "w": 90,
+    "h": 90,
+    "color": "yellow",
+    "fill": "solid"
+  },
+  {
+    "type": "geo",
+    "id": "star",
+    "geo": "star",
+    "x": 330,
+    "y": -100,
+    "w": 50,
+    "h": 50,
+    "color": "violet",
+    "rotation": 0.3,
+    "opacity": 0.6
+  },
+  {
+    "type": "geo",
+    "id": "cloud",
+    "geo": "cloud",
+    "x": 170,
+    "y": -60,
+    "w": 130,
+    "h": 70,
+    "color": "grey",
+    "parent": "sky"
+  },
+  {
+    "type": "stroke",
+    "id": "smoke",
+    "points": [
+      [60, -10],
+      [70, -30],
+      [55, -50],
+      [72, -70]
+    ],
+    "color": "grey",
+    "parent": "sky"
+  },
+  { "type": "group", "id": "sky" },
+  {
+    "type": "path",
+    "id": "ground",
+    "points": [
+      [-60, 260],
+      [580, 260]
+    ],
+    "size": "l"
+  },
+  {
+    "type": "path",
+    "id": "river",
+    "points": [
+      [-60, 330],
+      [120, 310],
+      [320, 350],
+      [580, 320]
+    ],
+    "curved": true,
+    "color": "light-blue",
+    "dash": "dashed"
+  },
+  {
+    "type": "stroke",
+    "id": "boat",
+    "points": [
+      [400, 335],
+      [420, 352],
+      [470, 352],
+      [490, 335]
+    ],
+    "closed": true,
+    "color": "red",
+    "fill": "solid"
+  },
+  {
+    "type": "arrow",
+    "id": "to-hall",
+    "from": "tower",
+    "to": "hall",
+    "text": "bridge",
+    "route": "elbow",
+    "font": "sans"
+  },
+  {
+    "type": "arrow",
+    "id": "to-moon",
+    "from": [540, 200],
+    "to": "moon",
+    "to_anchor": [0.5, 1],
+    "bend": 40,
+    "color": "violet",
+    "arrowhead_start": "dot"
+  }
+]

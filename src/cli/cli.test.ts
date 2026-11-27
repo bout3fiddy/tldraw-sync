@@ -5,40 +5,52 @@ import { afterEach, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import diagram_fixture from '../../tests/fixtures/nested_groups.diagram.json'
-import { diagram_format } from '../shared/cleanup_types'
 import { proposal_size_bytes_max } from '../shared/constants'
-import { test_pen_draw } from '../simulation/test_pen'
-import { proposal_example, sketch_stroke } from '../simulation/test_sketch'
+import { scene_format } from '../shared/scene_types'
+import { whiteboard_protocol } from '../shared/whiteboard'
+import { test_pen_draw, test_stage_open } from '../simulation/test_pen'
+import { sketch_stroke } from '../simulation/test_sketch'
 import { port_any, port_free } from './board_process'
 import { port_pick } from './commands'
 
 const entry = path.join(import.meta.dir, 'main.ts')
 const directories: string[] = []
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7])
+const protocol = String(whiteboard_protocol)
 
-type Run = { exit_code: number; json: Record<string, unknown>; stdout: string }
+type Json = Record<string, any>
+type Run = { exit_code: number; json: Json; stdout: string }
 
+// The data directory comes first on the PATH, so a test can put a harmless `open` there:
+// no command here ever opens a real browser.
 async function cli(directory: string, ...args: string[]): Promise<Run> {
-  return cli_input(directory, null, ...args)
-}
-
-async function cli_input(directory: string, input: string | null, ...args: string[]) {
   const child = Bun.spawn([process.execPath, entry, ...args], {
-    env: { ...process.env, BOARD_DATA_DIR: directory },
-    stdin: input === null ? 'ignore' : new Blob([input]),
+    env: {
+      ...process.env,
+      BOARD_DATA_DIR: directory,
+      TMPDIR: directory,
+      PATH: `${directory}:${process.env.PATH}`,
+    },
+    stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
   })
   const stdout = await new Response(child.stdout).text()
   const exit_code = await child.exited
-  const json = args.includes('--json') ? JSON.parse(stdout) as Record<string, unknown> : {}
+  const json = args.includes('--json') ? (JSON.parse(stdout) as Json) : {}
   return { exit_code, json, stdout }
 }
 
 function directory_create(): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'board-cli-'))
+  const made = fs.mkdtempSync(path.join(os.tmpdir(), 'board-cli-'))
+  const directory = fs.realpathSync(made)
   directories.push(directory)
+
+  // Stands in for the system's way of opening a browser, and opens nothing.
+  for (const opener of ['open', 'xdg-open']) {
+    fs.writeFileSync(path.join(directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+  }
+
   return directory
 }
 
@@ -55,9 +67,24 @@ test('help is layered: the top level orients an agent, each command has detail',
   expect(top.exit_code).toBe(0)
   expect(top.stdout).toContain('tldraw-sync fetch --json')
   expect(top.stdout).toContain('next_action')
+  expect(top.stdout).toContain('whiteboard-preview')
   const fetch_help = await cli(directory, 'fetch', '--help')
   expect(fetch_help.stdout).toContain('document_hash')
   expect((await cli(directory, 'help', 'start')).stdout).toContain('--port <n>')
+
+  // The scene format is documented where an agent is sent for it, and nowhere is the retired
+  // way of drawing offered.
+  const snapshot_help = (await cli(directory, 'whiteboard-snapshot', '--help')).stdout
+  expect(snapshot_help).toContain(`"format": "${scene_format}"`)
+  expect(snapshot_help).toContain('"basis": "sketch" | "canvas"')
+  expect((await cli(directory, 'whiteboard-link', '--help')).stdout).toContain(
+    `--protocol ${protocol}`,
+  )
+
+  for (const word of ['cleanup-snapshot', 'cleanup-compose', 'cleanup-publish', 'Interpret']) {
+    expect(top.stdout).not.toContain(word)
+    expect(snapshot_help).not.toContain(word)
+  }
 })
 
 test('usage errors are failures with a way out, in JSON too', async () => {
@@ -71,6 +98,13 @@ test('usage errors are failures with a way out, in JSON too', async () => {
   expect(port.json).toMatchObject({ code: 'usage_error', exit_code: 1 })
   const option = await cli(directory, 'fetch', '--colour', '--json')
   expect(option.json).toMatchObject({ code: 'usage_error' })
+
+  // The retired authoring commands are not commands any more.
+  for (const retired of ['cleanup-snapshot', 'cleanup-compose', 'cleanup-publish']) {
+    const answer = await cli(directory, retired, '--json')
+    expect(answer.json).toMatchObject({ status: 'failure', code: 'usage_error' })
+    expect(String(answer.json.message)).toContain('Unknown command')
+  }
 })
 
 test('start, fetch and stop, as an agent runs them', async () => {
@@ -93,6 +127,7 @@ test('start, fetch and stop, as an agent runs them', async () => {
 
   const drawn = async () => (await status_json(directory)).shapes_count === 1
   await test_pen_draw(port, 'shape:one', drawn)
+
   // Nothing has rendered the new shape, and the Mac page may not be opened: say so.
   const closed = await cli(directory, 'fetch', '--no-open', '--json')
   expect(closed.exit_code).toBe(4)
@@ -101,7 +136,8 @@ test('start, fetch and stop, as an agent runs them', async () => {
   // Stand in for the Mac page: upload an image of the current document.
   const { document_hash } = await status_json(directory)
   await fetch(`http://127.0.0.1:${port}/api/drawing.png?document_hash=${document_hash}`, {
-    method: 'PUT', body: png as Uint8Array<ArrayBuffer>,
+    method: 'PUT',
+    body: png as Uint8Array<ArrayBuffer>,
   })
   const out = path.join(directory, 'out', 'drawing.png')
   const fetched = await cli(directory, 'fetch', '--no-open', '--json', '--out', out)
@@ -132,6 +168,7 @@ test('a board that crashed leaves a stale file, and the next start takes over', 
 
 test('a taken port is never used: a requested one fails, the default falls back', async () => {
   const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
+
   try {
     expect(await port_free(listener.port)).toBe(false)
     const picked = await port_pick(listener.port)
@@ -140,10 +177,11 @@ test('a taken port is never used: a requested one fails, the default falls back'
   } finally {
     listener.stop(true)
   }
+
   expect(await port_free(listener.port)).toBe(true)
 })
 
-// A PNG header that names its size, which is all the cleanup snapshot reads from it.
+// A PNG header that names its size, which is all a snapshot reads from it.
 function png_sized(width_px: number, height_px: number): Uint8Array {
   const bytes = new Uint8Array(33)
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
@@ -153,332 +191,358 @@ function png_sized(width_px: number, height_px: number): Uint8Array {
   return bytes
 }
 
+async function status_json(directory: string, session = 'default'): Promise<Json> {
+  return (await cli(directory, 'status', '--session', session, '--json')).json
+}
+
 // Stands in for the Mac page: renders the current document, with the bounds it covered.
-async function stage_upload(directory: string, port: number): Promise<string> {
-  const { document_hash } = await status_json(directory)
-  const query = `document_hash=${document_hash}&bounds=0,0,10,10`
+async function stage_upload(directory: string, port: number, session: string): Promise<string> {
+  const { document_hash } = await status_json(directory, session)
+  const query = `document_hash=${document_hash}&bounds=0,0,10,10&session=${session}`
   const response = await fetch(`http://127.0.0.1:${port}/api/drawing.png?${query}`, {
-    method: 'PUT', body: png_sized(148, 74) as Uint8Array<ArrayBuffer>,
+    method: 'PUT',
+    body: png_sized(148, 74) as Uint8Array<ArrayBuffer>,
   })
   expect(response.status).toBe(204)
   return String(document_hash)
 }
 
-test('cleanup as an agent runs it: snapshot, publish, conflicts, restore, restart', async () => {
+// Stands in for the Mac page once more: waits for the draft the board wants drawn, and sends a
+// picture for it. Bounded, like every wait here.
+async function stage_draw(port: number, session: string, picture: Uint8Array): Promise<Json> {
+  const base = `http://127.0.0.1:${port}/api/preview`
+
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const job = (await (await fetch(`${base}.json?session=${session}`)).json()) as Json
+
+    if (job.id !== null) {
+      const put = await fetch(`${base}.png?session=${session}&id=${job.id}`, {
+        method: 'PUT',
+        body: picture as Uint8Array<ArrayBuffer>,
+      })
+      expect(put.status).toBe(204)
+      return job
+    }
+
+    await Bun.sleep(25)
+  }
+
+  throw new Error('the board never asked for a draft to be drawn')
+}
+
+type Host = {
+  directory: string
+  port: number
+  session: string
+  binding: string
+  bound: (action: string, ...args: string[]) => Promise<Run>
+}
+
+// A board started and linked as a pih host links it, with the pen's first stroke on it.
+async function host_link(): Promise<Host> {
   const directory = directory_create()
   const port = port_any()
   await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
-  const shapes_count = (count: number) => async () => {
-    return (await status_json(directory)).shapes_count === count
-  }
-  await test_pen_draw(port, 'shape:one', shapes_count(1))
-  const hash_one = await stage_upload(directory, port)
-  const out = path.join(directory, 'cleanup')
-  const proposal_path = await cleanup_first(directory, out, hash_one)
-
-  // The sketch moves on: the old snapshot can no longer publish, and the cleanup is stale.
-  await test_pen_draw(port, 'shape:two', shapes_count(2))
-  fs.writeFileSync(proposal_path, JSON.stringify(proposal_example(hash_one, 1)))
-  const changed = await cli(directory, 'cleanup-publish', '--file', proposal_path, '--json')
-  expect(changed.exit_code).toBe(5)
-  expect(changed.json).toMatchObject({ code: 'sketch_changed' })
-  expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1, cleaned_stale: true })
-  const nothing = await cli(directory, 'cleanup-restore', '--base-revision', '1', '--json')
-  expect(nothing.json).toMatchObject({ code: 'nothing_to_restore' })
-
-  const hash_two = await stage_upload(directory, port)
-  const fresh = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
-  expect(fresh.json).toMatchObject({ snapshot: hash_two, base_revision: 1, shapes_count: 2 })
-  fs.writeFileSync(proposal_path, JSON.stringify(proposal_example(hash_two, 1, 'Two')))
-  const second = await cli(directory, 'cleanup-publish', '--file', proposal_path, '--json')
-  expect(second.json).toMatchObject({ code: 'published', revision: 2 })
-
-  const stale_base = await cli(directory, 'cleanup-restore', '--base-revision', '1', '--json')
-  expect(stale_base.exit_code).toBe(5)
-  const restored = await cli(directory, 'cleanup-restore', '--base-revision', '2', '--json')
-  expect(restored.json).toMatchObject({ code: 'restored', revision: 3, restored_from: 1 })
-  const malformed = await cli(directory, 'cleanup-restore', '--base-revision', 'x', '--json')
-  expect(malformed.json).toMatchObject({ code: 'usage_error' })
-
-  // Both canvases outlive the process.
-  await cli(directory, 'stop', '--json')
-  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
-  expect(await status_json(directory)).toMatchObject({
-    shapes_count: 2, document_hash: hash_two, cleaned_revision: 3, cleaned_stale: true,
+  const binding = path.join(directory, 'private', 'binding.json')
+  const link = ['whiteboard-link', '--protocol', protocol, '--owner', 'cli-test', '--out', binding]
+  const linked = await cli(directory, ...link, '--json')
+  expect(linked.json).toMatchObject({
+    status: 'success',
+    code: 'linked',
+    protocol: whiteboard_protocol,
   })
-  const help = await cli(directory, 'cleanup-publish', '--help')
-  expect(help.stdout).toContain('tldraw-sync.cleanup.v1')
-  expect((await cli(directory, '--help')).stdout).toContain('cleanup-snapshot')
-}, 60_000)
+  const session = String(linked.json.session)
+  const bound = (action: string, ...args: string[]) =>
+    cli(directory, `whiteboard-${action}`, '--binding', binding, ...args, '--json')
 
-// The first snapshot and publish, a conflicting second publish, and refused proposals.
-// Returns where the agent writes its proposal.
-async function cleanup_first(directory: string, out: string, hash_one: string) {
-  const snapshot = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
+  // The link reveals where the credentials are, never what they are.
+  const { token } = JSON.parse(fs.readFileSync(binding, 'utf8')) as { token: string }
+  expect(linked.stdout).not.toContain(token)
+  expect(fs.statSync(binding).mode & 0o777).toBe(0o600)
+  return { directory, port, session, binding, bound }
+}
+
+const hill = sketch_stroke('shape:hill', 0, 10, [
+  [0, 0],
+  [5, -8],
+  [10, 0],
+])
+
+function scene_write(file: string, change: (scene: Json) => void): Json {
+  const scene = JSON.parse(fs.readFileSync(file, 'utf8')) as Json
+  change(scene)
+  fs.writeFileSync(file, JSON.stringify(scene))
+  return scene
+}
+
+const drawn_elements = [
+  { type: 'sketch', id: 'pic', strokes: ['shape:hill'] },
+  { type: 'text', id: 'cap', x: 0, y: 40, text: 'A hill' },
+  { type: 'geo', id: 'note', x: 120, y: 0, w: 140, h: 60, text: 'Why so steep?' },
+  { type: 'arrow', id: 'asks', from: 'note', to: 'cap' },
+]
+
+test('a linked board as a host drives it: snapshot, draft, publish, restore', async () => {
+  const host = await host_link()
+  const { directory, port, session, bound } = host
+  const drawn = async () => (await status_json(directory, session)).shapes_count === 1
+  await test_pen_draw(port, 'shape:hill', drawn, session, hill)
+  const hash = await stage_upload(directory, port, session)
+  const out = path.join(directory, 'snapshots')
+  const scene_path = await host_snapshot(host, out, hash)
+  scene_write(scene_path, (scene) => (scene.elements = drawn_elements))
+
+  // The draft is drawn by the stage and saved as a picture. Nothing is published by it.
+  const stage_close = await test_stage_open(port, session)
+  const picture = png_sized(400, 240)
+  const preview = bound('preview', '--file', scene_path, '--no-open')
+  const job = await stage_draw(port, session, picture)
+  const drafted = (await preview).json
+  expect(drafted).toMatchObject({
+    status: 'success',
+    code: 'preview_saved',
+    session,
+    published: false,
+    shapes_count: 4,
+    base_revision: 0,
+    snapshot: hash,
+    image: { width_px: 400, height_px: 240 },
+  })
+  expect([...fs.readFileSync(String(drafted.image_path))]).toEqual([...picture])
+  expect(job.records.map((record: Json) => record.id)).toContain('shape:scene-pic.0')
+  expect(await status_json(directory, session)).toMatchObject({ agent_revision: 0, linked: true })
+  stage_close()
+
+  // Publishing the same file saves the records the draft was drawn from.
+  const published = await bound('publish', '--file', scene_path)
+  expect(published.json).toMatchObject({
+    code: 'published',
+    session,
+    revision: 1,
+    shapes_count: 4,
+    title_applied: false,
+  })
+  expect(published.json.records_hash).toBe(drafted.records_hash)
+  const again = await bound('publish', '--file', scene_path)
+  expect(again.exit_code).toBe(5)
+  expect(again.json).toMatchObject({ code: 'revision_conflict', next_action: { action: 'run' } })
+  expect(String(again.json.next_action.command)).toContain('whiteboard-snapshot --binding')
+
+  await host_conflicts_and_refusals(host, scene_path, hash)
+  await host_restore_and_restart(host, out)
+}, 90_000)
+
+// The first snapshot of a linked board: what it saves, and what it tells the agent.
+async function host_snapshot(host: Host, out: string, hash: string): Promise<string> {
+  const snapshot = await host.bound('snapshot', '--no-open', '--out', out)
   expect(snapshot.exit_code).toBe(0)
   expect(snapshot.json).toMatchObject({
-    code: 'snapshot_saved', snapshot: hash_one, base_revision: 0, shapes_count: 1,
-    bounds: { x: 0, y: 0, w: 10, h: 10 }, image: { width_px: 148, height_px: 74 },
+    code: 'snapshot_saved',
+    session: host.session,
+    snapshot: hash,
+    base_revision: 0,
+    shapes_count: 1,
+    title_wanted: true,
+    agent_source_hash: null,
+    canvas: { revision: 0, editable: false, legacy: false },
+    bounds: { x: 0, y: 0, w: 10, h: 10 },
+    image: { width_px: 148, height_px: 74 },
     mapping: { x0: -32, y0: -32, ppu: 2 },
   })
-  expect(fs.readFileSync(String(snapshot.json.path)).byteLength).toBe(33)
-  const records = JSON.parse(fs.readFileSync(String(snapshot.json.records_path), 'utf8'))
-  expect(records).toMatchObject({ snapshot: hash_one, records: [{ id: 'shape:one' }] })
-  expect(String(snapshot.json.prompt)).toContain('Invent no items or connections.')
-  expect(String(snapshot.json.prompt)).toContain(`"snapshot": "${hash_one}"`)
+  const { scene_path, records_path, strokes_path, prompt, schema } = snapshot.json
+  expect(path.dirname(String(scene_path)).startsWith(out)).toBe(true)
+  expect(fs.readFileSync(String(snapshot.json.image_path)).byteLength).toBe(33)
+  const records = JSON.parse(fs.readFileSync(String(records_path), 'utf8'))
+  expect(records).toMatchObject({ snapshot: hash, records: [{ id: 'shape:hill' }] })
+  const strokes = JSON.parse(fs.readFileSync(String(strokes_path), 'utf8'))
+  expect(strokes.strokes).toMatchObject([{ id: 'shape:hill', type: 'draw' }])
 
-  const proposal_path = String(snapshot.json.proposal_path)
-  fs.writeFileSync(proposal_path, JSON.stringify(proposal_example(hash_one, 0)))
-  const published = await cli(directory, 'cleanup-publish', '--file', proposal_path, '--json')
-  expect(published.json).toMatchObject({ code: 'published', revision: 1, shapes_count: 4 })
-  const again = await cli(directory, 'cleanup-publish', '--file', proposal_path, '--json')
-  expect(again.exit_code).toBe(5)
-  expect(again.json).toMatchObject({ code: 'revision_conflict',
-    next_action: { action: 'run', command: 'tldraw-sync cleanup-snapshot --json' } })
-
-  const bad = JSON.stringify({ ...proposal_example(hash_one, 1), shapes: [{ kind: 'image' }] })
-  const invalid = await cli_input(directory, bad, 'cleanup-publish', '--file', '-', '--json')
-  expect(invalid.exit_code).toBe(1)
-  expect(invalid.json).toMatchObject({ code: 'invalid_proposal',
-    next_action: { action: 'fix_usage' } })
-  expect(String(invalid.json.message)).toContain('shapes[0].kind')
-  expect((await cli(directory, 'cleanup-publish', '--json')).json.code).toBe('usage_error')
-  expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1, cleaned_stale: false })
-  return proposal_path
+  // The scene file is a proposal ready to edit, already tied to this snapshot.
+  expect(JSON.parse(fs.readFileSync(String(scene_path), 'utf8'))).toEqual({
+    format: scene_format,
+    session: host.session,
+    snapshot: hash,
+    base_revision: 0,
+    basis: 'sketch',
+    elements: [],
+  })
+  expect(String(schema)).toContain(`"format": "${scene_format}"`)
+  expect(String(prompt)).toContain('answer in the')
+  expect(String(prompt)).toContain('Publish nothing')
+  expect(String(prompt)).toContain(String(snapshot.json.preview_command))
+  expect(String(snapshot.json.preview_command)).toContain('whiteboard-preview --binding')
+  expect(String(snapshot.json.publish_command)).toContain(`--file '${scene_path}'`)
+  expect(String(prompt)).toContain('no name yet')
+  expect(snapshot.stdout).not.toContain(JSON.parse(fs.readFileSync(host.binding, 'utf8')).token)
+  return String(scene_path)
 }
 
-// A write to a child that has already answered and exited may fail; that is the point here.
-function settle(value: unknown): void {
-  Promise.resolve(value).catch(() => undefined)
-}
-
-test('an oversized proposal on stdin is refused while its writer holds stdin open', async () => {
-  const directory = directory_create()
-  const child = Bun.spawn([process.execPath, entry, 'cleanup-publish', '--file', '-', '--json'], {
-    env: { ...process.env, BOARD_DATA_DIR: directory },
-    stdin: 'pipe',
-    stdout: 'pipe',
-    stderr: 'pipe',
+// The sketch moves on, scenes are refused for what is wrong with them, and nothing changes.
+async function host_conflicts_and_refusals(host: Host, scene_path: string, hash: string) {
+  const { directory, port, session, bound } = host
+  const square_drawn = async () => (await status_json(directory, session)).shapes_count === 2
+  await test_pen_draw(port, 'shape:two', square_drawn, session)
+  scene_write(scene_path, (scene) => (scene.base_revision = 1))
+  const changed = await bound('publish', '--file', scene_path)
+  expect(changed.exit_code).toBe(5)
+  expect(changed.json).toMatchObject({ code: 'sketch_changed' })
+  expect((await bound('preview', '--file', scene_path, '--no-open')).json).toMatchObject({
+    code: 'sketch_changed',
+    exit_code: 5,
   })
-  // Six times the limit, and no end of input: a reader that waits for the end never answers.
-  settle(child.stdin.write(new Uint8Array(6 * proposal_size_bytes_max).fill(0x20)))
-  settle(child.stdin.flush())
-
-  const wait_ms_max = 15_000
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const timed_out = new Promise<'timed_out'>((resolve) => {
-    timer = setTimeout(() => resolve('timed_out'), wait_ms_max)
+  expect(await status_json(directory, session)).toMatchObject({
+    agent_revision: 1,
+    cleaned_stale: true,
   })
-  const exit_code = await Promise.race([child.exited, timed_out])
-  if (timer !== null) clearTimeout(timer)
-  if (exit_code === 'timed_out') child.kill()
-  expect(exit_code).toBe(1)
 
-  const json = JSON.parse(await new Response(child.stdout).text()) as Record<string, unknown>
-  expect(json).toMatchObject({ status: 'failure', code: 'proposal_too_large', exit_code: 1,
-    next_action: { action: 'fix_usage', command: 'tldraw-sync cleanup-publish --help' } })
-  expect(String(json.message)).toContain(String(proposal_size_bytes_max))
-  try {
-    settle(child.stdin.end())
-  } catch {
-    // The pipe is already closed.
+  // A change to the canvas alone is accepted, and keeps the strokes copied from the sketch.
+  scene_write(scene_path, (scene) => {
+    scene.basis = 'canvas'
+    scene.elements[2].text = 'Still steep.'
+  })
+  const own = await bound('publish', '--file', scene_path)
+  expect(own.json).toMatchObject({ code: 'published', revision: 2, shapes_count: 4 })
+
+  const bad = path.join(directory, 'bad.json')
+  fs.writeFileSync(
+    bad,
+    JSON.stringify({
+      format: scene_format,
+      session,
+      snapshot: hash,
+      base_revision: 2,
+      elements: [{ type: 'image', id: 'a', src: 'http://example.com/a.png' }],
+    }),
+  )
+
+  for (const action of ['publish', 'preview']) {
+    const invalid = await bound(action, '--file', bad)
+    expect(invalid.exit_code).toBe(1)
+    expect(invalid.json).toMatchObject({
+      code: 'invalid_scene',
+      next_action: { action: 'fix_usage' },
+    })
+    expect(String(invalid.json.message)).toContain('elements[0].type')
   }
-}, 30_000)
 
-test('a proposal file that is too large, or not a regular file, is refused unread', async () => {
-  const directory = directory_create()
-  const over = path.join(directory, 'over.json')
-  fs.writeFileSync(over, new Uint8Array(proposal_size_bytes_max + 1).fill(0x20))
-  const too_large = await cli(directory, 'cleanup-publish', '--file', over, '--json')
-  expect(too_large.exit_code).toBe(1)
-  expect(too_large.json).toMatchObject({ code: 'proposal_too_large' })
+  fs.writeFileSync(bad, JSON.stringify({ format: scene_format, session: 'default', elements: [] }))
+  const elsewhere = await bound('publish', '--file', bad)
+  expect(elsewhere.json).toMatchObject({ code: 'session_mismatch', exit_code: 5 })
+  fs.writeFileSync(bad, new Uint8Array(proposal_size_bytes_max + 1).fill(0x20))
+  expect((await bound('publish', '--file', bad)).json).toMatchObject({ code: 'scene_too_large' })
+  expect((await bound('preview', '--file', directory)).json).toMatchObject({
+    code: 'scene_unreadable',
+  })
+  fs.writeFileSync(bad, '{"format":')
+  expect((await bound('publish', '--file', bad)).json).toMatchObject({ code: 'invalid_scene' })
+  expect((await bound('publish', '--file', '-')).json).toMatchObject({ code: 'usage_error' })
+  expect((await bound('publish')).json).toMatchObject({ code: 'usage_error' })
+  expect((await bound('snapshot', '--layer', 'ideas')).json).toMatchObject({ code: 'usage_error' })
+  expect(await status_json(directory, session)).toMatchObject({ agent_revision: 2 })
+}
 
-  const folder = await cli(directory, 'cleanup-publish', '--file', directory, '--json')
-  expect(folder.exit_code).toBe(1)
-  expect(folder.json).toMatchObject({ code: 'proposal_unreadable',
-    next_action: { action: 'fix_usage' } })
+// An earlier revision comes back as a new one, and everything outlives the process.
+async function host_restore_and_restart(host: Host, out: string) {
+  const { directory, port, session, bound } = host
+  const restore = (base: string) =>
+    cli(directory, 'cleanup-restore', '--session', session, '--base-revision', base, '--json')
+  const stale_base = await restore('1')
+  expect(stale_base.exit_code).toBe(5)
+  expect((await restore('2')).json).toMatchObject({
+    code: 'restored',
+    revision: 3,
+    restored_from: 1,
+  })
+  expect((await restore('x')).json).toMatchObject({ code: 'usage_error' })
+
+  await cli(directory, 'stop', '--json')
+  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
+  expect(await status_json(directory, session)).toMatchObject({
+    shapes_count: 2,
+    agent_revision: 3,
+    cleaned_revision: 3,
+    cleaned_stale: true,
+    linked: true,
+  })
+  expect((await bound('poll', '--protocol', protocol)).json).toMatchObject({
+    code: 'polled',
+    agent_revision: 3,
+    events: [],
+  })
+
+  // The next snapshot hands back the scene that is on the canvas, with what the board filled
+  // in: where the copied strokes are and which sketch they came from.
+  await stage_upload(directory, port, session)
+  const snapshot = await bound('snapshot', '--no-open', '--out', out)
+  expect(snapshot.json).toMatchObject({
+    base_revision: 3,
+    shapes_count: 2,
+    canvas: { revision: 3, editable: true, legacy: false },
+  })
+  const scene = JSON.parse(fs.readFileSync(String(snapshot.json.scene_path), 'utf8')) as Json
+  expect(scene.base_revision).toBe(3)
+  expect(scene.elements.map((element: Json) => element.id)).toEqual(['pic', 'cap', 'note', 'asks'])
+  expect(scene.elements[0]).toMatchObject({
+    type: 'sketch',
+    strokes: ['shape:hill'],
+    source_hash: snapshot.json.agent_source_hash,
+  })
+  expect(scene.elements[0]).not.toHaveProperty('ink')
+  expect(scene.elements[2].text).toBe('Why so steep?')
+}
+
+test('the canvas commands need a binding, and a wrong one reads and opens nothing', async () => {
+  const host = await host_link()
+  const { directory, session } = host
+  const scene = path.join(directory, 'scene.json')
+  fs.writeFileSync(scene, JSON.stringify({ format: scene_format, session, elements: [] }))
+
+  for (const command of ['whiteboard-snapshot', 'whiteboard-preview', 'whiteboard-publish']) {
+    const bare = await cli(directory, command, '--file', scene, '--json')
+    expect(bare.json).toMatchObject({ code: 'usage_error' })
+  }
+
+  // A binding for this board with someone else's token: refused before any file is read.
+  const forged = path.join(directory, 'private', 'forged.json')
+  const real = JSON.parse(fs.readFileSync(host.binding, 'utf8')) as Json
+  const stolen = { session: real.session, owner: real.owner, token: 'f'.repeat(64) }
+  fs.writeFileSync(forged, JSON.stringify(stolen), { mode: 0o600 })
   const missing = path.join(directory, 'missing.json')
-  const absent = await cli(directory, 'cleanup-publish', '--file', missing, '--json')
-  expect(absent.json).toMatchObject({ code: 'proposal_unreadable' })
 
-  // An endless device is refused at once rather than read until memory runs out.
-  if (fs.existsSync('/dev/zero')) {
-    const device = await cli(directory, 'cleanup-publish', '--file', '/dev/zero', '--json')
-    expect(device.json).toMatchObject({ code: 'proposal_unreadable', exit_code: 1 })
+  // A snapshot takes no scene. The other two name one that is not there: had it been read,
+  // the answer would say so.
+  for (const action of ['snapshot', 'preview', 'publish']) {
+    const scene_named = action === 'snapshot' ? [] : ['--file', missing]
+    const command = [`whiteboard-${action}`, '--binding', forged, ...scene_named, '--json']
+    const refused = await cli(directory, ...command)
+    expect(refused.json, action).toMatchObject({ status: 'failure', code: 'not_authorized' })
   }
 
-  // A proposal within the limit gets past the reader: with no board, that is the next failure.
-  const within = path.join(directory, 'within.json')
-  fs.writeFileSync(within, JSON.stringify(proposal_example('0123456789abcdef', 0)))
-  const read = await cli(directory, 'cleanup-publish', '--file', within, '--json')
-  expect(read.exit_code).toBe(2)
-  const piped = await cli_input(directory, '{}', 'cleanup-publish', '--file', '-', '--json')
-  expect(piped.exit_code).toBe(2)
-}, 30_000)
+  // The scene file is not a snapshot's to take, with or without a sound binding.
+  const scene_given = await host.bound('snapshot', '--file', scene)
+  expect(scene_given.json).toMatchObject({ code: 'usage_error', exit_code: 1 })
 
-async function status_json(directory: string): Promise<Record<string, unknown>> {
-  return (await cli(directory, 'status', '--json')).json
-}
-
-function diagram_write(file: string, snapshot: string, base_revision: number): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify({ ...diagram_fixture, snapshot, base_revision }))
-}
-
-test('cleanup-compose lays out a diagram the same way every time, without a board', async () => {
-  const directory = directory_create()
-  const input = path.join(directory, 'diagram.json')
-  diagram_write(input, '0123456789abcdef', 0)
-  const first_path = path.join(directory, 'first.json')
-  const first = await cli(
-    directory, 'cleanup-compose', '--file', input, '--out', first_path, '--json',
+  // A host that speaks an earlier protocol is told to upgrade, here and when it links.
+  const old = String(whiteboard_protocol - 1)
+  const polled = await host.bound('poll', '--protocol', old)
+  expect(polled.json).toMatchObject({ code: 'upgrade_required' })
+  const relink = await cli(
+    directory,
+    'whiteboard-link',
+    '--protocol',
+    old,
+    '--owner',
+    'cli-test',
+    '--out',
+    host.binding,
+    '--json',
   )
-  expect(first.exit_code).toBe(0)
-  expect(first.json).toMatchObject({
-    code: 'composed',
-    path: first_path,
-    snapshot: '0123456789abcdef',
-    shapes_count: 20,
-    route_conflicts_count: 0,
-  })
-  const second_path = path.join(directory, 'second.json')
-  await cli(directory, 'cleanup-compose', '--file', input, '--out', second_path, '--json')
-  expect(fs.readFileSync(second_path, 'utf8')).toBe(fs.readFileSync(first_path, 'utf8'))
-  const composed = JSON.parse(fs.readFileSync(first_path, 'utf8'))
-  expect(composed.format).toBe('tldraw-sync.cleanup.v2')
-  expect(composed.diagram.nodes.map((node: { id: string }) => node.id)).toEqual(
-    diagram_fixture.nodes.map((node) => node.id),
-  )
-
-  // Mistakes are named with their path, and nothing is written.
-  const broken = { ...diagram_fixture, snapshot: '0123456789abcdef', base_revision: 0 }
-  broken.nodes = [...broken.nodes, { id: 'lost', kind: 'box', label: 'Lost', parent: 'nowhere' }]
-  const invalid = await cli_input(
-    directory, JSON.stringify(broken), 'cleanup-compose', '--file', '-', '--json',
-  )
-  expect(invalid.exit_code).toBe(1)
-  expect(invalid.json).toMatchObject({
-    code: 'invalid_diagram', next_action: { action: 'fix_usage' },
-  })
-  expect(String(invalid.json.message)).toContain('diagram.nodes[10].parent')
-  const garbage = await cli_input(directory, '{', 'cleanup-compose', '--file', '-', '--json')
-  expect(garbage.json).toMatchObject({ code: 'invalid_diagram' })
-  expect((await cli(directory, 'cleanup-compose', '--json')).json.code).toBe('usage_error')
-  expect((await cli(directory, 'cleanup-compose', '--help')).stdout).toContain(diagram_format)
-}, 30_000)
-
-test('a semantic diagram publishes through the board and returns in a snapshot', async () => {
-  const directory = directory_create()
-  const port = port_any()
-  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
-  const shapes_count = (count: number) => async () => {
-    return (await status_json(directory)).shapes_count === count
-  }
-  await test_pen_draw(port, 'shape:one', shapes_count(1))
-  const hash_one = await stage_upload(directory, port)
-  const out = path.join(directory, 'cleanup')
-  const snapshot = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
-  expect(snapshot.json).toMatchObject({ previous_diagram_path: null, strokes_truncated: false })
-  const strokes = JSON.parse(fs.readFileSync(String(snapshot.json.strokes_path), 'utf8'))
-  expect(strokes).toMatchObject({ snapshot: hash_one, strokes: [{ id: 'shape:one' }] })
-  expect(Object.keys(strokes.strokes[0]).sort()).toEqual(
-    ['h', 'id', 'points_count', 'type', 'w', 'x', 'y'],
-  )
-
-  const diagram_path = String(snapshot.json.diagram_path)
-  diagram_write(diagram_path, hash_one, 0)
-  expect(String(snapshot.json.publish_command)).toContain(diagram_path)
-  const published = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
-  expect(published.json).toMatchObject({ code: 'published', revision: 1, shapes_count: 20 })
-
-  const again = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
-  const previous = JSON.parse(fs.readFileSync(String(again.json.previous_diagram_path), 'utf8'))
-  expect(previous.format).toBe(diagram_format)
-  expect(previous.nodes.map((node: { label: string }) => node.label)).toEqual(
-    diagram_fixture.nodes.map((node) => node.label),
-  )
-  expect(String(again.json.prompt)).toContain('previous interpretation')
-
-  // The sketch moves on: a diagram of the old sketch is refused after composing, and the
-  // published diagram stays.
-  await test_pen_draw(port, 'shape:two', shapes_count(2))
-  diagram_write(diagram_path, hash_one, 1)
-  const stale = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
-  expect(stale.exit_code).toBe(5)
-  expect(stale.json).toMatchObject({ code: 'sketch_changed' })
-  expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1 })
+  expect(relink.json).toMatchObject({ code: 'upgrade_required' })
+  expect(await status_json(directory, session)).toMatchObject({ agent_revision: 0 })
 }, 60_000)
 
-// The cleanup that escaped, through the real commands: a sketch with a picture in it. The
-// agent says which strokes are the picture; the tool sizes the drawing from the snapshot's own
-// sketch records, and the board publishes the person's strokes as they were drawn.
-test('a picture is kept as drawn: snapshot, compose and publish its own strokes', async () => {
-  const directory = directory_create()
-  const port = port_any()
-  await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
-  const shapes_count = (count: number) => async () => {
-    return (await status_json(directory)).shapes_count === count
-  }
-  const sun = sketch_stroke('shape:sun', 420, 20, [[0, 0], [30, 0], [30, 30]], 'red')
-  const hill = sketch_stroke('shape:hill', 300, 200, [[0, 0], [60, -40], [140, 0]])
-  await test_pen_draw(port, 'shape:sun', shapes_count(1), 'default', sun)
-  await test_pen_draw(port, 'shape:hill', shapes_count(2), 'default', hill)
-  const hash = await stage_upload(directory, port)
-  const out = path.join(directory, 'cleanup')
-  const snapshot = await cli(directory, 'cleanup-snapshot', '--no-open', '--json', '--out', out)
-  expect(String(snapshot.json.prompt)).toContain('A picture is kept exactly as it was drawn')
-  const sketch = JSON.parse(fs.readFileSync(String(snapshot.json.records_path), 'utf8'))
-  expect(sketch.canvas_previous).toEqual({ graph: '', drawings: [] })
-
-  const diagram_path = String(snapshot.json.diagram_path)
-  const scene = { id: 'scene', kind: 'drawing', at: [300, 20, 150, 185] }
-  const title = { id: 'title', kind: 'text', label: 'Hill', at: [300, 0, 60, 16] }
-  const diagram = (strokes: string[]) => JSON.stringify({
-    format: diagram_format, snapshot: hash, base_revision: 0, edges: [],
-    nodes: [title, { ...scene, strokes }],
-  })
-  fs.writeFileSync(diagram_path, diagram(['shape:sun', 'shape:hill']))
-  const composed_path = path.join(directory, 'composed.json')
-  const composed = await cli(
-    directory, 'cleanup-compose', '--file', diagram_path, '--out', composed_path, '--json',
-  )
-  expect(composed.json).toMatchObject({ code: 'composed', shapes_count: 2 })
-  const published = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
-  expect(published.json).toMatchObject({ code: 'published', revision: 1, shapes_count: 2 })
-
-  // What the pages are served: the two strokes themselves, as far apart as they were drawn.
-  const cleaned = await (await fetch(`http://127.0.0.1:${port}/api/cleaned.json`)).json() as {
-    records: Array<{ id: string; type: string; x: number; y: number; props: unknown }>
-  }
-  const kept = cleaned.records.filter((record) => record.type === 'draw')
-  const ids = ['shape:cleaned-scene.0', 'shape:cleaned-scene.1']
-  expect(kept.map((record) => record.id)).toEqual(ids)
-  const drawn = [sun, hill] as unknown as Array<{ props: unknown }>
-  expect(kept.map((record) => record.props)).toEqual(drawn.map((stroke) => stroke.props))
-  expect([kept[1]!.x - kept[0]!.x, kept[1]!.y - kept[0]!.y]).toEqual([300 - 420, 200 - 20])
-  expect(await status_json(directory)).toMatchObject({
-    shapes_count: 2, document_hash: hash, cleaned_revision: 1, cleaned_stale: false,
-  })
-
-  // A stroke the sketch does not have is named, and a diagram away from its snapshot's sketch
-  // records cannot size its drawing. Neither publishes anything.
-  fs.writeFileSync(diagram_path, diagram(['shape:sun', 'shape:moon']))
-  const missing = await cli(directory, 'cleanup-publish', '--file', diagram_path, '--json')
-  expect(missing.json).toMatchObject({ code: 'invalid_diagram', exit_code: 1 })
-  expect(String(missing.json.message)).toContain('diagram.nodes[1].strokes[1]')
-  const stray = path.join(directory, 'elsewhere', 'diagram.json')
-  fs.mkdirSync(path.dirname(stray))
-  fs.writeFileSync(stray, diagram(['shape:sun', 'shape:hill']))
-  const lost = await cli(
-    directory, 'cleanup-compose', '--file', stray, '--out', composed_path, '--json',
-  )
-  expect(lost.json).toMatchObject({ code: 'invalid_diagram', exit_code: 1 })
-  expect(String(lost.json.message)).toContain('sketch.json')
-  expect(await status_json(directory)).toMatchObject({ cleaned_revision: 1 })
-}, 60_000)
-
-// Boards as an agent addresses them: each command names its board with --session, writes where
-// no other board writes, and a proposal reaches only the board its snapshot came from.
+// Boards as an agent addresses them: each command names its board with --session and writes
+// where no other board writes.
 test('boards: list, create, rename, and --session on every board command', async () => {
   const directory = directory_create()
   const port = port_any()
@@ -489,71 +553,56 @@ test('boards: list, create, rename, and --session on every board command', async
   expect(created.json.stage_url).toBe(`http://localhost:${port}/s/${id}`)
   const listed = await cli(directory, 'session-list', '--json')
   expect((listed.json.sessions as Array<{ id: string }>).map((session) => session.id)).toEqual([
-    'default', id,
+    'default',
+    id,
   ])
 
-  const board_status = async () => (await cli(directory, 'status', '--session', id, '--json')).json
+  const board_status = () => status_json(directory, id)
   await test_pen_draw(port, 'shape:one', async () => (await board_status()).shapes_count === 1, id)
   expect(await status_json(directory)).toMatchObject({ session: 'default', shapes_count: 0 })
-  const { document_hash } = await board_status()
-  const query = `document_hash=${document_hash}&session=${id}&bounds=0,0,10,10`
-  await fetch(`http://127.0.0.1:${port}/api/drawing.png?${query}`, {
-    method: 'PUT', body: png_sized(148, 74) as Uint8Array<ArrayBuffer>,
-  })
-  await session_snapshot_and_publish(directory, id, String(document_hash))
+  const hash = await stage_upload(directory, port, id)
+  const fetched = await cli(directory, 'fetch', '--session', id, '--no-open', '--json')
+  expect(fetched.json).toMatchObject({ code: 'image_saved', session: id, document_hash: hash })
+  expect(String(fetched.json.path)).toContain(path.join('tldraw-sync', 'sessions', id))
 
-  // A person's name wins over the agent's title, and outlives a restart with everything else.
+  // A person's name outlives a restart with everything else.
   const renamed = await cli(
-    directory, 'session-rename', '--session', id, '--name', 'Mine', '--json',
+    directory,
+    'session-rename',
+    '--session',
+    id,
+    '--name',
+    'Mine',
+    '--json',
   )
   expect(renamed.json).toMatchObject({ code: 'session_renamed', session: { name: 'Mine' } })
   await cli(directory, 'stop', '--json')
   await cli(directory, 'start', '--no-open', '--json', '--port', String(port))
   expect(await board_status()).toMatchObject({
-    session: id, session_name: 'Mine', shapes_count: 1, cleaned_revision: 1,
+    session: id,
+    session_name: 'Mine',
+    shapes_count: 1,
+    cleaned_revision: 0,
+    linked: false,
   })
   expect(await status_json(directory)).toMatchObject({ shapes_count: 0, cleaned_revision: 0 })
 
   const unknown = await cli(directory, 'status', '--session', 'ffffffffffffffff', '--json')
-  expect(unknown.json).toMatchObject({ code: 'unknown_session',
-    next_action: { action: 'run', command: 'tldraw-sync session-list --json' } })
-  expect((await cli(directory, 'fetch', '--session', '../x', '--json')).json.code)
-    .toBe('usage_error')
+  expect(unknown.json).toMatchObject({
+    code: 'unknown_session',
+    next_action: { action: 'run', command: 'tldraw-sync session-list --json' },
+  })
+  expect((await cli(directory, 'fetch', '--session', '../x', '--json')).json.code).toBe(
+    'usage_error',
+  )
   const restore = await cli(
-    directory, 'cleanup-restore', '--session', id, '--base-revision', '1', '--json',
+    directory,
+    'cleanup-restore',
+    '--session',
+    id,
+    '--base-revision',
+    '0',
+    '--json',
   )
   expect(restore.json).toMatchObject({ code: 'nothing_to_restore' })
 }, 60_000)
-
-// A snapshot of one board, its output kept apart from the default board's, and its diagram
-// refused by the default board but published, and titled, on its own.
-async function session_snapshot_and_publish(directory: string, id: string, hash: string) {
-  const fetched = await cli(directory, 'fetch', '--session', id, '--no-open', '--json')
-  expect(fetched.json).toMatchObject({ code: 'image_saved', session: id, document_hash: hash })
-  expect(String(fetched.json.path)).toContain(path.join('tldraw-sync', 'sessions', id))
-  const snapshot = await cli(directory, 'cleanup-snapshot', '--session', id, '--no-open', '--json')
-  expect(snapshot.json).toMatchObject({ session: id, title_wanted: true, snapshot: hash })
-  expect(String(snapshot.json.path)).toContain(path.join('sessions', id, 'cleanup'))
-  expect(String(snapshot.json.prompt)).toContain(`"session": "${id}"`)
-  expect(String(snapshot.json.prompt)).toContain('no name yet')
-  expect(String(snapshot.json.publish_command)).toContain(`--session ${id}`)
-
-  const file = path.join(directory, 'board-proposal.json')
-  fs.writeFileSync(file, JSON.stringify({
-    ...proposal_example(hash, 0), session: id, title: 'Order flow',
-  }))
-  const wrong = await cli(directory, 'cleanup-publish', '--session', 'default', '--file', file,
-    '--json')
-  expect(wrong.exit_code).toBe(5)
-  expect(wrong.json).toMatchObject({ code: 'session_mismatch',
-    next_action: { action: 'run', command: 'tldraw-sync cleanup-snapshot --json' } })
-  const published = await cli(directory, 'cleanup-publish', '--file', file, '--json')
-  expect(published.json).toMatchObject({
-    code: 'published', session: id, revision: 1, title_applied: true,
-  })
-  const listed = await cli(directory, 'session-list', '--json')
-  expect(listed.json.sessions).toContainEqual(expect.objectContaining({
-    id, name: 'Order flow', named_by: 'agent',
-  }))
-  fs.rmSync(path.dirname(String(fetched.json.path)), { recursive: true, force: true })
-}

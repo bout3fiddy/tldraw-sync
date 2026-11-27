@@ -4,9 +4,7 @@
 
 import { parseArgs } from 'node:util'
 import { assert } from '../shared/assert'
-import {
-  cleanup_compose, cleanup_publish, cleanup_restore, cleanup_snapshot,
-} from './cleanup_commands'
+import { canvas_restore } from './canvas_commands'
 import { fetch_drawing, serve, start, status, stop, type Options } from './commands'
 import { whiteboard } from './whiteboard_commands'
 import { commands, help_commands, help_top, type Command } from './help'
@@ -34,7 +32,10 @@ const options_by_command = {
   'whiteboard-poll': { ...bound, protocol: string_option },
   'whiteboard-ack': { ...bound, event: string_option, state: string_option,
     message: string_option },
-  'whiteboard-snapshot': { ...layer, out: string_option },
+  'whiteboard-snapshot': { ...layer, out: string_option, 'no-open': { type: 'boolean' } },
+  'whiteboard-preview': {
+    ...layer, file: string_option, out: string_option, 'no-open': { type: 'boolean' },
+  },
   'whiteboard-publish': { ...layer, file: string_option },
   start: { ...options_common, port: { type: 'string' }, 'no-open': { type: 'boolean' } },
   fetch: {
@@ -43,11 +44,6 @@ const options_by_command = {
   status: { ...options_common, ...option_session },
   stop: options_common,
   serve: { ...options_common, port: { type: 'string' } },
-  'cleanup-snapshot': {
-    ...options_common, ...option_session, out: { type: 'string' }, 'no-open': { type: 'boolean' },
-  },
-  'cleanup-compose': { ...options_common, file: { type: 'string' }, out: { type: 'string' } },
-  'cleanup-publish': { ...options_common, ...option_session, file: { type: 'string' } },
   'cleanup-restore': {
     ...options_common, ...option_session,
     'base-revision': { type: 'string' }, revision: { type: 'string' },
@@ -157,10 +153,7 @@ function revision_parse(value: string | boolean | undefined): number | null | 'm
 function command_run(command: Command, options: Options): Promise<Outcome> {
   if (command.startsWith('whiteboard-')) return whiteboard(command, options)
   if (command === 'start') return start(options)
-  if (command === 'cleanup-snapshot') return cleanup_snapshot(options)
-  if (command === 'cleanup-compose') return cleanup_compose(options)
-  if (command === 'cleanup-publish') return cleanup_publish(options)
-  if (command === 'cleanup-restore') return cleanup_restore(options)
+  if (command === 'cleanup-restore') return canvas_restore(options)
   if (command === 'fetch') return fetch_drawing(options)
   if (command === 'status') return status(options)
   if (command === 'session-list') return session_list()

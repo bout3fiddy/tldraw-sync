@@ -10,7 +10,7 @@ import {
   session_request_size_bytes_max,
 } from '../shared/constants'
 import type { BoardRegistry } from './board_registry'
-import { body_read, json_error } from './http_cleanup'
+import { body_read, json_error } from './http_canvas'
 
 const name_problem = `Send a name of 1 to ${board_name_length_max} characters on one line.`
 

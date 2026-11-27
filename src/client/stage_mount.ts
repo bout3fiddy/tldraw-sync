@@ -14,8 +14,8 @@ import { drawing_uploader_create } from './drawing_uploader'
 
 // Total space kept clear around the drawing, across both sides of each axis.
 const fit_inset_px = 160
-// A composed diagram is already padded and laid out for reading, so its canvas gives the
-// diagram more of the pane: a narrow split view keeps its labels as large as it can.
+// The Agent canvas gives its scene more of the pane: a narrow split view keeps its words as
+// large as it can.
 export const fit_inset_cleaned_px = 48
 // A small sketch is not blown up to fill a monitor: past this it only looks coarse.
 const fit_zoom_max = 2
@@ -81,7 +81,7 @@ function upload_start(editor: Editor, session: string): () => void {
       const types = editor.store.scopedTypes.document
       return editor.store.allRecords().filter((record) => types.has(record.typeName))
     },
-    render: () => render(editor),
+    render: () => canvas_image(editor),
     // Called straight after the uploader has checked that the records still hash to `hash`,
     // so these bounds are the bounds of the drawing in the image.
     upload: async (hash, bytes) => {
@@ -112,7 +112,9 @@ function rounded(value: number): number {
   return Math.round(value * 1000) / 1000
 }
 
-async function render(editor: Editor): Promise<Uint8Array | null> {
+// Everything on the canvas as one PNG, or null when there is nothing on it. The sketch's image
+// and a draft's preview are both made here, so both are tldraw's own rendering.
+export async function canvas_image(editor: Editor): Promise<Uint8Array | null> {
   const ids = [...editor.getCurrentPageShapeIds()]
   const bounds = editor.getCurrentPageBounds()
   if (ids.length === 0 || bounds === undefined) return null

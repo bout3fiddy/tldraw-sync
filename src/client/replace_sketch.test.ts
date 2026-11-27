@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { Editor } from 'tldraw'
-import { cleaned_page_id, type CleanedDocument } from '../shared/cleanup_types'
+import { cleaned_page_id, type CleanedDocument } from '../shared/canvas_types'
 import { replace_sketch } from './replace_sketch'
 
 // Playwright covers real editable shapes and undo. Here fail the paste after deletion and require
@@ -8,8 +8,8 @@ import { replace_sketch } from './replace_sketch'
 test('failed and partial native paste both restore the original ink', () => {
   const document = {
     records: [
-      { id: 'shape:cleaned-a', typeName: 'shape', parentId: cleaned_page_id },
-      { id: 'shape:cleaned-b', typeName: 'shape', parentId: cleaned_page_id },
+      { id: 'shape:scene-a', typeName: 'shape', parentId: cleaned_page_id },
+      { id: 'shape:scene-b', typeName: 'shape', parentId: cleaned_page_id },
       { id: 'binding:ab', typeName: 'binding' },
     ],
   } as unknown as CleanedDocument

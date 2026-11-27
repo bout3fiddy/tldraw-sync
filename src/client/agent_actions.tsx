@@ -8,7 +8,8 @@ import { createPortal } from 'react-dom'
 import type { Editor } from 'tldraw'
 import { AgentDock, inbox_news } from './agent_dock'
 import { use_pair_token } from './board_pair'
-import { cleaned_page_id, type CleanedDocument } from '../shared/cleanup_types'
+import { cleaned_page_id, type CleanedDocument } from '../shared/canvas_types'
+import { whiteboard_protocol } from '../shared/whiteboard'
 import type { CleanedState } from './cleaned_state'
 import { Notice } from './notice'
 import { NotifyComposer, use_composer } from './notify_composer'
@@ -47,8 +48,9 @@ function use_notice(): [string, (text: string) => void] {
 }
 
 // Whether a published canvas holds anything to copy into the sketch: a shape placed on its
-// page, which is what `replace_sketch` pastes. An empty canvas is a valid revision with nothing
-// to copy, and a canvas never published has no revision at all.
+// page, which is what `replace_sketch` pastes, with whatever a group among them holds. An
+// empty canvas is a valid revision with nothing to copy, and a canvas never published has no
+// revision at all.
 function copyable(document: CleanedDocument | null): document is CleanedDocument {
   if (!document?.current) return false
 
@@ -157,7 +159,7 @@ export function AgentActions(props: Props) {
   const { notice, replace, possible } = use_replace(props)
   const opened = use_opened({ editor, listing: inbox.open, list_set: inbox.open_set })
   const { composing } = opened
-  const upgrade = cleaned.status !== null && cleaned.status.protocol !== 2
+  const upgrade = cleaned.status !== null && cleaned.status.protocol !== whiteboard_protocol
   const hint = ready_hint({ online, upgrade, paired: token !== null, available: form.available })
   return (
     <>

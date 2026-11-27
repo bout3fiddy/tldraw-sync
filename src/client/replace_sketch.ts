@@ -1,5 +1,5 @@
 import type { Editor, TLRecord } from 'tldraw'
-import { cleaned_page_id, type CleanedDocument } from '../shared/cleanup_types'
+import { cleaned_page_id, type CleanedDocument } from '../shared/canvas_types'
 
 // Paste remaps ids and both binding endpoints. Roll back incomplete pastes before leaving edit.
 export function replace_sketch(editor: Editor, document: CleanedDocument): boolean {

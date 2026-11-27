@@ -17,7 +17,7 @@ import {
   board_page_parse,
   board_stage_path,
 } from '../shared/board_session'
-import type { SketchBounds } from '../shared/cleanup_types'
+import type { SketchBounds } from '../shared/canvas_types'
 import {
   document_hash_pattern,
   header_document_hash,
@@ -28,31 +28,27 @@ import {
   path_drawing_json,
   path_drawing_png,
   path_pairing,
+  path_preview_json,
+  path_preview_png,
   path_sessions,
   path_sessions_rename,
-  path_sketch_json,
   path_status,
   path_sync,
   roles,
   sync_message_size_bytes_max,
   type Role,
 } from '../shared/constants'
+import { png_signed } from '../shared/png'
 import { bounds_valid, type Board, type ImageResult } from './board'
 import type { BoardRegistry } from './board_registry'
-import {
-  body_discard,
-  cleaned_publish_route,
-  cleaned_restore_route,
-  json_error,
-  lookup_error,
-} from './http_cleanup'
+import { body_discard, cleaned_restore_route, json_error, lookup_error } from './http_canvas'
 import {
   json_no_store,
   session_create_route,
   session_rename_route,
   sessions_list_response,
 } from './http_sessions'
-import { whiteboard_path } from '../shared/whiteboard'
+import { whiteboard_path, whiteboard_protocol } from '../shared/whiteboard'
 import { authorized, scoped_key } from './whiteboard_keys'
 import { whiteboard_route, denied } from './http_whiteboard'
 import { pairing_board, type Pairing } from './pairing'
@@ -86,11 +82,10 @@ export type BoardStatus = {
   readonly stage_connected: boolean
   readonly shapes_count: number
   readonly document_hash: string
-  // The cleaned diagram: its revision (0 when none) and whether the sketch moved on since.
+  // The Agent canvas: its revision (0 when none) and whether the sketch moved on since.
   readonly linked: boolean
-  readonly protocol: 2
+  readonly protocol: number
   readonly agent_revision: number
-  readonly interpretation_revision: number
   readonly cleaned_revision: number
   readonly cleaned_stale: boolean
 }
@@ -103,7 +98,7 @@ type Route = Response | Promise<Response> | undefined
 
 const static_files_count_max = 4096
 const session_id_pattern = /^[A-Za-z0-9_-]{1,64}$/
-const png_signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+const preview_id_pattern = /^[0-9a-f-]{36}$/
 
 export function server_start(options: ServerOptions): Server<SocketData> {
   assert(options.static_files.has('/index.html'), 'the client has been built')
@@ -237,24 +232,24 @@ function board_route(
       !authorized(request, options.machine_key)) return denied(request)
   }
   if (pathname === path_sync) return sync_upgrade(request, url, id, server, registry)
+  if (pathname === path_preview_json || pathname === path_preview_png) {
+    return preview_route(request, url, registry, id, local)
+  }
   if (pathname === path_drawing_png) {
     if (method === 'GET') return board_with(registry, id, (board) => image_get(board))
     if (method === 'PUT') return image_put(request, url, registry, id)
     return text(405, 'Use GET to fetch the drawing.')
   }
   if (pathname === path_cleaned_json && method === 'POST') {
-    if (url.searchParams.has('layer') && url.searchParams.get('layer') !== 'interpretation') {
-      return body_discard(request).then(() => json_error(400, 'invalid_layer',
-        'Use whiteboard-snapshot and whiteboard-publish with --layer canvas.'))
-    }
-    return cleaned_publish_route(request, registry, id)
+    // The formats this address took are retired. Nothing is read and nothing changes.
+    return body_discard(request).then(() => json_error(410, 'retired',
+      'Shape proposals and semantic diagrams are retired. Link the board and publish a scene.'))
   }
   if (pathname === path_cleaned_restore) {
     if (method === 'POST') return cleaned_restore_route(request, registry, id)
     return text(405, 'Use POST to restore a cleaned revision.')
   }
   if (method !== 'GET') return text(405, 'Method not allowed.')
-  if (pathname === path_sketch_json) return sketch_response(url, registry, id)
   if (pathname === path_pairing) {
     if (registry.find(id) === null) return lookup_error({ kind: 'not_found' })
     const page = board_draw_path(id)
@@ -288,8 +283,55 @@ function public_canvas_status(board: Board, linked: boolean) {
     assert(!('text' in last_event), 'the paired note is never a public status message')
     assert(!('request_id' in last_event), 'the replay key stays private')
   }
-  return json_no_store({ ...board.cleaned_status(), linked, protocol: 2,
+  return json_no_store({ ...board.cleaned_status(), linked, protocol: whiteboard_protocol,
     last_event: last_event ?? null })
+}
+
+// A draft for the stage to render, and the stage's rendering of it. Only a stage on this Mac
+// is given a draft or heard on one: a draft is the agent's unpublished work.
+function preview_route(
+  request: Request,
+  url: URL,
+  registry: BoardRegistry,
+  id: string,
+  local: boolean,
+): Response | Promise<Response> {
+  const origin = request.headers.get('origin')
+  if (!local || (origin !== null && origin !== url.origin)) return denied(request)
+  if (url.pathname === path_preview_json) {
+    if (request.method !== 'GET') return text(405, 'Use GET to ask for a draft.')
+    const have = url.searchParams.get('have')
+    if (have !== null && !preview_id_pattern.test(have)) return text(400, 'Malformed draft id.')
+    return board_with(registry, id, (board) => json_no_store(board.preview_job(have)))
+  }
+  assert(url.pathname === path_preview_png, 'a preview route is one of two')
+  if (request.method !== 'PUT') return text(405, 'Use PUT to send a rendered draft.')
+  return preview_put(request, url, registry, id)
+}
+
+async function preview_put(
+  request: Request,
+  url: URL,
+  registry: BoardRegistry,
+  id: string,
+): Promise<Response> {
+  const preview = url.searchParams.get('id') ?? ''
+  if (!preview_id_pattern.test(preview)) return text(400, 'Malformed draft id.')
+  const size_declared = Number(request.headers.get('content-length') ?? 'NaN')
+  if (!Number.isInteger(size_declared)) return text(411, 'Content-Length is required.')
+  if (size_declared > image_size_bytes_max) return text(413, 'Image is too large.')
+
+  const bytes = new Uint8Array(await request.arrayBuffer())
+  if (bytes.byteLength > image_size_bytes_max) return text(413, 'Image is too large.')
+  if (!png_signed(bytes)) return text(415, 'Image is not a PNG.')
+  assert(bytes.byteLength <= image_size_bytes_max, 'image is bounded')
+  assert(bytes.byteLength > 0, 'a signed PNG is not empty')
+
+  // Looked up after the body has arrived: the board may have been set aside meanwhile.
+  return board_with(registry, id, (board) => {
+    if (!board.preview_put(preview, bytes)) return text(409, 'That draft was replaced.')
+    return new Response(null, { status: 204 })
+  })
 }
 
 function loopback_request(url: URL, server: Server<SocketData>, request: Request): boolean {
@@ -351,29 +393,11 @@ function status_read(options: ServerOptions, board: Board, port: number | undefi
     shapes_count: state.shapes_count,
     document_hash: state.hash,
     linked: options.registry.owner(id) !== null,
-    protocol: 2,
+    protocol: whiteboard_protocol,
     agent_revision: cleaned.revision,
-    interpretation_revision: cleaned.revision,
     cleaned_revision: cleaned.revision,
     cleaned_stale: cleaned.stale,
   }
-}
-
-// The sketch's records, for exactly the document an image showed. A newer document is a
-// conflict: the caller fetches the image again, so its image and records always agree.
-function sketch_response(url: URL, registry: BoardRegistry, id: string): Response {
-  const hash = url.searchParams.get('document_hash') ?? ''
-  if (!document_hash_pattern.test(hash)) {
-    return json_error(400, 'malformed_hash', 'Name the document_hash of the fetched image.')
-  }
-  const snapshot = registry.sketch_snapshot(id, hash)
-  if (snapshot === null) {
-    return json_error(409, 'sketch_changed', 'The sketch changed after that image. Fetch again.')
-  }
-  if ('kind' in snapshot) return lookup_error(snapshot)
-  assert(snapshot.document_hash === hash, 'the snapshot is of the named document')
-  assert(snapshot.session === id, 'the snapshot is of the named board')
-  return json_no_store(snapshot)
 }
 
 async function image_get(board: Board): Promise<Response> {
@@ -416,12 +440,10 @@ async function image_put(
 
   const bytes = new Uint8Array(await request.arrayBuffer())
   if (bytes.byteLength > image_size_bytes_max) return text(413, 'Image is too large.')
-  if (!png_signature.every((byte, index) => bytes[index] === byte)) {
-    return text(415, 'Image is not a PNG.')
-  }
+  if (!png_signed(bytes)) return text(415, 'Image is not a PNG.')
   const bounds = bounds_parse(url.searchParams.get('bounds'))
   if (bounds === 'malformed') return text(400, 'Malformed bounds.')
-  assert(bytes.byteLength >= png_signature.length, 'a PNG is at least its signature')
+  assert(bytes.byteLength >= 8, 'a PNG is at least its signature')
   assert(bytes.byteLength <= image_size_bytes_max, 'image is bounded')
 
   // Looked up after the body has arrived: the board may have been set aside meanwhile.

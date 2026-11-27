@@ -2,7 +2,8 @@
 // says what the board is and how to get the drawing; each command's help has the detail.
 
 import { board_name_length_max, port_default, proposal_size_bytes_max } from '../shared/constants'
-import { diagram_schema_text } from './cleanup_prompt'
+import { whiteboard_protocol } from '../shared/whiteboard'
+import { scene_schema_text } from './scene_prompt'
 
 export const commands = [
   'start',
@@ -10,21 +11,20 @@ export const commands = [
   'status',
   'stop',
   'serve',
-  'cleanup-snapshot',
-  'cleanup-compose',
-  'cleanup-publish',
   'cleanup-restore',
   'session-list',
   'session-create',
   'session-rename',
   'whiteboard-link', 'whiteboard-poll', 'whiteboard-ack',
-  'whiteboard-snapshot', 'whiteboard-publish',
+  'whiteboard-snapshot', 'whiteboard-preview', 'whiteboard-publish',
 ] as const
 
 // Every board command takes this; it is described once here and named in each command's help.
 const session_option_text =
   '  --session <id>  Work on this board (see session-list); without it, the default board'
 export type Command = (typeof commands)[number]
+
+const protocol = String(whiteboard_protocol)
 
 export const help_top = `tldraw-sync: draw on an iPad, see it on the Mac, let agents fetch it.
 
@@ -37,24 +37,23 @@ Commands:
   stop     Stop the board
   serve    Run the board in this terminal instead of the background
 
-Cleanup (an external agent reads the sketch; the tool typesets diagrams and writing on a
-separate Cleaned canvas, and keeps pictures there as the pen strokes they were drawn with):
-  cleanup-snapshot  Save the sketch image, stroke summaries and instructions for the agent
-  cleanup-compose   Lay out a semantic diagram locally, without publishing it
-  cleanup-publish   Lay out and publish a semantic diagram as the new cleaned diagram
-  cleanup-restore   Bring back an earlier cleaned diagram
-
-Linked whiteboards (one board per pih session; credentials stay in the private binding file):
+Linked whiteboards (one board per pih session; credentials stay in the private binding file.
+The person sends their sketch with an optional note; the agent answers in the conversation or
+draws a freeform scene on the board's Agent canvas):
   whiteboard-link      Start or reopen a bound board and its pairing stage
   whiteboard-poll      Read outstanding durable requests
   whiteboard-ack       Mark a request received, working, updated or failed
-  whiteboard-snapshot  Read a coherent sketch and the unified agent graph
-  whiteboard-publish   Compose and publish the entire Agent canvas
+  whiteboard-snapshot  Read a coherent sketch, the scene on the Agent canvas and its format
+  whiteboard-preview   Render a draft scene exactly as it would be published; publish nothing
+  whiteboard-publish   Publish a scene as the entire Agent canvas
 
 Boards (each is a separate board, listed in the side rail and opened by its own address):
   session-list    List the boards, their ids, names and addresses
   session-create  Make a new, empty board
   session-rename  Rename a board
+
+History:
+  cleanup-restore  Bring back an earlier revision of a board's Agent canvas
 
 Options:
   --json       Print one JSON object on stdout (every command)
@@ -72,11 +71,8 @@ For agents:
   and read the PNG at "path" with your image tool. The drawing is context for whatever they
   are asking. If the command fails, do what "next_action" says. More: tldraw-sync fetch --help
 
-  When they ask you to clean up, tidy or redraw the sketch, run
-
-    tldraw-sync cleanup-snapshot --json
-
-  and follow its "prompt". More: tldraw-sync cleanup-snapshot --help
+  Drawing back onto a board needs a linked board. Your host links it and hands you its
+  requests; then run tldraw-sync whiteboard-snapshot --help for the scene format.
 
   The user may keep several boards. When they name one, find its id with
   tldraw-sync session-list --json and add --session <id> to each command. Without it, every
@@ -87,8 +83,8 @@ Exit codes:
   1  usage error, or a failure the message explains
   2  the board is not running: run \`tldraw-sync start\`
   3  the board is empty: ask the user to draw on the iPad
-  4  the image is not ready yet: run \`tldraw-sync fetch\` again
-  5  a cleanup conflicts with a newer sketch or cleanup: take a new snapshot
+  4  the image is not ready yet: run the command again
+  5  a scene conflicts with a newer sketch or canvas: take a new snapshot
 
 JSON:
   Success: {"status": "success", "code": ..., ...data}
@@ -107,58 +103,125 @@ Quick start:
 Environment:
   BOARD_DATA_DIR  Where the board is saved (default: data/ in the repository)`
 
-export const help_commands: Record<Command, string> = {
-  'whiteboard-link': `Usage: tldraw-sync whiteboard-link --protocol 2
-    --owner <id> --out <absolute-file> --json`,
-  'whiteboard-poll': 'Usage: tldraw-sync whiteboard-poll --protocol 2 --binding <file> --json',
-  'whiteboard-ack': `Usage: tldraw-sync whiteboard-ack --binding <file> --event <id>
-    --state <received|working|updated|failed> [--message <text>] --json`,
-  'whiteboard-snapshot': `Usage: tldraw-sync whiteboard-snapshot --binding <file>
-    [--layer canvas] [--out <directory>] --json
+const help_snapshot = `Usage: tldraw-sync whiteboard-snapshot --binding <file>
+    [--out <directory>] [--no-open] --json
 
-Saves a coherent snapshot of the bound board, as cleanup-snapshot does, in a new private folder
-under --out: the sketch image, its pen records (sketch.json), a summary of each stroke, and
-the complete graph of the Agent canvas when there is one. "prompt" says what each kind of
-request asks for:
+Saves a coherent snapshot of the bound board in a new private folder under --out: the sketch
+image (sketch.png), its pen records (sketch.json), a summary of each stroke (strokes.json), and
+scene.json, a scene proposal ready to edit. scene.json holds what the Agent canvas shows now,
+already tied to this snapshot: its "session", "snapshot" and "base_revision". A sketch with
+nothing on it still has a snapshot: its image is a blank page and "shapes_count" is 0.
 
-  An ordinary Notify request asks for no cleanup. Leave the sketch-origin items as they are
-  and add, change or remove your own items ("origin": "agent") as its note asks.
+A request from the board is a note in the person's words, or no words at all. Read the sketch
+and decide what they asked for. If they are talking with you, answer in the conversation and
+publish nothing. If they asked for something drawn, edit scene.json, look at it with
+whiteboard-preview, then publish it with whiteboard-publish.
 
-  An Interpret request asks for a faithful copy of the sketch as it is now. Rebuild the graph
-  from the current sketch alone: a diagram and writing are typeset, a picture is kept as a
-  "drawing" of its own pen strokes, and what the sketch no longer shows is left out, earlier
-  agent-origin notes included, unless the request's note asks for them.
+Scene (JSON, not code):
+${scene_schema_text}
 
-A sketch with nothing on it still has a snapshot: its image is a blank page, "shapes_count"
-is 0, and the prompt asks for an empty canvas ("nodes": [] and "edges": []).
-
-Example:
-  tldraw-sync whiteboard-snapshot --binding /private/binding.json --json`,
-  'whiteboard-publish': `Usage: tldraw-sync whiteboard-publish --binding <file>
-    [--layer canvas] --file <diagram.json> --json
-
-Lays out the semantic diagram in --file, as cleanup-compose does, and publishes it as the
-whole Agent canvas of the bound board, replacing what was there. The diagram names the
-snapshot's "session", "snapshot" and "base_revision". A new reading of the sketch is accepted
-only from a snapshot of the sketch as it is now. A publish that changes only agent-origin
-items is accepted after the sketch has moved on, and keeps the drawings the canvas holds.
-
-Keep the file where the snapshot put it: a "drawing" is sized from the sketch.json beside it,
-and the board copies the strokes it names from the sketch itself. An empty diagram publishes
-an empty canvas. See tldraw-sync cleanup-compose --help for the schema.
+Provenance: "snapshot" is the hash of the sketch you were shown. "agent_source_hash" is the
+sketch the canvas was last made from, and each "sketch" element in scene.json says which
+sketch its strokes were copied from. "canvas.legacy" is true when the canvas shows a revision
+published in a retired format: it is shown and kept in the history, but has no scene to edit,
+so scene.json starts empty.
 
 Output:
-  --json   {"status": "success", "code": "published", "session", "layer", "revision"}
+  --json   {"status": "success", "code": "snapshot_saved", "session", "title_wanted",
+            "image_path", "records_path", "strokes_path", "strokes_truncated", "scene_path",
+            "snapshot", "base_revision", "agent_revision", "agent_history",
+            "agent_source_hash", "canvas", "shapes_count", "bounds", "image", "mapping",
+            "schema", "prompt", "preview_command", "publish_command"}
 
 Failure codes:
-  invalid_diagram    exit 1: the message names the field, stroke or file; fix the diagram
-  invalid_proposal   exit 1: the board refused the composed diagram; the message says why
-  sketch_changed     exit 5: the sketch changed; take a new snapshot
-  revision_conflict  exit 5: the canvas changed; take a new snapshot
-  session_mismatch   exit 5: the diagram names another board
+  not_running      exit 2: the board daemon is not running
+  stage_closed     exit 4: the Mac page is not open and could not be opened
+  image_not_ready  exit 4: the Mac page did not render in time; try again
+  sketch_busy      exit 4: the sketch kept changing; try again
 
 Example:
-  tldraw-sync whiteboard-publish --binding /private/binding.json --file diagram.json --json`,
+  tldraw-sync whiteboard-snapshot --binding /private/binding.json --json`
+
+const help_preview = `Usage: tldraw-sync whiteboard-preview --binding <file> --file <scene.json>
+    [--out <image.png>] [--no-open] --json
+
+Renders the scene in --file exactly as whiteboard-publish would publish it, and saves the
+picture. Nothing is published: the Agent canvas, its revision and the sketch stay as they are,
+and nothing appears on the board. The board checks the draft as it checks a publish, so a
+draft that would be refused is refused here, for the same reason. "records_hash" names the
+records that were drawn; publishing the same file while nothing has changed returns the same
+hash.
+
+The Mac stage draws the picture, in the browser, with the same code that shows the canvas. It
+is opened if it is not, unless --no-open is given.
+
+Output:
+  --json   {"status": "success", "code": "preview_saved", "session", "image_path",
+            "records_hash", "shapes_count", "base_revision", "snapshot", "image",
+            "published": false}
+
+Failure codes:
+  invalid_scene      exit 1: the message names the field; fix the scene
+  scene_too_large    exit 1: the scene is over ${proposal_size_bytes_max} bytes
+  scene_unreadable   exit 1: the scene is not a readable regular file
+  sketch_changed     exit 5: the sketch changed; take a new snapshot
+  revision_conflict  exit 5: the canvas changed; take a new snapshot
+  session_mismatch   exit 5: the scene names another board
+  stage_closed       exit 4: the Mac page is not open and could not be opened
+  preview_not_ready  exit 4: the Mac page did not draw the draft in time; try again
+
+Example:
+  tldraw-sync whiteboard-preview --binding /private/binding.json --file scene.json --json`
+
+const help_publish = `Usage: tldraw-sync whiteboard-publish --binding <file> --file <scene.json>
+    --json
+
+Publishes the scene in --file as the whole Agent canvas of the bound board, replacing what was
+there in one step. It is accepted only if nobody published since the snapshot it names. A
+scene with "basis": "sketch" is also accepted only while the sketch is unchanged since that
+snapshot; a scene with "basis": "canvas" changes the canvas alone and is accepted after the
+sketch has moved on. Otherwise nothing changes. The sketch itself is never modified.
+
+A "sketch" element is published as the person's own pen strokes. With "basis": "sketch" the
+board copies the strokes it names from the sketch as it is now, and refuses a stroke the
+sketch does not have. With "basis": "canvas" it keeps the strokes the same element already
+holds on the canvas. An empty "elements" list publishes an empty canvas.
+
+The file may be at most ${proposal_size_bytes_max} bytes. See tldraw-sync whiteboard-snapshot --help
+for the scene format.
+
+Output:
+  --json   {"status": "success", "code": "published", "session", "revision", "shapes_count",
+            "records_hash", "title_applied"}
+  "title_applied" is true when the scene's title named a board that had no name.
+
+Failure codes:
+  invalid_scene      exit 1: the message names the field or stroke; fix the scene
+  scene_too_large    exit 1: the scene is over the size limit
+  scene_unreadable   exit 1: the scene is not a readable regular file
+  sketch_changed     exit 5: the sketch changed; take a new snapshot
+  revision_conflict  exit 5: the canvas changed; take a new snapshot
+  session_mismatch   exit 5: the scene names another board
+
+Example:
+  tldraw-sync whiteboard-publish --binding /private/binding.json --file scene.json --json`
+
+export const help_commands: Record<Command, string> = {
+  'whiteboard-link': `Usage: tldraw-sync whiteboard-link --protocol ${protocol}
+    --owner <id> --out <absolute-file> --json
+
+Starts the board if need be, links one board to the owner and saves its private binding file.
+Linking again with the same owner and file returns the same board.`,
+  'whiteboard-poll': `Usage: tldraw-sync whiteboard-poll --protocol ${protocol}
+    --binding <file> --json
+
+Lists the requests still waiting. Each is a "sketch_notify": the hash of the sketch the person
+sent and, when they wrote one, their note in "text". A request publishes nothing by itself.`,
+  'whiteboard-ack': `Usage: tldraw-sync whiteboard-ack --binding <file> --event <id>
+    --state <received|working|updated|failed> [--message <text>] --json`,
+  'whiteboard-snapshot': help_snapshot,
+  'whiteboard-preview': help_preview,
+  'whiteboard-publish': help_publish,
   start: `Usage: tldraw-sync start [--port <n>] [--no-open] [--json | --quiet]
 
 Starts the board in the background and returns once it is serving. If a board is already
@@ -246,7 +309,9 @@ Output:
   --quiet  the iPad address
   --json   {"status": "success", "code": "running", "pid", "port", "session",
             "session_name", "draw_url", "stage_url", "pen_connected", "stage_connected",
-            "shapes_count", "document_hash", "cleaned_revision", "cleaned_stale"}
+            "shapes_count", "document_hash", "linked", "protocol", "agent_revision",
+            "cleaned_revision", "cleaned_stale"}
+  "agent_revision" and "cleaned_revision" are both the revision of the Agent canvas.
 
 Failure codes:
   not_running     exit 2: run \`tldraw-sync start\`
@@ -279,150 +344,12 @@ background; use it to watch the board while working on it.
 Options:
   --port <n>  Use exactly this port, and fail if it is taken`,
 
-  'cleanup-snapshot': `Usage: tldraw-sync cleanup-snapshot [--session <id>] [--out <dir>]
-                                    [--no-open] [--json]
-
-Saves a coherent snapshot of the sketch for cleanup: the PNG and the original pen records of
-the same drawing, a summary of each stroke (its id and page bounds, without the pen samples),
-a snapshot token, the cleaned revision it builds on, and the semantic diagram behind that
-revision when there is one, so its ids can be reused. It prints the instructions for the
-agent doing the cleanup. No model is called: you, the agent, read the sketch and write what it
-means as a semantic diagram; cleanup-publish lays it out and publishes it.
-
-Read the sketch best effort, without asking the user to clarify: copy every word exactly,
-keep every arrowhead, and invent nothing. The tool chooses every position and style.
-
-Clean up each part of the sketch in its own way. A diagram and writing are typeset. A picture
-(scenery, people, objects, a doodle, anything that is neither a diagram nor writing) is kept
-as a "drawing": a node that lists the ids of its pen strokes, which the tool copies unchanged,
-at the size and in the arrangement they were drawn. Never redraw a picture as boxes, ovals or
-words, and never stand in for one with a symbol.
-
-The snapshot names its board in "session", and the diagram must carry it: a board refuses a
-diagram made from another board's snapshot. While the board has no name, "title_wanted" is
-true and the prompt asks for a short "title"; an accepted publish names the board with it,
-unless someone named the board first.
-
-Options:
-${session_option_text}
-  --out <dir>  Where to save the files (default: tldraw-sync/cleanup in the system's
-               temporary folder; tldraw-sync/sessions/<id>/cleanup for another board)
-  --no-open    Fail with "stage_closed" instead of opening the Mac page
-
-Output:
-  --json   {"status": "success", "code": "snapshot_saved", "session", "title_wanted",
-            "path", "records_path",
-            "strokes_path", "strokes_truncated", "diagram_path", "previous_diagram_path",
-            "proposal_path", "snapshot", "document_hash", "base_revision", "shapes_count",
-            "bounds", "image", "mapping", "prompt", "publish_command"}
-
-Failure codes:
-  not_running      exit 2: run \`tldraw-sync start\`
-  board_empty      exit 3: nothing has been drawn
-  stage_closed     exit 4: the Mac page is not open and --no-open was given
-  image_not_ready  exit 4: the Mac page did not render in time; try again
-  sketch_busy      exit 4: the sketch kept changing; try again
-
-Example:
-  tldraw-sync cleanup-snapshot --json`,
-
-  'cleanup-compose': `Usage: tldraw-sync cleanup-compose --file <diagram.json | -> [--out <file>]
-                                    [--json]
-
-Lays out a semantic diagram in the house style and saves the result as a styled shape proposal
-(tldraw-sync.cleanup.v2, "style": "markerboard": a precise layout in thin black ink on white,
-with hand-drawn outlines, open arrows and handwritten labels, and no colour), without
-publishing it and without a running board. Earlier revisions keep their own look. The layout is
-deterministic: the same diagram, in any item order, gives the same result. Labels, kinds,
-groups, endpoints and arrowheads are copied exactly; positions, sizes and connector routes are
-the tool's. When every node says where it sat in the sketch ("at"), the layout keeps that
-arrangement: what was beside, above or below what, typeset and closed up to an even gap.
-Otherwise items are arranged by their connections alone. cleanup-publish runs the same
-composition before it publishes.
-
-A "drawing" node is not typeset. It keeps part of the sketch as the pen strokes it names and
-takes the box of those strokes, never scaled. Their size is read from the sketch.json that
-cleanup-snapshot saved beside the diagram file (for a diagram on stdin, the one in the board's
-default snapshot folder), which must be of the same snapshot. The board copies the strokes
-from the sketch when it publishes. A diagram with no nodes composes to an empty canvas.
-
-Diagram (JSON, not code):
-${diagram_schema_text}
-
-Options:
-  --out <file>  Where to save the composed proposal (default: tldraw-sync/cleanup/composed.json
-                in the system's temporary folder)
-
-Output:
-  --json   {"status": "success", "code": "composed", "path", "snapshot", "base_revision",
-            "shapes_count", "width_units", "height_units", "route_conflicts_count"}
-  "route_conflicts_count" counts connectors or labels predicted to cross an item they do not
-  join, which the layout could not avoid. 0 is the usual answer.
-
-Failure codes:
-  invalid_diagram     exit 1: the message names the field, stroke or file; fix the diagram
-  composition_failed  exit 1: the layout failed its own checks; report the diagram
-  diagram_too_large   exit 1: the diagram is over ${proposal_size_bytes_max} bytes
-  diagram_unreadable  exit 1: the diagram is not a readable regular file or stdin
-
-Example:
-  tldraw-sync cleanup-compose --file /tmp/tldraw-sync/cleanup/diagram.json --json`,
-
-  'cleanup-publish': `Usage: tldraw-sync cleanup-publish [--session <id>]
-                                   --file <diagram.json | -> [--json]
-
-Publishes a complete cleaned diagram, replacing the current one in one step. It is accepted
-only if the sketch is unchanged since the snapshot and nobody published since; otherwise
-nothing changes. The sketch itself is never modified.
-
-It goes to the board --session names, or else to the board the diagram's "session" names, or
-else to the default board. A board accepts only a diagram made from its own snapshot.
-
-Options:
-${session_option_text}
-
-The file is read from a regular file, or from stdin with --file -. It may be at most
-${proposal_size_bytes_max} bytes. Reading stops at the first byte past that, without waiting for
-the end of the input.
-
-A semantic diagram ("format": "tldraw-sync.diagram.v1") is laid out here first, exactly as
-cleanup-compose does, and the styled result is published together with the diagram, which the
-next snapshot offers back for its ids. See tldraw-sync cleanup-compose --help for the schema.
-
-A "drawing" in the diagram is published as the person's own pen strokes: the board copies the
-strokes it names from the sketch as it is now, and refuses a stroke the sketch does not have.
-Keep the diagram file beside the snapshot's sketch.json, which sizes the drawing.
-
-A shape proposal ("format": "tldraw-sync.cleanup.v1"), the older format with coordinates and
-colours chosen by the agent, is still accepted from scripts written for it. New cleanups write a
-semantic diagram: only a diagram is drawn in the house style and keeps the sketch's arrangement.
-Composed proposals (tldraw-sync.cleanup.v2) from cleanup-compose are accepted as they are.
-
-Output:
-  --json   {"status": "success", "code": "published", "session", "revision", "shapes_count",
-            "title_applied", "stage_url"}
-  "title_applied" is true when the diagram's title named a board that had no name.
-
-Failure codes:
-  invalid_diagram     exit 1: the message names the field; fix the diagram
-  composition_failed  exit 1: the layout failed its own checks; report the diagram
-  invalid_proposal    exit 1: the message names the field; fix the proposal
-  proposal_too_large  exit 1: the proposal is over the size limit
-  proposal_unreadable exit 1: the proposal is not a readable regular file or stdin
-  sketch_changed      exit 5: the sketch changed; take a new snapshot
-  revision_conflict   exit 5: another cleanup was published; take a new snapshot
-  session_mismatch    exit 5: the diagram came from another board; snapshot this one
-  unknown_session     exit 1: no board has that id; run \`tldraw-sync session-list\`
-  not_running         exit 2: run \`tldraw-sync start\`
-
-Example:
-  tldraw-sync cleanup-publish --file /tmp/tldraw-sync/cleanup/proposal.json --json`,
-
   'cleanup-restore': `Usage: tldraw-sync cleanup-restore [--session <id>] --base-revision <n>
                                    [--revision <n>] [--json]
 
-Brings back an earlier cleaned diagram as a new revision. The board keeps a few earlier
-revisions. --base-revision must be the current cleaned revision ("cleaned_revision" in
+Brings back an earlier revision of a board's Agent canvas as a new revision. The board keeps a
+few earlier revisions, whatever format they were published in: one from before scenes is shown
+exactly as it was. --base-revision must be the current revision ("agent_revision" in
 \`tldraw-sync status --json\`), so a restore can never overwrite a newer publish. Without
 --revision, the most recent earlier revision is restored.
 
@@ -433,7 +360,7 @@ Output:
   --json   {"status": "success", "code": "restored", "session", "revision", "restored_from"}
 
 Failure codes:
-  revision_conflict   exit 5: the cleaned diagram changed; read status and decide again
+  revision_conflict   exit 5: the canvas changed; read status and decide again
   nothing_to_restore  exit 1: that revision is not kept
 
 Example:
@@ -443,7 +370,7 @@ Example:
 
 Lists every board, oldest first. The default board, id "default", is the board from before
 there were several, at the addresses it always had. A board nobody has named is untitled; the
-first cleanup of it may name it.
+first scene published to a linked board may name it.
 
 Output:
   default  one line per board: its id and name
@@ -459,7 +386,7 @@ Example:
 
 Makes a new, empty board and prints its id and address. Open the address in a browser to
 present it; its own QR code leads the iPad to it. Without --name it is untitled until a
-person names it, or its first cleanup does.
+person names it.
 
 Options:
   --name <name>  Plain text on one line, at most ${board_name_length_max} characters
@@ -476,7 +403,7 @@ Example:
 
   'session-rename': `Usage: tldraw-sync session-rename --session <id> --name <name> [--json]
 
-Renames a board. A rename always wins: a later cleanup never replaces a name a person gave.
+Renames a board. A rename always wins: a later publish never replaces a name a person gave.
 
 Output:
   --json   {"status": "success", "code": "session_renamed", "session"}

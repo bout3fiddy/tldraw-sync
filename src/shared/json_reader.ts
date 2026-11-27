@@ -1,4 +1,4 @@
-// Reads untrusted JSON written by an agent: a cleanup proposal or a semantic diagram. Reading
+// Reads untrusted JSON: a scene proposal written by an agent, or a saved canvas. Reading
 // never throws on bad input. The reader keeps the first problem it meets, with the path to it,
 // and the caller reports that problem as an ordinary error.
 
@@ -14,10 +14,10 @@ export type Json = Record<string, unknown>
 
 export type Problem = { path: string; message: string }
 
-// Every proposal and diagram starts with the same header: what it was made from, and by whom.
-// The board session is the one the snapshot was taken from; null only in a proposal written
-// before sessions, which only the default board accepts. A title is offered for a board that
-// has no name yet.
+// Every proposal starts with the same header: what it was made from, and by whom. The board
+// session is the one the snapshot was taken from; a header without one is read as null, and
+// the caller decides whether that is allowed. A title is offered for a board that has no name
+// yet.
 export type Header = {
   snapshot: string
   base_revision: number
@@ -141,7 +141,7 @@ export function header_read(reader: JsonReader, root: Json, path: string): Heade
   const snapshot = reader.text(root, 'snapshot', path, 16, null)
 
   if (!document_hash_pattern.test(snapshot)) {
-    reader.fail(`${path}.snapshot`, 'Expected the snapshot token from cleanup-snapshot.')
+    reader.fail(`${path}.snapshot`, 'Expected the snapshot token from whiteboard-snapshot.')
   }
 
   const base_revision = reader.number(root, 'base_revision', path, 0, revision_max)
@@ -170,7 +170,7 @@ function header_session_read(reader: JsonReader, root: Json, path: string): stri
   const session = reader.text(root, 'session', path, 16, null)
 
   if (!board_id_pattern.test(session)) {
-    reader.fail(`${path}.session`, 'Expected the session from cleanup-snapshot.')
+    reader.fail(`${path}.session`, 'Expected the session from whiteboard-snapshot.')
     return null
   }
 

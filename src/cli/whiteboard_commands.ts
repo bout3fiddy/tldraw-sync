@@ -9,15 +9,15 @@ import {
   request_id_pattern,
   request_text_valid,
   type BoardEvent,
-  layers,
   message_length_max,
   owner_pattern,
   whiteboard_path,
+  whiteboard_protocol,
   type Binding,
 } from '../shared/whiteboard'
 import { api_request, type ApiAnswer } from './board_client'
 import { browser_open } from './board_process'
-import { cleanup_publish, cleanup_snapshot } from './cleanup_commands'
+import { canvas_preview, canvas_publish, canvas_snapshot } from './canvas_commands'
 import { session_find, start, type Options } from './commands'
 import { failure, success, type Outcome } from './output'
 import { binding_directory, binding_install, binding_read } from './whiteboard_file'
@@ -34,17 +34,21 @@ const invalid_reply = () =>
     action: 'ask_human',
     message: 'Check the bound session and upgrade the Mac board.',
   })
+const protocol_text = String(whiteboard_protocol)
 const upgrade = () =>
-  failure('upgrade_required', 'Whiteboard protocol 2 is required.', {
+  failure('upgrade_required', `Whiteboard protocol ${protocol_text} is required.`, {
     action: 'ask_human',
-    message: 'Upgrade the CLI and daemon, restart safely and use --protocol 2.',
+    message: `Upgrade the CLI and daemon, restart safely and use --protocol ${protocol_text}.`,
   })
+
+// The commands that work on the Agent canvas of a bound board.
+const canvas_commands = ['whiteboard-snapshot', 'whiteboard-preview', 'whiteboard-publish']
 
 export async function whiteboard(command: string, options: Options): Promise<Outcome> {
   try {
-    if (['whiteboard-link', 'whiteboard-poll'].includes(command) && options.protocol !== '2') {
-      return upgrade()
-    }
+    const versioned = ['whiteboard-link', 'whiteboard-poll'].includes(command)
+
+    if (versioned && options.protocol !== protocol_text) return upgrade()
 
     if (command === 'whiteboard-link') return await link(options)
 
@@ -52,27 +56,29 @@ export async function whiteboard(command: string, options: Options): Promise<Out
 
     const binding = binding_read(options.binding)
 
-    if (command === 'whiteboard-publish' || command === 'whiteboard-snapshot') {
-      const layer = layers.find((item) => item === (options.layer ?? 'canvas'))
-
-      if (!layer || layer === 'ideas') {
-        return usage(command, 'Take a fresh --layer canvas snapshot and edit the complete graph.')
+    if (canvas_commands.includes(command)) {
+      // There is one Agent canvas. The name is accepted where an earlier host still gives it.
+      if ((options.layer ?? 'canvas') !== 'canvas') {
+        return usage(command, 'There is one Agent canvas: leave --layer out.')
       }
 
-      if (command === 'whiteboard-publish' && (!options.file || options.file === '-')) {
-        return usage(command, 'Name the semantic diagram with --file.')
+      if (command !== 'whiteboard-snapshot' && (!options.file || options.file === '-')) {
+        return usage(command, 'Name the scene file with --file <path>.')
       }
 
-      // A bad binding must not launch a stage or run layout, even for an empty board.
+      // A bad binding must not launch a stage or read a file, even for an empty board.
       const access = await delivery('whiteboard-poll', binding, options)
 
       if (access.kind === 'failure') return access
 
-      const scope = { binding, layer, file: options.binding }
+      const scope = { binding, file: options.binding }
       const bound = { ...options, session: binding.session }
-      return command === 'whiteboard-snapshot'
-        ? await cleanup_snapshot(bound, scope)
-        : await cleanup_publish(bound, scope)
+
+      if (command === 'whiteboard-snapshot') return await canvas_snapshot(bound, scope)
+
+      return command === 'whiteboard-preview'
+        ? await canvas_preview(bound, scope)
+        : await canvas_publish(bound, scope)
     }
 
     return await delivery(command, binding, options)
@@ -110,7 +116,7 @@ async function link(options: Options): Promise<Outcome> {
 
   if (status.kind !== 'answer' || status.status !== 200) return refusal(status)
 
-  if (status.body.protocol !== 2) return upgrade()
+  if (status.body.protocol !== whiteboard_protocol) return upgrade()
 
   const bound = await link_binding(port, existing, out, owner)
 
@@ -138,7 +144,7 @@ async function link(options: Options): Promise<Outcome> {
     draw_url,
     stage_url,
     binding_file: out,
-    protocol: 2,
+    protocol: whiteboard_protocol,
   })
 }
 
@@ -149,12 +155,13 @@ async function link_binding(
   owner: string,
 ): Promise<Binding | Outcome> {
   if (existing) {
-    const route = `${whiteboard_path}poll?protocol=2&${board_query(existing.session)}`
+    const query = `protocol=${protocol_text}&${board_query(existing.session)}`
+    const route = `${whiteboard_path}poll?${query}`
     const poll = await api_request(port, route, null, binding_headers(existing))
 
     if (poll.kind !== 'answer' || poll.status !== 200) return refusal(poll)
 
-    if (poll.body.protocol !== 2) return upgrade()
+    if (poll.body.protocol !== whiteboard_protocol) return upgrade()
 
     if (!poll_checked(poll.body, existing)) return invalid_reply()
 
@@ -164,13 +171,13 @@ async function link_binding(
   const response = await api_request(
     port,
     `${whiteboard_path}link`,
-    JSON.stringify({ protocol: 2, owner }),
+    JSON.stringify({ protocol: whiteboard_protocol, owner }),
     machine_headers(),
   )
 
   if (response.kind !== 'answer' || response.status !== 200) return refusal(response)
 
-  if (response.body.protocol !== 2) return upgrade()
+  if (response.body.protocol !== whiteboard_protocol) return upgrade()
 
   const { session, token } = response.body
 
@@ -200,7 +207,7 @@ async function delivery(command: string, binding: Binding, options: Options): Pr
     return usage(command, 'Supply an event, acknowledgement state and optional short message.')
   }
 
-  const query = `?protocol=2&${board_query(binding.session)}`
+  const query = `?protocol=${protocol_text}&${board_query(binding.session)}`
   const route = `${whiteboard_path}${ack ? 'ack' : 'poll'}${query}`
   const body = ack
     ? JSON.stringify({ event: options.event, state: options.state, message: options.message })
@@ -220,7 +227,7 @@ async function delivery(command: string, binding: Binding, options: Options): Pr
     return success('acknowledged', JSON.stringify(data), binding.session, data)
   }
 
-  if (answer.body.protocol !== 2) return upgrade()
+  if (answer.body.protocol !== whiteboard_protocol) return upgrade()
 
   const data = poll_checked(answer.body, binding)
 
@@ -254,7 +261,7 @@ function poll_checked(body: Record<string, unknown>, binding: Binding) {
     const { id, kind, request_id, sketch_hash, created_at_ms, state, text } = value as BoardEvent
 
     if (
-      !event_kinds.includes(kind) ||
+      !event_kinds.some((known) => known === kind) ||
       typeof id !== 'string' ||
       !/^[0-9a-f-]{36}$/.test(id) ||
       typeof request_id !== 'string' ||
@@ -271,7 +278,8 @@ function poll_checked(body: Record<string, unknown>, binding: Binding) {
     pending.push({ id, kind, request_id, sketch_hash, created_at_ms, state, text })
   }
 
-  return { protocol: 2, session, owner, sketch_hash, agent_revision, events: pending }
+  const protocol = whiteboard_protocol
+  return { protocol, session, owner, sketch_hash, agent_revision, events: pending }
 }
 
 function refusal(answer: ApiAnswer): Outcome {

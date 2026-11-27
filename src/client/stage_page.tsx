@@ -10,12 +10,14 @@ import { CleanedPane } from './cleaned_pane'
 import { use_cleaned } from './cleaned_state'
 import { icon_pair } from './icons'
 import { Notice } from './notice'
+import { PreviewBench } from './preview_bench'
 import { stage_mount } from './stage_mount'
 import { use_view, ViewPanes, ViewTabs } from './views'
 
 type Pairing = { url: string; modules: string[] }
 
 // The sketch canvas stays mounted whichever view is chosen: it renders the image agents fetch.
+// On a linked board the stage also draws an agent's drafts, out of sight, when asked.
 export function StagePage({ session }: { session: string }) {
   const board = use_board_store('stage', session)
   const [view, view_choose] = use_view('stage')
@@ -50,6 +52,7 @@ export function StagePage({ session }: { session: string }) {
       <ViewTabs view={view} linked={linked} stale={!!cleaned.status?.stale}
         onChoose={view_choose} />
       {linked && <StagePair pairing={pairing} />}
+      {linked && <PreviewBench session={session} />}
       {board.connectionStatus === 'offline' && (
         <Notice
           floating

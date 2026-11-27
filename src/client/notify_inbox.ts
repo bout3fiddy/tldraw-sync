@@ -5,11 +5,11 @@
 
 import { assert } from '../shared/assert'
 import {
-  event_kinds,
+  event_kinds_stored,
   event_states,
   message_length_max,
   type BoardEvent,
-  type EventKind,
+  type EventKindStored,
   type EventState,
 } from '../shared/whiteboard'
 
@@ -29,9 +29,10 @@ type LocalState = (typeof local_states)[number]
 export type InboxState = EventState | LocalState
 const inbox_states: readonly InboxState[] = [...event_states, ...local_states]
 
-// A row is about a request of one kind, or about the note being written.
-const subjects = [...event_kinds, 'draft'] as const
-export type InboxSubject = EventKind | 'draft'
+// A row is about a request, or about the note being written. A row saved before the upgrade,
+// or a request the Mac still reports from then, may be of a kind no longer sent.
+const subjects = [...event_kinds_stored, 'draft'] as const
+export type InboxSubject = EventKindStored | 'draft'
 
 export type InboxEntry = {
   readonly key: string
@@ -84,7 +85,7 @@ const subject_labels: Record<InboxSubject, string> = {
   draft: 'Note',
 }
 
-export const unconfirmed_detail = 'No confirmation. Notify again to retry the pending request.'
+export const unconfirmed_detail = 'No confirmation. Send again to retry the pending request.'
 const interrupted = { state: 'unconfirmed', detail: unconfirmed_detail } as const
 
 assert(inbox_entries_count_max > 0, 'the inbox can hold a row')
@@ -221,7 +222,7 @@ function event_valid(event: BoardEvent): boolean {
     typeof event.id === 'string' &&
     event.id.length > 0 &&
     event.id.length <= key_length_max &&
-    event_kinds.includes(event.kind) &&
+    event_kinds_stored.includes(event.kind) &&
     event_states.includes(event.state) &&
     Number.isSafeInteger(event.created_at_ms) &&
     event.created_at_ms >= 0 &&

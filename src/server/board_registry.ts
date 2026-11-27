@@ -1,5 +1,5 @@
 // The board sessions: which boards exist, what each is called, and which are open in memory.
-// Every board is a whole `Board` of its own, with its own sync room, image and cleaned diagram,
+// Every board is a whole `Board` of its own, with its own sync room, image and Agent canvas,
 // so nothing one page or agent does to a board can reach another. There is no active board on
 // the server: every request names the board it is about.
 //
@@ -19,16 +19,16 @@ import {
   board_namers,
   type BoardSession,
 } from '../shared/board_session'
-import type { SketchSnapshot } from '../shared/cleanup_types'
+import type { SketchSnapshot } from '../shared/canvas_types'
 import {
   board_name_length_max,
   board_sessions_count_max,
   board_title_length_max,
   boards_open_count_max,
 } from '../shared/constants'
-import { owner_pattern, type Layer } from '../shared/whiteboard'
+import { owner_pattern } from '../shared/whiteboard'
 import type { Time } from '../shared/time'
-import { Board } from './board'
+import { Board, type PreviewResult } from './board'
 import type { PublishResult } from './cleaned'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
@@ -54,6 +54,9 @@ export type RenameResult = { kind: 'renamed'; session: BoardSession } | { kind: 
 
 // A publish to a board, and whether its title named that board.
 export type RegistryPublish = (PublishResult & { title_applied: boolean }) | BoardLookupFailure
+
+// A draft handed to a board to be rendered. Nothing is published and no board is named.
+export type RegistryPreview = PreviewResult | BoardLookupFailure
 
 const file_name = 'sessions.registry'
 const registry_format = 'tldraw-sync.sessions.v1'
@@ -201,16 +204,12 @@ export class BoardRegistry {
   }
 
   // The records of a board's sketch, and whether the agent is asked for a title.
-  sketch_snapshot(
-    id: string,
-    hash: string,
-    layer: Layer = 'interpretation',
-  ): SketchSnapshot | null | BoardLookupFailure {
+  sketch_snapshot(id: string, hash: string): SketchSnapshot | null | BoardLookupFailure {
     const lookup = this.board(id)
 
     if (lookup.kind !== 'board') return lookup
 
-    const snapshot = lookup.board.sketch_snapshot(hash, layer)
+    const snapshot = lookup.board.sketch_snapshot(hash)
 
     if (snapshot === null) return null
 
@@ -223,19 +222,31 @@ export class BoardRegistry {
   // Publishes, then names the board with the proposal's title if, at that moment, the board is
   // still unnamed. Both happen in one synchronous step, so no rename can come between them. A
   // refused publish names nothing.
-  publish(id: string, input: unknown, layer: Layer = 'interpretation'): RegistryPublish {
+  publish(id: string, input: unknown): RegistryPublish {
     const lookup = this.board(id)
 
     if (lookup.kind !== 'board') return lookup
 
-    const result = lookup.board.cleaned_publish(input, layer)
+    const result = lookup.board.cleaned_publish(input)
 
     if (result.kind !== 'published') return { ...result, title_applied: false }
 
-    const title_applied =
-      layer !== 'ideas' && result.title !== null && this.title_apply(id, result.title)
+    const title_applied = result.title !== null && this.title_apply(id, result.title)
     assert(!title_applied || this.find(id)?.named_by === 'agent', 'an applied title is listed')
     return { ...result, title_applied }
+  }
+
+  // Hands a draft to a board to be rendered. A draft names no board: its title is not read.
+  preview(id: string, input: unknown): RegistryPreview {
+    const lookup = this.board(id)
+
+    if (lookup.kind !== 'board') return lookup
+
+    const named = this.find(id)?.name ?? null
+    const result = lookup.board.preview_create(input)
+    assert(this.find(id)?.name === named, 'a draft names no board')
+    assert(result.kind !== 'preview' || result.preview.length > 0, 'a draft is named')
+    return result
   }
 
   // An orderly stop: every open board is saved.
@@ -268,7 +279,7 @@ export class BoardRegistry {
       this.commit(this.sessions.map((candidate) => (candidate.id === id ? named : candidate)))
     } catch (error) {
 
-      // The diagram is published already; a title that cannot be saved is left off, and the
+      // The canvas is published already; a title that cannot be saved is left off, and the
       // board stays unnamed, in memory and on disk. A broken invariant still stops the server.
       if (error instanceof AssertionError) throw error
 

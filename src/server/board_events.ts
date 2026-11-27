@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { assert } from '../shared/assert'
 import { document_hash_pattern } from '../shared/constants'
 import {
-  event_kinds,
+  event_kind_retired,
+  event_kinds_stored,
   event_states,
   events_count_max,
   message_length_max,
@@ -10,6 +11,7 @@ import {
   request_id_pattern,
   request_size_bytes_max,
   request_text_valid,
+  retired_message,
   type EventRequest,
   type EventKind,
   type EventState,
@@ -86,7 +88,26 @@ export class BoardEvents {
 
     if (new Set(ids).size !== ids.length) throw new StorageError('Duplicate request in journal.')
 
-    return new BoardEvents(disk, events, retired)
+    const journal = new BoardEvents(disk, events, retired)
+    journal.retire_outstanding()
+    return journal
+  }
+
+  // A request of a kind this board no longer runs, still waiting from before an upgrade, is
+  // closed here before any host can be handed it. It is never executed: it ends as failed,
+  // with a line for the person who sent it, and keeps its place and its replay key.
+  private retire_outstanding(): void {
+    const waiting = (event: BoardEvent) => event_kind_retired(event.kind) && !terminal(event.state)
+
+    if (!this.events.some(waiting)) return
+
+    const next = this.events.map((event) =>
+      waiting(event) ? { ...event, state: 'failed' as const, message: retired_message } : event,
+    )
+    assert(next.length === this.events.length, 'retiring removes no request')
+    assert(next.every(event_valid), 'retired requests are replayable')
+    this.commit(next)
+    assert(!this.outstanding().some((event) => event_kind_retired(event.kind)), 'none is left')
   }
 
   latest(): BoardEvent | undefined {
@@ -105,6 +126,8 @@ export class BoardEvents {
     return pending
   }
 
+  // The receipt already given for this request, if it was made before. A retry gets the same
+  // receipt and never a second request.
   replay(kind: EventKind, hash: string, request: EventRequest) {
     if (!request.request_id) return null
 
@@ -232,7 +255,7 @@ function event_valid(value: unknown): value is BoardEvent {
     Object.keys(e).every((key) => event_keys.has(key)) &&
     typeof e.id === 'string' &&
     /^[0-9a-f-]{36}$/.test(e.id) &&
-    event_kinds.includes(e.kind) &&
+    event_kinds_stored.includes(e.kind) &&
     event_states.includes(e.state) &&
     typeof e.sketch_hash === 'string' &&
     document_hash_pattern.test(e.sketch_hash) &&

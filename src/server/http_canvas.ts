@@ -1,48 +1,63 @@
-// The cleanup routes of the network edge. Bodies are untrusted: their size is checked before
-// they are kept, and their content is checked whole by the board before anything changes.
-// Errors are JSON with a stable code, so the command line can tell an agent what to do next.
+// The Agent canvas routes of the network edge, and what every JSON route shares. Bodies are
+// untrusted: their size is checked before they are kept, and their content is checked whole
+// by the board before anything changes. Errors are JSON with a stable code, so the command
+// line can tell an agent what to do next.
 
 import { assert } from '../shared/assert'
-import {
-  image_size_bytes_max,
-  proposal_size_bytes_max,
-  restore_request_size_bytes_max,
-} from '../shared/constants'
-import type { BoardLookupFailure, BoardRegistry, RegistryPublish } from './board_registry'
+import { image_size_bytes_max, restore_request_size_bytes_max } from '../shared/constants'
+import type {
+  BoardLookupFailure,
+  BoardRegistry,
+  RegistryPreview,
+  RegistryPublish,
+} from './board_registry'
+import type { PublishRefusal } from './cleaned'
 
 type Body = { ok: true; value: unknown } | { ok: false; response: Response }
 
-// The board is looked up only once the body has arrived, so a board set aside meanwhile is
-// opened again rather than written to closed.
-export async function cleaned_publish_route(
-  request: Request,
-  registry: BoardRegistry,
-  id: string,
-): Promise<Response> {
-  const body = await body_read(request, proposal_size_bytes_max)
-
-  if (!body.ok) return body.response
-
-  return publish_response(registry.publish(id, body.value))
-}
+const no_store = { headers: { 'cache-control': 'no-store' } }
 
 export function publish_response(result: RegistryPublish): Response {
-
   if (result.kind === 'not_found' || result.kind === 'busy' || result.kind === 'damaged') {
     return lookup_error(result)
   }
 
+  if (result.kind !== 'published') return refusal_response(result)
+
+  assert(result.revision > 0, 'a published revision is positive')
+  assert(result.records_hash.length > 0, 'a publish names its records')
+  const { kind, revision, shapes_count, records_hash, title_applied } = result
+  return Response.json({ kind, revision, shapes_count, records_hash, title_applied }, no_store)
+}
+
+// A draft was accepted for rendering. It names the records a publish of it would save.
+export function preview_response(result: RegistryPreview, session: string): Response {
+  if (result.kind === 'not_found' || result.kind === 'busy' || result.kind === 'damaged') {
+    return lookup_error(result)
+  }
+
+  if (result.kind !== 'preview') return refusal_response(result)
+
+  assert(result.preview.length > 0, 'a draft is named')
+  assert(result.base_revision >= 0, 'a draft builds on a revision')
+  const { preview, base_revision, snapshot, shapes_count, records_hash } = result
+  const body = { session, preview, base_revision, snapshot, shapes_count, records_hash }
+  return Response.json(body, no_store)
+}
+
+// Why a scene was not accepted, for a publish and a draft alike. Nothing changed.
+function refusal_response(result: PublishRefusal): Response {
   if (result.kind === 'session_mismatch') {
     return json_error(
       409,
       'session_mismatch',
-      'The proposal was made from a snapshot of another board. Take a snapshot of this board.',
+      'The scene was made from a snapshot of another board. Take a snapshot of this board.',
       { session: result.session },
     )
   }
 
   if (result.kind === 'invalid') {
-    return json_error(400, 'invalid_proposal', `${result.path}: ${result.message}`, {
+    return json_error(400, 'invalid_scene', `${result.path}: ${result.message}`, {
       path: result.path,
     })
   }
@@ -51,29 +66,23 @@ export function publish_response(result: RegistryPublish): Response {
     return json_error(
       409,
       'sketch_changed',
-      'The sketch changed after the snapshot was taken. ' + 'Take a new snapshot and clean that.',
+      'The sketch changed after the snapshot was taken. Take a new snapshot.',
       { sketch_hash: result.sketch_hash },
     )
   }
 
-  if (result.kind === 'revision_conflict') {
-    return json_error(
-      409,
-      'revision_conflict',
-      'The cleaned diagram changed after the ' + 'snapshot was taken. Take a new snapshot.',
-      { revision: result.revision },
-    )
-  }
-
-  assert(result.kind === 'published', 'every publish result is handled')
-  assert(result.revision > 0, 'a published revision is positive')
-  const { kind, revision, shapes_count, title_applied } = result
-  return Response.json(
-    { kind, revision, shapes_count, title_applied },
-    { headers: { 'cache-control': 'no-store' } },
+  assert(result.kind === 'revision_conflict', 'every refusal is handled')
+  assert(result.revision >= 0, 'a conflict names the current revision')
+  return json_error(
+    409,
+    'revision_conflict',
+    'The Agent canvas changed after the snapshot was taken. Take a new snapshot.',
+    { revision: result.revision },
   )
 }
 
+// The board is looked up only once the body has arrived, so a board set aside meanwhile is
+// opened again, not written to closed.
 export async function cleaned_restore_route(
   request: Request,
   registry: BoardRegistry,
@@ -106,7 +115,7 @@ export async function cleaned_restore_route(
     return json_error(
       409,
       'revision_conflict',
-      'The cleaned diagram changed meanwhile. ' + 'Nothing was restored.',
+      'The Agent canvas changed meanwhile. Nothing was restored.',
       { revision: result.revision },
     )
   }
@@ -117,7 +126,7 @@ export async function cleaned_restore_route(
 
   assert(result.kind === 'restored', 'every restore result is handled')
   assert(result.revision > result.restored_from, 'a restore makes a newer revision')
-  return Response.json(result, { headers: { 'cache-control': 'no-store' } })
+  return Response.json(result, no_store)
 }
 
 // Why a named board cannot be served right now.
@@ -147,13 +156,7 @@ export function json_error(
 ): Response {
   assert(status >= 400 && status < 600, 'an error has an error status')
   assert(/^[a-z_]+$/.test(code) && message.endsWith('.'), 'an error has a code and a sentence')
-  return Response.json(
-    { ...extra, code, message },
-    {
-      status,
-      headers: { 'cache-control': 'no-store' },
-    },
-  )
+  return Response.json({ ...extra, code, message }, { status, ...no_store })
 }
 
 // JSON only: a browser cannot send it from another site without a preflight this server never

@@ -13,7 +13,7 @@ import {
   registry_environment_simulated,
   type SimulatedRegistryEnvironment,
 } from '../simulation/simulated_registry'
-import { proposal_example, sketch_disk, sketch_square } from '../simulation/test_sketch'
+import { scene_example, sketch_disk, sketch_square } from '../simulation/test_sketch'
 import { VirtualTime } from '../simulation/virtual_time'
 import type { Board } from './board'
 import { BoardRegistry } from './board_registry'
@@ -53,14 +53,10 @@ function board_of(registry: BoardRegistry, id: string): Board {
   return lookup.board
 }
 
-function proposal_for(board: Board, session: string | null, title: string | null = null) {
+function proposal_for(board: Board, session: string, title: string | null = null) {
   const hash = board.document_state().hash
-  const base = proposal_example(hash, board.cleaned_status().revision)
-  return {
-    ...base,
-    ...(session === null ? {} : { session }),
-    ...(title === null ? {} : { title }),
-  }
+  const base = scene_example(hash, board.cleaned_status().revision, 'Checkout', session)
+  return { ...base, ...(title === null ? {} : { title }) }
 }
 
 const socket_idle: WebSocketMinimal = { readyState: 1, send: () => undefined, close: () => {} }
@@ -80,7 +76,7 @@ test('a data directory from before sessions opens as the default board, unchange
   // Nothing is written for sessions until one is made: the old layout stays as it was.
   expect(env.disk.read('sessions.registry')).toBeNull()
   const board = registry.board_open(board_default_id) as Board
-  const published = registry.publish(board_default_id, proposal_for(board, null))
+  const published = registry.publish(board_default_id, proposal_for(board, board_default_id))
   expect(published).toMatchObject({ kind: 'published', revision: 1, title_applied: false })
   expect(env.disk.read('sessions.registry')).toBeNull()
   registry.close()
@@ -130,14 +126,22 @@ test('a proposal is refused by every board but the one its snapshot came from', 
   })
   expect(registry.publish(board_default_id, for_one)).toMatchObject({ kind: 'session_mismatch' })
 
-  // A proposal from before sessions names no board: only the default board takes it.
-  const unbound = proposal_for(board_two, null)
-  expect(registry.publish(two, unbound)).toMatchObject({ kind: 'session_mismatch' })
+  // A scene always names its board: one that names none is refused by every board.
+  const { session: _, ...unbound } = proposal_for(board_two, two)
+  const nameless = { kind: 'invalid', path: 'proposal.session' }
+  expect(registry.publish(two, unbound)).toMatchObject(nameless)
+  expect(registry.publish(board_default_id, unbound)).toMatchObject(nameless)
   expect(board_two.cleaned_status().revision).toBe(0)
   expect(registry.find(two)?.name).toBeNull()
 
+  // A draft is bound to its board the same way, and names nothing.
+  expect(registry.preview(two, for_one)).toEqual({ kind: 'session_mismatch', session: two })
+  expect(registry.preview(one, for_one)).toMatchObject({ kind: 'preview', base_revision: 0 })
+  expect(registry.find(one)?.name).toBeNull()
+  expect(board_one.cleaned_status().revision).toBe(0)
+
   expect(registry.publish(one, for_one)).toMatchObject({ kind: 'published', title_applied: true })
-  expect(registry.publish(board_default_id, unbound)).toMatchObject({ kind: 'published' })
+  expect(registry.find(one)?.name).toBe('Payments')
   registry.close()
 })
 

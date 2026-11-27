@@ -1,18 +1,25 @@
-// Measures the pen strokes a drawing keeps. The command line sizes a drawing with this before
-// it lays a diagram out, and the board measures the same strokes again when it copies them from
-// the sketch, so both agree on the box a drawing fills. Nothing here changes a stroke: its pen
-// samples, colour and weight are carried as they are. Only where each stroke sits, relative to
-// the corner of its drawing, is worked out, so the strokes of one drawing keep their shape,
-// their size and their place among each other.
+// Measures the pen strokes a scene keeps from the sketch. The board measures them when it
+// copies them, to know the box they fill. Nothing here changes a stroke: its pen samples,
+// colour and weight are carried as they are. Only where each stroke sits, relative to the
+// corner of that box, is worked out, so the strokes named together keep their shape, their
+// size and their place among each other.
 
 import { assert } from './assert'
-import { ink_stroke_types, type InkStroke, type InkStrokeType } from './cleanup_types'
+import { ink_stroke_types, type InkStroke, type InkStrokeType } from './scene_types'
 
 type Json = Record<string, unknown>
 
-export type InkMeasured = { w: number; h: number; ink: InkStroke[]; points_count: number }
+// `x` and `y` are the top left corner of the box on the page, where the strokes lie now.
+export type InkMeasured = {
+  x: number
+  y: number
+  w: number
+  h: number
+  ink: InkStroke[]
+  points_count: number
+}
 
-// Which stroke of a drawing cannot be kept, by its place in the list, and why.
+// Which stroke cannot be kept, by its place in the list, and why.
 export type InkProblem = { index: number; message: string }
 
 type Extent = { x0: number; y0: number; x1: number; y1: number }
@@ -33,8 +40,8 @@ export function ink_measure(
   records: ReadonlyMap<string, Json>,
   points_count_max: number,
 ): InkMeasured | InkProblem {
-  assert(ids.length > 0, 'a drawing keeps at least one stroke')
-  assert(points_count_max > 0, 'a drawing may keep some pen samples')
+  assert(ids.length > 0, 'at least one stroke is measured')
+  assert(points_count_max > 0, 'some pen samples may be kept')
   const extent: Extent = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }
   const strokes: Stroke[] = []
   let points_count = 0
@@ -47,7 +54,7 @@ export function ink_measure(
     points_count += stroke_extend(extent, stroke)
 
     if (points_count > points_count_max) {
-      return { index, message: 'These drawings hold more pen samples than one canvas keeps.' }
+      return { index, message: 'These strokes hold more pen samples than one canvas keeps.' }
     }
 
     strokes.push(stroke)
@@ -65,6 +72,8 @@ export function ink_measure(
   assert(Number.isFinite(left) && Number.isFinite(top), 'measured strokes have a corner')
   assert(ink.length === ids.length, 'every stroke is placed')
   return {
+    x: left,
+    y: top,
     w: Math.max(1, Math.ceil(extent.x1) - left),
     h: Math.max(1, Math.ceil(extent.y1) - top),
     ink,
@@ -80,7 +89,7 @@ function stroke_read(record: Json | undefined): Stroke | string {
   const type = ink_stroke_types.find((candidate) => candidate === record.type)
 
   if (record.typeName !== 'shape' || type === undefined) {
-    return 'Only pen and highlighter strokes can be kept as a drawing.'
+    return 'Only pen and highlighter strokes can be copied from the sketch.'
   }
 
   if (typeof record.parentId !== 'string' || !record.parentId.startsWith('page:')) {
