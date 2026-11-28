@@ -55,9 +55,8 @@ that menu also lets you inspect the previous revision and return. Looking back r
 The Mac fits incoming ink and agent drawings until you navigate. Drag or scroll to pan; pinch or
 Ctrl-scroll to zoom. Your view then stays put, even as the board changes. Choose **Recenter board**
 next to the pairing button at the top right to see everything and resume following. On an
-interactive drawing, use its controls or click a shape with a shortcut to change the view on the
-Mac alone. Neither navigation nor a choice edits the
-drawing or moves the iPad’s camera.
+interactive drawing, use its controls or click a shape with a shortcut to change the view on the Mac
+alone. Neither navigation nor a choice edits the drawing or moves the iPad’s camera.
 
 On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its view. Drag
 the chat’s left edge, or focus it and use the arrow keys, to choose a width for this device. On a
@@ -75,9 +74,14 @@ bun link
 tldraw-sync start
 ```
 
-The board opens on your Mac. Tap the QR icon at the top right, then scan the code with your iPad on
-the same network to draw. Ask your agent to read `tldraw-sync --help`; it can then fetch your sketch
-whenever you mention it.
+The board opens on your Mac. Tap the QR icon at the top right and scan it with your iPad. If both
+devices are connected to the same Tailscale network, the Mac offers its Tailscale address first: no
+board setup or shared Wi-Fi needed. Your tailnet rules and Mac firewall must allow the iPad to reach
+the board's port. On the same Wi-Fi, you can use the local code instead. Without Tailscale, just
+scan the usual local code. Reopen the sheet after changing networks.
+
+Pairing does not publish your board to the internet. Don't forward its port or share its QR code.
+Ask your agent to read `tldraw-sync --help`; it can then fetch your sketch whenever you mention it.
 
 For Chat, link the board to an agent session: in a pih session with whiteboard support, run
 `/start_whiteboard`. Tap the QR icon on the Mac stage, scan the code and leave the stage open.
@@ -90,7 +94,8 @@ drawing, and Undo takes either back.
 
 ## Privacy
 
-The board runs on your Mac and calls no model itself. Use it on a network you trust: sketch access
-has no password and traffic is not encrypted. A board's chat is kept on the Mac and can be read only
-by the Mac stage and devices paired with that board's QR code. Anything you send to an agent that
-uses a hosted model goes to that model's provider.
+The board runs on your Mac and calls no model itself. Use it on networks you trust: sketch access
+has no password. The board serves HTTP; Tailscale encrypts the tailnet connection, not ordinary
+Wi-Fi access. A board's chat is kept on the Mac and can be read only by the Mac stage and devices
+paired with that board's QR code. Anything you send to an agent that uses a hosted model goes to
+that model's provider.

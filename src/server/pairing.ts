@@ -33,6 +33,15 @@ export function pairing_board(pairing: Pairing, draw_path: string): Pairing {
   return pairing_encode(`${origin}${draw_path}`)
 }
 
+// The credential belongs only in the scannable fragment, never in either displayed address.
+export function pairing_option(host: string, port: number, page: string, token: string | null) {
+  assert(page.startsWith('/s/'), 'a stage pairs to one specific session')
+  assert(!page.includes('#'), 'the public address has no fragment')
+  const url = `http://${host}:${port}${page}`
+  const { modules } = pairing_encode(token === null ? url : `${url}#pair=${token}`)
+  return { url, modules }
+}
+
 function pairing_encode(url: string): Pairing {
   assert(url.startsWith('http://'), 'a pairing is a plain-HTTP address')
   const code = qrcode(0, 'M')

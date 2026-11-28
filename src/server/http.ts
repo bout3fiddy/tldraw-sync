@@ -61,7 +61,7 @@ import {
 import { whiteboard_path, whiteboard_protocol } from '../shared/whiteboard'
 import { authorized, scoped_key } from './whiteboard_keys'
 import { whiteboard_route, denied } from './http_whiteboard'
-import { pairing_board, type Pairing } from './pairing'
+import { pairing_board, pairing_option, type Pairing } from './pairing'
 
 export type ServerOptions = {
   readonly registry: BoardRegistry
@@ -72,6 +72,7 @@ export type ServerOptions = {
 
   // The default board's pairing. Every other board's QR code is made from it.
   readonly pairing: Pairing
+  readonly tailnet_address?: () => Promise<string | null>
 
   // A failed assertion must stop the process, not turn into a 500 that hides it.
   readonly on_fatal: (error: AssertionError) => void
@@ -284,7 +285,12 @@ function board_route(
     return text(405, 'Use POST to restore a cleaned revision.')
   }
   if (method !== 'GET') return text(405, 'Method not allowed.')
-  if (pathname === path_pairing) return board_pairing(options, id, owner, local, request)
+  if (pathname === path_pairing) {
+    return board_pairing(options, id, local, request, server.port).catch((error) => {
+      if (error instanceof AssertionError) options.on_fatal(error)
+      return text(503, 'Pairing unavailable.')
+    })
+  }
   return board_with(registry, id, (board) => {
     if (pathname === path_drawing_json) return Response.json(board.shapes())
     if (pathname === path_cleaned_json || pathname === path_cleaned_status) {
@@ -304,18 +310,33 @@ function board_route(
   })
 }
 
-function board_pairing(
-  options: ServerOptions, id: string, owner: string | null, local: boolean, request: Request,
-): Response {
+async function board_pairing(
+  options: ServerOptions, id: string, loopback: boolean, request: Request, port: number | undefined,
+): Promise<Response> {
   if (options.registry.find(id) === null) return lookup_error({ kind: 'not_found' })
 
   const page = board_draw_path(id)
-  if (local && owner && options.machine_key && request.headers.get('x-board-stage') === 'qr') {
-    const token = scoped_key(options.machine_key, 'event', id, owner)
-    const paired = pairing_board(options.pairing, `${page}#pair=${token}`)
-    return json_no_store({ ...paired, url: paired.url.split('#')[0] })
+  const origin = request.headers.get('origin')
+  const stage = loopback && request.headers.get('x-board-stage') === 'qr'
+  if (!stage || (origin !== null && origin !== new URL(request.url).origin)) {
+    return json_no_store(pairing_board(options.pairing, page))
   }
-  return json_no_store(pairing_board(options.pairing, page))
+
+  const address = await options.tailnet_address?.()
+
+  // A board can disappear while status is pending. Decide whether to issue a token only now.
+  if (options.registry.find(id) === null) return lookup_error({ kind: 'not_found' })
+
+  const owner = options.registry.owner(id)
+  const token = owner && options.machine_key ? scoped_key(options.machine_key, 'event', id, owner)
+    : null
+  const host = new URL(options.pairing.url).hostname
+  assert(port !== undefined && port > 0, 'a stage pairs to the listening port')
+  const local = pairing_option(host, port, page, token)
+  if (!address || address === host) return json_no_store(local)
+  if (options.hostname !== '0.0.0.0' && options.hostname !== address) return json_no_store(local)
+
+  return json_no_store({ ...pairing_option(address, port, page, token), local })
 }
 
 // Anyone on the network may read this. It says where the newest request stands, never a word

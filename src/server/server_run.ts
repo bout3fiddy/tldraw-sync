@@ -11,6 +11,7 @@ import { BoardRegistry } from './board_registry'
 import { server_start, static_files_load } from './http'
 import { pairing_create, pairing_host, type Pairing } from './pairing'
 import { server_state_claim, server_state_release, type ServerState } from './server_state'
+import { tailnet_discovery } from './tailnet'
 import { machine_key } from './whiteboard_keys'
 import { disk_open, session_storage } from './storage'
 
@@ -75,6 +76,7 @@ function board_serve(options: ServerRunOptions): ServerRunResult {
       hostname: '0.0.0.0',
       static_files: static_files_load(options.static_directory),
       pairing,
+      tailnet_address: tailnet_discovery(),
       on_fatal: (error) => {
         server_state_release(options.data_directory)
         console.error(error.stack ?? error.message)
