@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { shape_view_read, shape_view_shown, views_controls_read } from '../client/native_views'
 import { time_real } from '../shared/time'
 import {
   legacy_board_write,
@@ -269,19 +270,192 @@ for (const [name, kind, prepare] of refusals) {
   })
 }
 
-for (const [canvas, chat, kind] of [
-  ['interactive', 'answered', 'board_interactive'],
-  ['hidden', 'answered', 'board_interactive'],
-  ['static', 'open', 'board_outstanding'],
+for (const [canvas, chat, kind, prepare] of [
+  ['static', 'open', 'board_outstanding', () => undefined],
+  ['interactive', 'answered', 'board_ambiguous', (at: Fixture) => view_mark_add(at)],
 ] as const) {
-  test(`refused before writing: a ${canvas} canvas with an ${chat} chat`, () => {
+  test(`refused before writing: ${canvas} canvas, ${chat} chat, ${kind}`, () => {
     const at = fixture(canvas, chat)
+    prepare(at)
     const before = tree(at.source)
     const outputs = fs.readdirSync(at.parent).sort()
     const result = rehearse(at)
     expect(result.kind).toBe(kind)
     refused_check(at, before, outputs, result)
   })
+}
+
+// Every element of every view is carried, under the id each view gave it. Each view the copy
+// can show is the view the print showed, shape for shape, at the same place on the page.
+test('a canvas with views keeps every element; each view shows what the print showed', () => {
+  const at = fixture('interactive')
+  const before = tree(at.source)
+  const result = rehearse(at)
+  expect(result).toMatchObject({
+    kind: 'rehearsed',
+    agent_revision: 1,
+    agent_history_count: 0,
+    view_controls_count: 3,
+  })
+  expect(tree(at.source)).toEqual(before)
+  const source = registry_open(at.source)
+  const copy = registry_open(at.out)
+
+  try {
+    const original = board_of(source, at.session)
+    const records = board_of(copy, at.session).native!.scene_read().records as unknown as Json[]
+    const by_id = new Map(records.map((record) => [record.id, record]))
+
+    for (const stroke of sketch_strokes) expect(by_id.get(stroke.id)).toEqual(stroke as Json)
+
+    const controls = views_controls_read(document_of(at.out, at.session).meta)
+    const rest = original.cleaned_view(null)
+
+    if (rest.kind !== 'view') throw new Error('the legacy view at rest was refused')
+
+    expect(controls as unknown).toEqual(rest.view.controls.map(control_full))
+    const states = states_all(controls!)
+    expect(states.length).toBe(12)
+
+    for (const state of states) {
+      const shown = original.cleaned_view(state)
+
+      if (shown.kind !== 'view') throw new Error('a legacy view was refused')
+
+      expect([state, shapes_shown(records, controls!, state)]).toEqual([
+        state,
+        shapes_placed(shown.view.records as Json[]),
+      ])
+    }
+
+    // What the rest view hides is in the scene all the same, with the view it belongs to.
+    expect(by_id.get('shape:scene-snow')!.meta.view).toEqual({
+      visible_when: [{ control: 'season', values: ['winter'] }],
+      on_tap: { control: 'season', value: 'summer' },
+    })
+    expect(by_id.get('shape:scene-house')!.meta).toEqual({})
+    expect(records.filter((record) => record.typeName === 'binding')).toHaveLength(2)
+  } finally {
+    source.close()
+    copy.close()
+  }
+})
+
+// A canvas whose views are only in an earlier revision has one view now: that is carried, and
+// the earlier revisions, views and all, stay in the archive byte for byte.
+test('views of an earlier revision stay in the archive; the current one is carried', () => {
+  const at = fixture('hidden')
+  const result = rehearse(at)
+  expect(result).toMatchObject({ kind: 'rehearsed', agent_revision: 2, view_controls_count: 0 })
+  const archive = fs.readFileSync(path.join(at.out, 'sessions', at.session, 'agent_canvas.archive'))
+  expect(archive.equals(fs.readFileSync(board_path(at, 'cleaned.state')))).toBe(true)
+  expect(document_of(at.out, at.session).meta).toEqual({})
+  const copy = registry_open(at.out)
+
+  try {
+    const records = board_of(copy, at.session).native!.scene_read().records as unknown as Json[]
+    expect(records.some((record) => Object.hasOwn(record.meta ?? {}, 'view'))).toBe(false)
+  } finally {
+    copy.close()
+  }
+})
+
+// The controls as the board serves them, with a toggle's implied options written out.
+function control_full(control: Json): Json {
+  const options = control.options ?? [
+    { value: 'off', label: 'Off' },
+    { value: 'on', label: 'On' },
+  ]
+  return { ...control, options }
+}
+
+// Every view state of the controls, counted and bounded by their product.
+function states_all(controls: readonly Json[]): Record<string, string>[] {
+  let states: Record<string, string>[] = [{}]
+
+  for (const control of controls) {
+    const values = (control.options as { value: string }[]).map((option) => option.value)
+    states = states.flatMap((state) => values.map((value) => ({ ...state, [control.id]: value })))
+    expect(states.length).toBeLessThanOrEqual(entries_count_max)
+  }
+
+  return states
+}
+
+// What a page shows of a native scene in one view, judged as the canvas judges it: a shape
+// whose own marks hold, in groups that are shown, and an arrow only with both of its ends.
+function shapes_shown(
+  records: readonly Json[],
+  controls: NonNullable<ReturnType<typeof views_controls_read>>,
+  state: Record<string, string>,
+): Json {
+  const by_id = new Map(records.map((record) => [record.id, record]))
+  const effect = { controls, state }
+  const own = (record: Json) => shape_view_shown(shape_view_read(record.meta, controls), effect)
+  const placed: Json[] = []
+
+  for (const record of records) {
+    if (record.typeName !== 'shape' || !String(record.id).startsWith('shape:scene-')) continue
+
+    let shown = own(record)
+
+    for (let parent = shape_of(by_id, record.parentId); parent !== undefined;) {
+      shown = shown && own(parent)
+      parent = shape_of(by_id, parent.parentId)
+    }
+
+    for (const binding of records) {
+      if (binding.typeName === 'binding' && binding.fromId === record.id) {
+        shown = shown && own(by_id.get(binding.toId)!)
+      }
+    }
+
+    if (shown) placed.push(record)
+  }
+
+  return shapes_placed(placed, by_id)
+}
+
+// The leaf shapes, by id, each with its page position and how it is drawn. A group only
+// carries its shapes, and a view may dissolve it, so it is judged by them.
+function shapes_placed(records: readonly Json[], all = new Map<string, Json>()): Json {
+  const by_id = new Map([...all, ...records.map((record) => [record.id, record] as const)])
+  const placed: Json = {}
+
+  for (const record of records) {
+    if (record.typeName !== 'shape' || record.type === 'group') continue
+
+    let [x, y] = [record.x as number, record.y as number]
+
+    for (let parent = shape_of(by_id, record.parentId); parent !== undefined;) {
+      expect(parent.rotation).toBe(0)
+      ;[x, y] = [x + parent.x, y + parent.y]
+      parent = shape_of(by_id, parent.parentId)
+    }
+
+    const { type, props, rotation, opacity } = record
+    const [page_x, page_y] = [Math.round(x * 1000), Math.round(y * 1000)]
+    placed[record.id] = { page_x, page_y, type, props, rotation, opacity }
+  }
+
+  return placed
+}
+
+// The group a shape is in, or undefined on the page.
+function shape_of(by_id: ReadonlyMap<string, Json>, id: string): Json | undefined {
+  const found = by_id.get(id)
+  return found?.typeName === 'shape' ? found : undefined
+}
+
+function document_of(root: string, session: string): Json {
+  const file = path.join(root, 'sessions', session, 'board.snapshot')
+  const decoded = envelope_decode(new Uint8Array(fs.readFileSync(file)), 'board')
+
+  if (!decoded.ok) throw new Error('the copy is readable')
+
+  const room = JSON.parse(new TextDecoder().decode(decoded.envelope.payload))
+  const states = room.documents.map((document: Json) => document.state as Json)
+  return states.find((state: Json) => state.typeName === 'document')
 }
 
 // A failure while writing leaves the source as it was, and no output or staging folder.
@@ -461,14 +635,28 @@ function board_folder_linked(at: Fixture): Partial<Fixture> {
 }
 
 function page_add(at: Fixture): Partial<Fixture> {
+  return room_change(at, (room) => {
+    const page = { id: 'page:second', typeName: 'page', name: 'Page 2', index: 'a2', meta: {} }
+    room.documents.push({ state: page, lastChangedClock: room.clock })
+  })
+}
+
+// A stroke of the sketch already bearing the mark views are told apart by.
+function view_mark_add(at: Fixture): Partial<Fixture> {
+  return room_change(at, (room) => {
+    const stroke = room.documents.find((document: Json) => document.state.id === 'shape:hill')
+    stroke.state.meta = { view: { visible_when: [{ control: 'season', values: ['winter'] }] } }
+  })
+}
+
+function room_change(at: Fixture, change: (room: Json) => void): Partial<Fixture> {
   const file = board_path(at, 'board.snapshot')
   const decoded = envelope_decode(new Uint8Array(fs.readFileSync(file)), 'board')
 
   if (!decoded.ok) throw new Error('the fixture sketch is readable')
 
   const room = JSON.parse(new TextDecoder().decode(decoded.envelope.payload))
-  const page = { id: 'page:second', typeName: 'page', name: 'Page 2', index: 'a2', meta: {} }
-  room.documents.push({ state: page, lastChangedClock: room.clock })
+  change(room)
   const payload = new TextEncoder().encode(JSON.stringify(room))
   fs.writeFileSync(file, envelope_encode({ kind: 'board', label: '-', payload }))
   return {}

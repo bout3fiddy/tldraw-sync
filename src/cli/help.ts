@@ -21,9 +21,14 @@ export const commands = [
   'session-list',
   'session-create',
   'session-rename',
-  'whiteboard-link', 'whiteboard-poll', 'whiteboard-ack',
-  'whiteboard-snapshot', 'whiteboard-preview', 'whiteboard-publish',
-  'whiteboard-scene', 'whiteboard-edit',
+  'whiteboard-link',
+  'whiteboard-poll',
+  'whiteboard-ack',
+  'whiteboard-snapshot',
+  'whiteboard-preview',
+  'whiteboard-publish',
+  'whiteboard-scene',
+  'whiteboard-edit',
   'native-rehearse',
 ] as const
 
@@ -256,8 +261,13 @@ separate Agent canvas. The copy is private (mode 700) with the same private mach
 written beside --out, reopened as a native board and compared record by record before it is
 renamed into place.
 
+An Agent canvas with Drawing views is carried with every view: each element of each view
+joins the scene under the id it had, marked with the views it is shown in, and the controls go
+on the document. Each Mac and iPad then chooses its own view, as on the print, writing nothing;
+an edit made in one view is there in every view. Earlier revisions stay in the archive.
+
 Supported: a board listed with an owner (linked with whiteboard-link), not the original
-"default" board, whose Agent canvas is empty or static, with no open chat request.
+"default" board, with no open chat request.
 
 Refused before anything is written, each with its own failure code:
   source_live, source_active   the data directory in use, or a running board on --source
@@ -265,9 +275,9 @@ Refused before anything is written, each with its own failure code:
   board_not_found              no board with that id is listed in --source
   board_not_linked             the board has no owner
   board_native                 the board is native already
-  board_interactive            a revision has controls, conditional elements or taps
   board_outstanding            a chat request is not ended
-  board_ambiguous              extra pages, clashing ids or an unfinished deletion
+  board_ambiguous              extra pages, clashing ids, sketch records already marked with
+                               views, or an unfinished deletion
   board_unsupported            a retired format or a file the rehearsal does not carry
   board_damaged, key_unsafe    a damaged board file, or a key that is not private
   output_exists, output_alias  --out exists, or overlaps --source or the data directory
@@ -276,7 +286,8 @@ After writing begins: output_failed and source_changed remove the partial copy.
 Output:
   --json  {"status": "success", "code": "rehearsed", "session", "output_directory",
            "sketch_records_count", "agent_records_count", "agent_revision",
-           "agent_history_count", "chat_events_count", "native": true, "serve_command"}
+           "agent_history_count", "chat_events_count", "view_controls_count", "native": true,
+           "serve_command"}
 
 Example:
   tldraw-sync stop

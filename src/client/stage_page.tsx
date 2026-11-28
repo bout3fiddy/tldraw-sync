@@ -16,6 +16,7 @@ import { Notice } from './notice'
 import { PreviewBench } from './preview_bench'
 import { StageTap } from './inspect'
 import { use_interactive, use_print_choice, ViewChoiceProvider } from './interactive_state'
+import { NativeViewChoice, NativeViews } from './native_view_choice'
 import { PrintProvider, type PrintExtent } from './print_engine'
 import { ViewSwitch } from './view_switch'
 import { stage_mount } from './stage_mount'
@@ -37,7 +38,10 @@ export function StagePage({ session, title }: { session: string; title: string }
   const choice = use_interactive(session, cleaned.document)
   const print_choice = use_print_choice(choice)
   const following = useMemo(() => atom('stage following', true), [])
-  const [editor, mount] = use_stage_editor(session, extent, following)
+
+  // On a native board, the view of its drawing chosen on this Mac.
+  const views = useMemo(() => new NativeViewChoice(), [session])
+  const [editor, mount] = use_stage_editor(session, extent, following, views)
 
   const token = use_stage_token(session, linked)
   const online = board.status === 'synced-remote' && board.connectionStatus !== 'offline'
@@ -54,9 +58,10 @@ export function StagePage({ session, title }: { session: string; title: string }
     <main className="board board--stage" data-linked={linked} data-chat={chat_open}>
       <ViewChoiceProvider value={choice}>
         <PrintProvider document={cleaned.document} extent={extent} choice={print_choice}>
-          <Surface store={board.store} onMount={mount}>
+          <Surface store={board.store} onMount={mount} visibility={views.visibility}>
             <StageTap />
             <ViewSwitch />
+            <NativeViews choice={views} />
           </Surface>
           <PrintNotice />
         </PrintProvider>
@@ -117,18 +122,19 @@ function use_stage_editor(
   session: string,
   print: Atom<PrintExtent | null>,
   following: Atom<boolean>,
+  views: NativeViewChoice,
 ): [Editor | null, (editor: Editor) => () => void] {
   const [editor, editor_set] = useState<Editor | null>(null)
   const mount = useCallback(
     (value: Editor) => {
       editor_set(value)
-      const stop = stage_mount(value, session, print, following)
+      const stop = stage_mount(value, session, print, following, views)
       return () => {
         stop()
         editor_set(null)
       }
     },
-    [session, print, following],
+    [session, print, following, views],
   )
   return [editor, mount]
 }

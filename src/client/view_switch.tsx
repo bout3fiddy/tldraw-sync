@@ -4,7 +4,8 @@
 // no header: each control says in words what it changes.
 // When it would cover the drawing it stays in the board menu until requested.
 //
-// A choice changes the drawing on this screen only (`interactive_state.tsx`). The switch never
+// A choice changes the drawing on this screen only (`interactive_state.tsx`, or on a native
+// board `native_view_choice.tsx`). The switch never
 // moves the camera, and never takes the pen's ink: the Pencil writes straight through it, and
 // only a finger, a mouse or the keyboard chooses. Tab reaches it after the canvas, arrows
 // change a choice or a step, Space or Enter flips a toggle, and Escape returns to the canvas.
@@ -48,20 +49,37 @@ const scope_words = 'Changes this drawing on this screen only.'
 type Size = { w: number; h: number }
 type Place = { kind: 'hidden' } | { kind: 'folded' } | { kind: 'inline'; left: number; top: number }
 
+// What the switch shows and changes: a drawing's controls, the view chosen on this screen,
+// and where the drawing lies in every view.
+export type SwitchChoice = {
+  readonly controls: readonly SceneControl[]
+  readonly state: ViewState
+  readonly envelope: SceneEnvelope | null
+  readonly choose: (control: string, value: string) => boolean
+}
+
 export function ViewSwitch() {
   const editor = useEditor()
   const choice = use_view_choice()
   const print = use_print()
   const current = print?.view?.revision === choice?.revision && print?.showing_previous === false
+  const switched = useMemo(() => (choice === null ? null : switch_of(choice)), [choice])
 
-  if (choice === null || print === null || !current) return null
+  if (choice === null || switched === null || print === null || !current) return null
 
   return (
-    <SwitchPlaced key={`${choice.session} ${choice.revision}`} editor={editor} choice={choice} />
+    <SwitchPlaced key={`${choice.session} ${choice.revision}`} editor={editor} choice={switched} />
   )
 }
 
-function SwitchPlaced({ editor, choice }: { editor: Editor; choice: ViewChoice }) {
+function switch_of(choice: ViewChoice): SwitchChoice {
+  const { state, envelope, choose } = choice
+  assert(choice.scene.controls.length > 0, 'a drawing with views has controls')
+  return { controls: choice.scene.controls, state, envelope, choose }
+}
+
+// The switch over one drawing. Keyed by the drawing, so a new one starts unfolded.
+export function SwitchPlaced({ editor, choice }: { editor: Editor; choice: SwitchChoice }) {
   const [open, open_set] = useState(false)
   const actions = useMemo(
     () => [
@@ -190,13 +208,13 @@ function use_size(ref: React.RefObject<HTMLDivElement>): Size | null {
 
 // The words for the last choice made here: the control, its value and where that is among its
 // values. Nothing is said for the view a revision opens in.
-function use_announcement(choice: ViewChoice): string {
+function use_announcement(choice: SwitchChoice): string {
   const [words, words_set] = useState('')
   const last = useRef<ViewState>(choice.state)
   useEffect(() => {
     const before = last.current
     last.current = choice.state
-    const changed = choice.scene.controls.find((control) => {
+    const changed = choice.controls.find((control) => {
       return before[control.id] !== choice.state[control.id]
     })
 
@@ -207,7 +225,7 @@ function use_announcement(choice: ViewChoice): string {
     assert(option !== undefined, 'a chosen value is one of its control')
     const count = `${index + 1} of ${changed.options.length}`
     words_set(`${changed.label}, ${option.label}, ${count}. ${scope_words}`)
-  }, [choice.state, choice.scene])
+  }, [choice.state, choice.controls])
   return words
 }
 
@@ -332,7 +350,7 @@ function pointer_init(native: PointerEvent): PointerEventInit {
   }
 }
 
-type PanelProps = { editor: Editor; choice: ViewChoice; close: () => void }
+type PanelProps = { editor: Editor; choice: SwitchChoice; close: () => void }
 
 // The board menu can open the controls even when the drawing is outside the viewport.
 function SwitchPanel({ editor, choice, close }: PanelProps) {
@@ -354,11 +372,11 @@ function SwitchPanel({ editor, choice, close }: PanelProps) {
   )
 }
 
-type RowsProps = { choice: ViewChoice; idle: boolean }
+type RowsProps = { choice: SwitchChoice; idle: boolean }
 
 // One row for each control, in the scene's order. `idle` draws the rows for measuring only.
 function SwitchRows({ choice, idle }: RowsProps) {
-  const controls = choice.scene.controls
+  const controls = choice.controls
   assert(controls.length <= scene_controls_count_max, 'controls are bounded')
   const choose = (control: string, value: string) => {
     if (!idle) choice.choose(control, value)

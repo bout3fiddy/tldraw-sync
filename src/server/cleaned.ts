@@ -287,6 +287,18 @@ export class Cleaned {
     return offered
   }
 
+  // The controls and whole scene of the current revision when its views differ, as the publish
+  // saved them, for a copy that keeps every view. Null for any other revision.
+  views_current(): { controls: SceneControl[]; scene: SceneElement[] } | null {
+    const current = this.state.current
+
+    if (current === null || !version_interactive(current)) return null
+
+    assert(current.scene !== null, 'an interactive version has a scene')
+    assert(current.controls.length > 0, 'an interactive version has controls')
+    return { controls: current.controls, scene: current.scene }
+  }
+
   // The controls of the current revision's scene, as an agent may send them again.
   controls_current(): ReturnType<typeof scene_controls_write> {
     const controls = this.state.current?.controls ?? []

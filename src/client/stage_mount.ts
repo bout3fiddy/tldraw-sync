@@ -11,6 +11,7 @@ import {
 import { board_query } from '../shared/board_session'
 import { time_real } from '../shared/time'
 import { drawing_uploader_create } from './drawing_uploader'
+import type { NativeViewChoice } from './native_view_choice'
 import type { PrintExtent } from './print_engine'
 import type { PrintBox } from './print_svg'
 
@@ -32,6 +33,7 @@ export function stage_mount(
   session: string,
   print: Atom<PrintExtent | null>,
   following: Atom<boolean>,
+  views: NativeViewChoice,
 ): () => void {
   editor.user.updateUserPreferences({ colorScheme: 'light' })
   editor.updateInstanceState({ isReadonly: true, isGridMode: true })
@@ -45,7 +47,7 @@ export function stage_mount(
 
   const navigation_stop = navigation_start(editor, print, following)
   const fit_stop = fit_start(editor, print, following)
-  const upload_stop = upload_start(editor, session)
+  const upload_stop = upload_start(editor, session, views)
   return () => {
     hand_stop()
     navigation_stop()
@@ -174,14 +176,16 @@ function board_bounds(editor: Editor, print: PrintBox | null): Box | undefined {
   return ink === undefined ? box : Box.Common([ink, box])
 }
 
-function upload_start(editor: Editor, session: string): () => void {
+// The image is of the drawing at rest, whichever view this Mac shows: it is identified by the
+// records alone, so it never depends on a choice made on one screen.
+function upload_start(editor: Editor, session: string, views: NativeViewChoice): () => void {
   const uploader = drawing_uploader_create({
     time: time_real,
     records: () => {
       const types = editor.store.scopedTypes.document
       return editor.store.allRecords().filter((record) => types.has(record.typeName))
     },
-    render: () => canvas_image(editor),
+    render: () => views.at_rest(() => canvas_image(editor)),
 
     // Called straight after the uploader has checked that the records still hash to `hash`,
     // so these bounds are the bounds of the drawing in the image.

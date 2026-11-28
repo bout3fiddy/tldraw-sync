@@ -423,15 +423,36 @@ function scene_generated(prng: Prng, snapshot: string): Json {
   return { ...scene_example(snapshot, 0), controls, elements }
 }
 
-// The modules the page projects with, and every module they import, reach only this
-// repository's pure modules and tldraw's schema: nothing of Node, Bun, the disk or the network.
-test('the projection the page runs reaches nothing a browser lacks', () => {
+// The modules the page projects with, or reads a native board's views with, and every module
+// they import, reach only this repository's pure modules and tldraw's schema: nothing of Node,
+// Bun, the disk or the network.
+const page_readers = [
+  [
+    'interactive_scene.ts',
+    ['server/scene_view_records.ts', 'server/scene_proposal.ts'],
+    ['@tldraw/tlschema'],
+  ],
+  ['native_views.ts', ['server/scene_control_reader.ts'], []],
+] as const
+
+for (const [start, reaching, packages] of page_readers) {
+  test(`${start}, as the page runs it, reaches nothing a browser lacks`, () => {
+    page_reader_check(start, reaching, packages)
+  })
+}
+
+function page_reader_check(
+  start: string,
+  reaching: readonly string[],
+  packages: readonly string[],
+): void {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const root = path.resolve(here, '..')
-  const reached = imports_walk(path.join(here, 'interactive_scene.ts'))
+  const reached = imports_walk(path.join(here, start))
   const files = [...reached.files].map((file) => path.relative(root, file)).sort()
-  expect(files).toContain('server/scene_view_records.ts')
-  expect(files).toContain('server/scene_proposal.ts')
+
+  for (const file of reaching) expect(files).toContain(file)
+
   expect(
     files.every(
       (file) =>
@@ -444,7 +465,7 @@ test('the projection the page runs reaches nothing a browser lacks', () => {
         /storage|board|http|disk|server_run/.test(file) && file !== 'shared/board_session.ts',
     ),
   ).toEqual([])
-  expect([...reached.packages].sort()).toEqual(['@tldraw/tlschema'])
+  expect([...reached.packages].sort()).toEqual([...packages])
 
   for (const file of reached.files) {
     const source = fs.readFileSync(file, 'utf8')
@@ -453,7 +474,7 @@ test('the projection the page runs reaches nothing a browser lacks', () => {
       false,
     ])
   }
-})
+}
 
 function imports_walk(start: string): { files: Set<string>; packages: Set<string> } {
   const files = new Set<string>()

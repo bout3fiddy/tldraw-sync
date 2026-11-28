@@ -15,16 +15,20 @@ import {
 } from 'tldraw'
 import { assert } from '../shared/assert'
 import { asset_urls, components_quiet } from './board_store'
+import type { NativeViewChoice } from './native_view_choice'
 import { use_print, type PrintShape } from './print_engine'
 import { taken_key } from './take_plan'
 
 type SurfaceProps = {
   store: TLStore
   onMount: (editor: Editor) => void | (() => void)
+
+  // Which shapes this screen leaves out of the view it shows (`native_view_choice.tsx`).
+  visibility: NativeViewChoice['visibility']
   children?: ReactNode
 }
 
-export function Surface({ store, onMount, children }: SurfaceProps) {
+export function Surface({ store, onMount, visibility, children }: SurfaceProps) {
   return (
     <section className="surface" aria-label="Canvas">
       <Tldraw
@@ -33,6 +37,7 @@ export function Surface({ store, onMount, children }: SurfaceProps) {
         assetUrls={asset_urls}
         components={surface_components}
         onMount={onMount}
+        getShapeVisibility={visibility}
       >
         {children}
       </Tldraw>

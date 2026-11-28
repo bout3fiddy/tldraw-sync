@@ -7,17 +7,33 @@
 // where the agent put it, in the canvas's own order. Only the index of a shape directly on the
 // page changes, to stack it under the sketch; a group's children keep theirs. Nothing is laid
 // out, recoloured or dropped. Anything this cannot place without guessing is refused instead.
+//
+// A canvas whose views differ is carried whole: every element of every view becomes its record
+// as the publish made it, with the id each view gives it, marked with the views it is shown in
+// (`src/shared/native_views.ts`), and the controls go on the document. Each device then shows
+// its own view of the same records, so no hidden element is left behind and no view is saved.
 
 import type { TLRecord } from '@tldraw/tlschema'
 import { assert } from '../shared/assert'
 import { cleaned_page_id, type CanvasRecord } from '../shared/canvas_types'
-import { canvas_records_count_max } from '../shared/constants'
+import { canvas_records_count_max, scene_controls_count_max } from '../shared/constants'
+import { view_controls_key, view_shape_key, shape_view_json } from '../shared/native_views'
+import { scene_controls_write, type SceneControl } from '../shared/scene_controls'
+import type { SceneElement } from '../shared/scene_types'
+import { scene_static } from '../shared/scene_view'
 import { record_valid } from './canvas_records'
 import type { Json } from './canvas_state'
 import { room_records_max, type RoomSnapshotLike } from './native_scene_ledger'
+import { scene_records, scene_shape_id } from './scene_records'
 
 // A saved room: what the sync room needs besides the fields the ledger reads.
 export type RoomSaved = RoomSnapshotLike & { readonly schema?: unknown }
+
+// The current revision of a canvas whose views differ: its controls and its whole scene.
+export type CanvasViews = {
+  readonly controls: readonly SceneControl[]
+  readonly scene: readonly SceneElement[]
+}
 
 export type RoomPlan =
   | { readonly ok: true; readonly snapshot: RoomSaved; readonly agent: readonly TLRecord[] }
@@ -45,8 +61,15 @@ const index_floor = 'a1'
 assert(index_digits.length === 62, 'base-62 digits')
 assert(canvas_records_count_max < suffixes_count_max, 'every canvas shape gets its own key')
 
-export function room_plan(room: RoomSaved, canvas: readonly CanvasRecord[]): RoomPlan {
+// `controls` are those of a canvas whose views differ, whose records `canvas_views_records`
+// made; none for a canvas of one view.
+export function room_plan(
+  room: RoomSaved,
+  canvas: readonly CanvasRecord[],
+  controls: readonly SceneControl[] = [],
+): RoomPlan {
   assert(canvas.length <= canvas_records_count_max, 'a served canvas is bounded')
+  assert(controls.length <= scene_controls_count_max, 'controls are bounded')
   assert(Array.isArray(room.documents), 'a saved room has documents')
   const states = room.documents.map((document) => document.state as Json)
   const pages = states.filter((state) => state.typeName === 'page')
@@ -64,6 +87,11 @@ export function room_plan(room: RoomSaved, canvas: readonly CanvasRecord[]): Roo
     return refused('board_ambiguous', `The sketch and the Agent canvas both use ${taken.id}.`)
   }
 
+  // The views are told apart by marks no sketch has: one already there would be a guess.
+  const marked = controls.length === 0 ? null : views_marked(states)
+
+  if (marked !== null) return refused('board_ambiguous', marked)
+
   if (states.length + canvas.length > room_records_max) {
     const message = `A native scene holds at most ${room_records_max} records.`
     return refused('board_unsupported', message)
@@ -80,42 +108,76 @@ export function room_plan(room: RoomSaved, canvas: readonly CanvasRecord[]): Roo
   const agent = canvas_stacked(canvas, below)
   const clock = Math.max(room.clock, room.documentClock ?? 0) + 1
   const added = agent.map((state) => ({ state, lastChangedClock: clock }))
+  const documents = room.documents.map((document) =>
+    controls.length > 0 && (document.state as Json).typeName === 'document'
+      ? { state: document_with_controls(document.state as Json, controls), lastChangedClock: clock }
+      : document,
+  )
   const snapshot: RoomSaved = {
     ...room,
     clock,
     documentClock: clock,
-    documents: [...room.documents, ...added],
+    documents: [...documents, ...added],
   }
   assert(snapshot.documents.length === room.documents.length + canvas.length, 'nothing dropped')
   assert(Number.isSafeInteger(clock) && clock > room.clock, 'the clock moves forward')
   return { ok: true, snapshot, agent }
 }
 
-// Whether a saved canvas offers any choice of view: controls in any kept revision, or an
-// element shown only in some views or answering a tap. A choice hidden at rest is still one.
-export function canvas_choices_found(canvas: Json): boolean {
-  assert(typeof canvas === 'object' && canvas !== null, 'a decoded canvas is an object')
-  const history = Array.isArray(canvas.history) ? (canvas.history as unknown[]) : []
-  const versions = [canvas.current, ...history]
+// Every record of every view of the canvas, as the publish makes each (`scene_records.ts`),
+// each shape marked with the views it is shown in and what a tap on it chooses. A record is
+// the same in each view that shows it but for its parent: a group a view dissolves still
+// holds it here, and since positions follow the parent, it stays where every view puts it.
+export function canvas_views_records(views: CanvasViews): TLRecord[] {
+  assert(views.controls.length > 0, 'a canvas with views has controls')
+  assert(!scene_static(views.scene), 'a canvas with views hides something in some view')
+  const by_shape = new Map<string, SceneElement>()
 
-  for (const version of versions) {
-    if (version === null || typeof version !== 'object') continue
+  for (const element of views.scene) by_shape.set(scene_shape_id(element.id), element)
 
-    const { controls, scene } = version as Json
+  const records = scene_records(views.scene).map((record) => {
+    if (record.typeName !== 'shape') return record
 
-    if (controls !== undefined) return true
+    // A copied sketch stroke is `<id>.<n>`: every stroke of one element is shown with it.
+    const element = by_shape.get(record.id.split('.')[0] as string)
+    assert(element !== undefined, 'every shape is made from an element')
+    const view = shape_view_json(element)
 
-    if (!Array.isArray(scene)) continue
+    if (view === null) return record
 
-    for (const element of scene as unknown[]) {
-      const fields = (element ?? {}) as Json
+    return { ...record, meta: { ...record.meta, [view_shape_key]: view } } as TLRecord
+  })
+  assert(records.length <= canvas_records_count_max, 'a whole scene is a canvas this board serves')
+  return records
+}
 
-      if (fields.visible_when !== undefined || fields.on_tap !== undefined) return true
+// Why the sketch cannot hold views told apart by these marks, or null when it can: it has no
+// document to keep the controls on, or something in it already bears one of the marks.
+function views_marked(states: readonly Json[]): string | null {
+  const document = states.find((state) => state.typeName === 'document')
+
+  if (document === undefined) return 'The sketch has no document record to keep its views on.'
+
+  for (const state of states) {
+    const meta = (state.meta ?? {}) as Json
+
+    if (Object.hasOwn(meta, view_controls_key) || Object.hasOwn(meta, view_shape_key)) {
+      return `The sketch record ${String(state.id).slice(0, 80)} already marks views.`
     }
   }
 
-  assert(versions.length >= 1, 'the current revision is always looked at')
-  return false
+  assert(document.typeName === 'document', 'the document was found')
+  return null
+}
+
+function document_with_controls(document: Json, controls: readonly SceneControl[]): Json {
+  assert(document.typeName === 'document', 'controls are kept on the document')
+  const meta = (document.meta ?? {}) as Json
+  assert(!Object.hasOwn(meta, view_controls_key), 'the document had no controls')
+  const kept = scene_controls_write(controls)
+  const written: Json = { ...document, meta: { ...meta, [view_controls_key]: kept } }
+  assert(written.id === document.id && kept.length === controls.length, 'only the meta grows')
+  return written
 }
 
 // The canvas, with each shape directly on the page keyed within `integer`, which sorts below

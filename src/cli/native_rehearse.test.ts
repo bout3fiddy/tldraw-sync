@@ -95,6 +95,7 @@ test('a rehearsed copy serves natively, same binding; the source still serves', 
     session,
     output_directory: native,
     agent_records_count: 9,
+    view_controls_count: 0,
     native: true,
   })
   expect(rehearsed.stdout).not.toContain(token)

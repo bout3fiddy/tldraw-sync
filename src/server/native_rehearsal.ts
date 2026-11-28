@@ -9,9 +9,12 @@
 // merged in (`native_rehearsal_plan.ts`), a new native journal, the chat journal byte for byte,
 // and the Agent canvas file byte for byte as `agent_canvas.archive`, so its revisions survive.
 //
+// An Agent canvas whose current revision has views is carried with every view: each device of
+// the copy chooses its own, as it did on the print (`native_rehearsal_plan.ts`).
+//
 // Everything is refused before anything is written: a running daemon, the data directory in
-// daily use, the original board, an unlinked, native, damaged or interactive board, an open
-// chat request, an unsafe key, and an output that exists or overlaps either directory. The copy
+// daily use, the original board, an unlinked, native or damaged board, an open chat request,
+// an unsafe key, and an output that exists or overlaps either directory. The copy
 // is written into a private staging folder beside the output, reopened as a native board and
 // compared record by record, then renamed into place in one step. A failure removes the
 // staging folder, so the output path holds a complete verified copy or nothing.
@@ -22,14 +25,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { assert, AssertionError } from '../shared/assert'
 import { board_default_id, board_id_pattern, type BoardSession } from '../shared/board_session'
+import { view_controls_key } from '../shared/native_views'
+import type { SceneControl } from '../shared/scene_controls'
 import { time_real } from '../shared/time'
 import { BoardEvents } from './board_events'
 import { BoardRegistry, registry_encode, registry_read, type RegistryState } from './board_registry'
-import { state_decode } from './canvas_state'
+import type { Json } from './canvas_state'
 import { Cleaned } from './cleaned'
 import { NativeScene } from './native_scene'
 import { record_hash, room_view_create, type SceneRecord } from './native_scene_ledger'
-import { canvas_choices_found, room_plan, type RoomSaved } from './native_rehearsal_plan'
+import { canvas_views_records, room_plan, type RoomSaved } from './native_rehearsal_plan'
 import { process_alive, server_state_read } from './server_state'
 import {
   disk_open,
@@ -64,7 +69,6 @@ export type RehearsalRefusalKind =
   | 'board_native'
   | 'board_damaged'
   | 'board_unsupported'
-  | 'board_interactive'
   | 'board_ambiguous'
   | 'board_outstanding'
   | 'key_unsafe'
@@ -86,6 +90,9 @@ export type Rehearsed = {
   readonly agent_revision: number
   readonly agent_history_count: number
   readonly chat_events_count: number
+
+  // Controls of the views carried; 0 for a canvas of one view.
+  readonly view_controls_count: number
 }
 
 export type RehearsalResult = Rehearsed | RehearsalRefusal
@@ -100,6 +107,7 @@ type SourceRead = {
   readonly key: Uint8Array
   readonly room: RoomSaved
   readonly canvas_records: readonly { id: string; typeName: string }[]
+  readonly controls: readonly SceneControl[]
   readonly canvas_bytes: Uint8Array | null
   readonly carried: ReadonlyMap<FileName, Uint8Array>
   readonly agent_revision: number
@@ -142,7 +150,7 @@ export function native_rehearse(options: RehearsalOptions): RehearsalResult {
 
   if ('kind' in source) return source
 
-  const plan = room_plan(source.room, source.canvas_records)
+  const plan = room_plan(source.room, source.canvas_records, source.controls)
 
   if (!plan.ok) return refusal(plan.kind, plan.message)
 
@@ -316,16 +324,14 @@ type BoardRead = Omit<SourceRead, keyof Listed | 'key' | 'files' | 'before'>
 function board_read(disk: Disk): BoardRead | RehearsalRefusal {
   const room = room_read(disk)
   const canvas_bytes = disk.read('cleaned.state')
-
-  if (canvas_bytes !== null && canvas_choices_found(state_decode(canvas_bytes))) {
-    const message = 'The Agent canvas offers a choice of views. Only static canvases are carried.'
-    return refusal('board_interactive', message)
-  }
-
   const canvas = Cleaned.open(disk)
   const view = canvas.view(null)
   assert(view.kind === 'view', 'the view at rest is always valid')
-  assert(view.view.controls.length === 0, 'a static canvas has no controls')
+
+  // Earlier revisions, with any views they had, stay in the archive byte for byte.
+  const views = canvas.views_current()
+  const canvas_records = views === null ? view.view.records : canvas_views_records(views)
+  assert(views === null || canvas_records.length >= view.view.records.length, 'views only add')
   const status = canvas.status('0'.repeat(16))
   const events = BoardEvents.open(disk)
 
@@ -344,7 +350,8 @@ function board_read(disk: Disk): BoardRead | RehearsalRefusal {
 
   return {
     room,
-    canvas_records: view.view.records,
+    canvas_records,
+    controls: views?.controls ?? [],
     canvas_bytes,
     carried,
     agent_revision: status.revision,
@@ -480,10 +487,28 @@ function staging_verify(directory: string, staging: Staging): string | null {
     if (lookup.board.native === null) return 'the copy did not open as native'
 
     const records = lookup.board.native.scene_read().records
-    return scene_problem(records, source.room, staging.agent) ?? files_problem(directory, source)
+    const problem = scene_problem(records, source.room, staging.agent)
+
+    if (problem !== null) return problem
   } finally {
     registry.close()
   }
+
+  return files_problem(directory, source) ?? controls_problem(directory, staging)
+}
+
+// The room as the closed board left it keeps the views' controls on its document, exactly.
+function controls_problem(directory: string, staging: Staging): string | null {
+  const board = session_storage(directory).disk_board(staging.source.session.id)
+  const controls_of = (room: RoomSaved) => {
+    const states = room.documents.map((document) => document.state as Json)
+    const document = states.find((state) => state.typeName === 'document')
+    const meta = (document?.meta ?? {}) as Json
+    return JSON.stringify(meta[view_controls_key] ?? null)
+  }
+  const planned = controls_of(staging.snapshot)
+  assert((planned === 'null') === (staging.source.controls.length === 0), 'controls are planned')
+  return controls_of(room_read(board)) === planned ? null : 'the views changed'
 }
 
 function scene_problem(
@@ -543,6 +568,7 @@ function rehearsed(staging: Staging): Rehearsed {
     agent_revision: source.agent_revision,
     agent_history_count: source.agent_history_count,
     chat_events_count: source.chat_events_count,
+    view_controls_count: source.controls.length,
   }
 }
 

@@ -39,10 +39,14 @@ export function rehearse_command(options: Options): Outcome {
   assert(result.session === session, 'the copy keeps the board id')
   const quoted = `'${result.output_directory.replaceAll("'", "'\\''")}'`
   const serve_command = `BOARD_DATA_DIR=${quoted} tldraw-sync start`
+  const views =
+    result.view_controls_count === 0
+      ? ''
+      : ` Every Drawing view came too, with ${result.view_controls_count} controls.`
   const human = [
     `Rehearsed board ${session} as native in ${result.output_directory}.`,
     `${result.agent_records_count} Agent canvas records joined ${result.sketch_records_count}` +
-      ' sketch records. The source was not changed.',
+      ` sketch records.${views} The source was not changed.`,
     `Try it: ${serve_command}`,
   ].join('\n')
   return success('rehearsed', human, result.output_directory, {
@@ -53,6 +57,7 @@ export function rehearse_command(options: Options): Outcome {
     agent_revision: result.agent_revision,
     agent_history_count: result.agent_history_count,
     chat_events_count: result.chat_events_count,
+    view_controls_count: result.view_controls_count,
     native: true,
     serve_command,
   })

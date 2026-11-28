@@ -6,7 +6,8 @@
 // interactive brings its own switch, which changes that drawing on this iPad alone.
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { atom, DefaultSizeStyle, useValue, type Atom, type Editor } from 'tldraw'
+import { atom, DefaultSizeStyle, useValue, type Atom, type Editor, type TLShapeId } from 'tldraw'
+import { assert } from '../shared/assert'
 import { use_pair_token } from './board_pair'
 import { native_history_install, revert_request } from './native_history'
 import { PrintNotice, use_notice } from './print_notice'
@@ -19,6 +20,7 @@ import { use_board_chat } from './chat_state'
 import { use_cleaned } from './cleaned_state'
 import { Inspect } from './inspect'
 import { use_interactive, use_print_choice, ViewChoiceProvider } from './interactive_state'
+import { NativeViewChoice, NativeViews } from './native_view_choice'
 import { Notice } from './notice'
 import { PrintProvider, use_print, type Print, type PrintExtent } from './print_engine'
 import { Surface } from './surface'
@@ -48,6 +50,9 @@ export function DrawPage({ session, title }: { session: string; title: string })
   const choice = use_interactive(session, cleaned.document)
   const print_choice = use_print_choice(choice)
 
+  // On a native board, the view of its drawing chosen on this iPad.
+  const views = useMemo(() => new NativeViewChoice(), [session])
+
   if (board.status === 'loading') return <Notice text="Opening the board" />
 
   if (board.status === 'error') {
@@ -58,10 +63,11 @@ export function DrawPage({ session, title }: { session: string; title: string })
     <main className="board board--draw" data-linked={linked} data-chat={chat_open}>
       <ViewChoiceProvider value={choice}>
         <PrintProvider document={cleaned.document} choice={print_choice} extent={extent}>
-          <Surface store={board.store} onMount={mount}>
+          <Surface store={board.store} onMount={mount} visibility={views.visibility}>
             <ToolStrip />
             <Inspect onOutcome={(outcome) => notice_show(take_notice(outcome))} onAsk={ask} />
             <ViewSwitch />
+            <NativeViews choice={views} />
           </Surface>
           <PrintNotice notice={notice} />
           <SketchMenu editor={editor} onNotice={notice_show} />
@@ -183,11 +189,7 @@ type MenuProps = { editor: Editor | null; onNotice: (text: string) => void }
 // each one step that Undo takes back.
 function SketchMenu({ editor, onNotice }: MenuProps) {
   const print = use_print()
-  const empty = useValue(
-    'empty',
-    () => editor === null || editor.getCurrentPageShapeIds().size === 0,
-    [editor],
-  )
+  const empty = useValue('empty', () => editor === null || ink_shown(editor).length === 0, [editor])
   const view = print?.view ?? null
   const revision_current = print?.revision_current ?? 0
   const replace_possible = view !== null && view.shapes.length > 0 && !print?.showing_previous
@@ -196,7 +198,7 @@ function SketchMenu({ editor, onNotice }: MenuProps) {
       if (editor === null) return
 
       editor.markHistoryStoppingPoint('clear the sketch')
-      editor.deleteShapes([...editor.getCurrentPageShapeIds()])
+      editor.deleteShapes(ink_shown(editor))
       onNotice('Ink cleared. Undo brings it back.')
     }
     const replace = () => {
@@ -224,6 +226,17 @@ function SketchMenu({ editor, onNotice }: MenuProps) {
   }, [editor, view, print, revision_current, empty, replace_possible, onNotice])
   use_board_menu(items)
   return null
+}
+
+// What Clear takes: every shape this screen shows, but no group, which holds shapes a view may
+// hide. A group left holding too few is dissolved by the canvas, and what it hid stays.
+function ink_shown(editor: Editor): TLShapeId[] {
+  const shown = editor
+    .getCurrentPageShapes()
+    .filter((shape) => shape.type !== 'group' && !editor.isShapeHidden(shape))
+    .map((shape) => shape.id)
+  assert(shown.length <= editor.getCurrentPageShapeIds().size, 'shown shapes are on the page')
+  return shown
 }
 
 // These actions change only this editor's view, never the board's records.
