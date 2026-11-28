@@ -29,8 +29,6 @@ export const commands = [
   'whiteboard-publish',
   'whiteboard-scene',
   'whiteboard-edit',
-  'native-rehearse',
-  'native-stage',
 ] as const
 
 // Every board command takes this; it is described once here and named in each command's help.
@@ -73,8 +71,6 @@ History:
   cleanup-restore  Bring back an earlier revision of a board's Agent canvas
 
 Migration (offline, on a copy of a stopped data directory; nothing live is changed):
-  native-rehearse  Make a separate native working copy of one linked board
-  native-stage     Stage every board as native in a new data directory; activate nothing
 
 Options:
   --json       Print one JSON object on stdout (every command)
@@ -247,114 +243,6 @@ Failure codes:
 Example:
   tldraw-sync whiteboard-publish --binding /private/binding.json --file scene.json --json`
 
-const help_rehearse = `Usage: tldraw-sync native-rehearse --source <data-directory> --session <id>
-    --out <new-folder> [--json]
-
-A dry run of moving one board to the native shared scene. Reads a copy of a stopped data
-directory and writes a separate native data directory at --out holding only that board, under
-the same id and owner, so its existing binding file works against the copy. Nothing in
---source is written: the files read are compared before and after. Delete --out to undo.
-
-The copy keeps every sketch record exactly, adds the Agent canvas as shown now on the same
-page under the sketch, as its print was drawn, each shape where the agent put it, with its
-colours and its order, and keeps the chat journal byte for byte. The Agent canvas file, with
-its earlier revisions, is kept byte for byte as agent_canvas.archive; the copy shows no
-separate Agent canvas. The copy is private (mode 700) with the same private machine key,
-written beside --out, reopened as a native board and compared record by record before it is
-renamed into place.
-
-An Agent canvas with Drawing views is carried with every view: each element of each view
-joins the scene under the id it had, marked with the views it is shown in, and the controls go
-on the document. Each Mac and iPad then chooses its own view, as on the print, writing nothing;
-an edit made in one view is there in every view. Earlier revisions stay in the archive.
-
-Supported: a board listed with an owner (linked with whiteboard-link), not the original
-"default" board, with no open chat request.
-
-Refused before anything is written, each with its own failure code:
-  source_live, source_active   the data directory in use, or a running board on --source
-  board_default                the original board shares its folder with the registry
-  board_not_found              no board with that id is listed in --source
-  board_not_linked             the board has no owner
-  board_native                 the board is native already
-  board_outstanding            a chat request is not ended
-  board_ambiguous              extra pages, clashing ids, sketch records already marked with
-                               views, or an unfinished deletion
-  board_unsupported            a retired format or a file the rehearsal does not carry
-  board_damaged, key_unsafe    a damaged board file, or a key that is not private
-  output_exists, output_alias  --out exists, or overlaps --source or the data directory
-After writing begins: output_failed and source_changed remove the partial copy.
-
-Output:
-  --json  {"status": "success", "code": "rehearsed", "session", "output_directory",
-           "sketch_records_count", "agent_records_count", "agent_revision",
-           "agent_history_count", "chat_events_count", "view_controls_count", "native": true,
-           "serve_command"}
-
-Example:
-  tldraw-sync stop
-  cp -Rp ~/board-data /tmp/board-copy
-  tldraw-sync native-rehearse --source /tmp/board-copy --session 0123456789abcdef \\
-    --out /tmp/board-native --json
-  BOARD_DATA_DIR=/tmp/board-native tldraw-sync start`
-
-const help_stage = `Usage: tldraw-sync native-stage --source <data-directory> --out <new-folder>
-    [--json]
-
-Stages every board of a copy of a stopped data directory as native, in a new private data
-directory at --out. Nothing is activated: the board in use keeps its data directory until
-someone points a board at --out. Nothing in --source is written; it is digested before and
-after. Delete --out to undo.
-
-Every listed board comes, under the same id, name and owner, linked or not:
-  converted  a board with an Agent canvas, the original "default" board included: the sketch
-             exactly, the Agent canvas as shown now under it, Drawing views and all, as
-             native-rehearse makes it. The Agent canvas file is kept byte for byte as
-             agent_canvas.archive; its earlier revisions are archived, not restorable.
-  native     a native board, byte for byte, its revision journal included
-  empty      a listed board with no files yet: a new native board
-The registry, the private machine key (mode 600), each chat journal and each drawing image are
-kept byte for byte. The daemon's server.log and a stopped board's server.json are not board
-data: they stay in --source and are named in "operational_skipped".
-The stage is written beside --out, reopened as the server opens it, and
-checked board by board: the room record by record, kept files byte for byte, every entry
-planned and private. Only then is it renamed into place.
-
-A preflight lists every reason the source cannot be staged, by kind, board and file name,
-never by contents, and writes nothing:
-  root_unsupported   an entry in the data directory no board format accounts for
-  registry_damaged   the registry cannot be read
-  registry_pending   a board deletion is unfinished
-  key_unsafe         the machine key is not private
-  board_unlisted     a board folder the registry does not list
-  board_outstanding  an open chat request, or a native revision still pending
-  board_unsupported  a retired format, a leftover partial file, or an upgrade not yet written
-  board_ambiguous    extra pages, clashing ids or sketch records already marked with views
-  board_damaged      a damaged, missing or linked board file or folder
-
-Failure codes:
-  blocked                      the preflight found reasons; --json lists "blockers"
-  source_live, source_active   the data directory in use, or a running board on --source
-  source_missing               --source is not a folder
-  output_exists, output_alias  --out exists, or overlaps --source or the data directory
-  output_failed, source_changed  after writing began; the partial stage was removed
-
-Output:
-  --json  {"status": "success", "code": "staged", "output_directory", "boards_count",
-           "boards": [{"session", "linked", "kind", "records_count", "agent_records_count",
-           "agent_revision", "agent_history_count", "agent_archived", "chat_events_count",
-           "view_controls_count", "native_sequence_next"}, …], "registry_carried",
-           "key_carried", "operational_skipped", "source_digest", "staged_digest", "native": true,
-           "activated": false, "serve_command"}
-  Blocked: {"status": "failure", "code": "blocked", "boards_count",
-            "blockers": [{"kind", "session", "file", "message"}, …], …}
-
-Example:
-  tldraw-sync stop
-  cp -Rp ~/board-data /tmp/board-copy
-  tldraw-sync native-stage --source /tmp/board-copy --out /tmp/board-native --json
-  BOARD_DATA_DIR=/tmp/board-native tldraw-sync start`
-
 const help_scene = `Usage: tldraw-sync whiteboard-scene --binding <file> [--out <file>] --json
 
 Reads the shared scene of a native board: every page, shape and binding as tldraw records,
@@ -415,8 +303,6 @@ with whiteboard-scene and whiteboard-edit instead of the Agent canvas. An owner 
 has an Agent canvas keeps it; --native then fails with not_native.`,
   'whiteboard-scene': help_scene,
   'whiteboard-edit': help_edit,
-  'native-rehearse': help_rehearse,
-  'native-stage': help_stage,
   'whiteboard-poll': `Usage: tldraw-sync whiteboard-poll --protocol ${protocol}
     --binding <file> --json
 

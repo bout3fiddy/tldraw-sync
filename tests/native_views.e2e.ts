@@ -1,6 +1,4 @@
-// A native rehearsal of a board whose Agent canvas has Drawing views, judged by what the Mac
-// stage and an iPad paint. The legacy board is made by the board's own code and rehearsed
-// through the real command line onto disposable folders; the copy is then served.
+// A disposable native board with Drawing views, judged by what the Mac stage and an iPad paint.
 //
 // Each screen chooses its own view and shows the drawing at rest when it opens. A view only
 // hides shapes on that screen: a shape a view hides comes back as it was, and the person's edit
@@ -58,13 +56,11 @@ async function shapes(origin: string, session: string): Promise<Map<string, Shap
   return new Map(list.map((record) => [record.id, record]))
 }
 
-test('each screen chooses its own view of a native copy; hidden shapes and edits survive', async ({
+test('each screen chooses its own view of a native board; hidden shapes and edits survive', async ({
   browser,
 }) => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-views-e2e-')))
-  const [source, native, live] = ['source', 'native', 'live'].map((name) =>
-    path.join(parent, name),
-  ) as [string, string, string]
+  const native = path.join(parent, 'native')
   const stage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   const ipad = await browser.newPage({ viewport: ipad_portrait, hasTouch: true })
   const asked: string[] = []
@@ -76,26 +72,14 @@ test('each screen chooses its own view of a native copy; hidden shapes and edits
   }
 
   try {
-    const session = await step('rehearse a linked board whose drawing has views', async () => {
-      fs.mkdirSync(live)
+    const session = await step('serve a native drawing with views', async () => {
       const made = spawnSync(
         process.env.BUN ?? 'bun',
-        ['tests/fixtures/native-rehearsal/legacy_board.ts', source, 'interactive'],
+        ['tests/fixtures/native_views.ts', native],
         { encoding: 'utf8', timeout: 30_000 },
       )
-      expect(made.status).toBe(0)
+      expect(made.status, made.stderr).toBe(0)
       const id = String(JSON.parse(made.stdout).session)
-      const rehearsed = command(
-        live,
-        'native-rehearse',
-        '--source',
-        source,
-        '--session',
-        id,
-        '--out',
-        native,
-      )
-      expect(rehearsed).toMatchObject({ code: 'rehearsed', session: id, view_controls_count: 3 })
       expect(command(native, 'start', '--no-open').status).toBe('success')
       return id
     })
