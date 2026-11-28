@@ -1,7 +1,7 @@
 // The Mac follows the whole board until the viewer navigates. Nothing can be drawn on or taken.
 // The pairing sheet opens only when the viewer asks for it.
 
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { atom, useValue, type Atom, type Editor } from 'tldraw'
 import { board_query } from '../shared/board_session'
 import { path_pairing } from '../shared/constants'
@@ -21,7 +21,8 @@ import { ViewSwitch } from './view_switch'
 import { stage_mount } from './stage_mount'
 import { Surface } from './surface'
 
-type Pairing = { modules: string[] }
+type Pairing = { modules: string[]; local?: { modules: string[] } }
+type PairCodes = { recommended: string[]; local?: string[] }
 const offline_notice = 'The board has stopped. Start it again with “tldraw-sync start”.'
 
 // The sketch canvas stays mounted while the chat is open: it renders the image agents fetch.
@@ -138,18 +139,40 @@ const pair_sheet_id = 'stage-pair'
 // it shows the stage's QR on a sheet under it; pressed again, or Escape, puts the sheet away.
 function StagePair({ session }: { session: string }) {
   const [open, open_set] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    const outside = (event: PointerEvent) => {
+      if (!event.composedPath().includes(root.current!)) open_set(false)
+    }
+    document.addEventListener('pointerdown', outside, true)
+    return () => document.removeEventListener('pointerdown', outside, true)
+  }, [open])
+
   const key_down = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape' || !open) return
 
     event.preventDefault()
+    trigger.current?.focus()
     open_set(false)
   }
   return (
-    <div className="pair" onKeyDown={key_down} onBlur={() => open_set(false)}>
+    <div
+      ref={root}
+      className="pair"
+      onKeyDown={key_down}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) open_set(false)
+      }}
+    >
       <div className="pair__frame">
         <button
           type="button"
           className="pair__button"
+          ref={trigger}
           title="Pair iPad"
           aria-label="Pair iPad"
           aria-expanded={open}
@@ -169,9 +192,12 @@ function StagePair({ session }: { session: string }) {
 
 function PairSheet({ session }: { session: string }) {
   const pairing = use_pairing(session)
+  const [local, local_set] = useState(false)
+  const modules = local && pairing?.local ? pairing.local : pairing?.recommended
+
   return (
-    <aside id={pair_sheet_id} className="pair__sheet" aria-label="Pair iPad">
-      {pairing && <QrCode modules={pairing.modules} />}
+    <aside id={pair_sheet_id} className="pair__sheet" aria-label="Pair iPad" tabIndex={-1}>
+      {modules && <QrCode modules={modules} />}
       <p className="pair__caption">
         {pairing === undefined
           ? 'Loading pairing code…'
@@ -179,20 +205,32 @@ function PairSheet({ session }: { session: string }) {
             ? 'Could not load the code. Close and reopen to retry.'
             : 'Scan for sketchboard controls'}
       </p>
+      {pairing?.local && (
+        <label className="pair__network">
+          <input
+            type="checkbox"
+            checked={local}
+            onChange={(event) => local_set(event.currentTarget.checked)}
+          />
+          Local Wi-Fi
+        </label>
+      )}
     </aside>
   )
 }
 
 // Each board has a QR code of its own, which leads the iPad to that board.
-function use_pairing(session: string): Pairing | null | undefined {
-  const [pairing, pairing_set] = useState<Pairing | null>()
+function use_pairing(session: string): PairCodes | null | undefined {
+  const [pairing, pairing_set] = useState<PairCodes | null>()
   useEffect(() => {
     const controller = new AbortController()
     const headers = { 'x-board-stage': 'qr' }
     fetch(`${path_pairing}?${board_query(session)}`, { headers, signal: controller.signal })
       .then((response) => (response.ok ? (response.json() as Promise<Pairing>) : null))
       .then((loaded) => {
-        if (!controller.signal.aborted) pairing_set(loaded)
+        if (controller.signal.aborted) return
+
+        pairing_set(loaded ? { recommended: loaded.modules, local: loaded.local?.modules } : null)
       })
       .catch(() => {
         if (!controller.signal.aborted) pairing_set(null)
