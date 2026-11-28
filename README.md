@@ -1,73 +1,20 @@
 # tldraw-sync
 
-Sketch with an Apple Pencil on your iPad. Your agent answers on the same canvas.
-
-<img
-  src="docs/images/ipad-one-canvas.png"
-  alt="iPad canvas: a rough flow drawn in black ink beside the agent's tidy diagram of
-  the same flow, with a dashed arrow back to the circled step."
-/>
-
-Your ink stays yours: loose, in black, and exactly as you drew it. The agent draws its answer as
-ordinary shapes under your ink, with the colours, fills and lettering it chose. Nothing the agent
-does moves your view or touches your strokes.
-
-## Ask about the board you are drawing
+I sketch on an iPad with an Apple Pencil while I work with a coding agent on my Mac. This board lets
+the agent see the sketch and draw back on it.
 
 <img
   src="docs/images/ipad-add-sketch.png"
-  alt="Chat open beside the sketch on the iPad, with the sketch added to a message about
-  the sign-up flow."
+  alt="iPad chat beside a sketch of a sign-up flow, with the sketch added to the message."
 />
 
-Each board has its own **Chat**. Your words go alone unless you tap the board icon beside the
-message. Tap it again to remove the sketch before sending. The agent answers under your message and
-draws on the canvas; **Show on canvas** brings its drawing into view.
-
-## Take what helps, in one undo
-
-<img
-  src="docs/images/ipad-take.png"
-  alt="A Resend link box chosen on the iPad, with a card offering Take into my sketch."
-/>
-
-Tap an agent shape with a finger, or click it, to see whose it is. **Take into my sketch** copies it
-into your ink, exactly where it is, as shapes you can edit. One Undo takes the copy back. If the
-agent has drawn again or your sketch has changed since you chose the shape, the copy is refused: tap
-it again.
-
-The tools float at the left: **Pen**, **Eraser**, **Undo** and **Redo**. Press the pen or eraser you
-are holding to put it down and point instead: choose and move your own ink, or tap an agent shape,
-with the Pencil too. The pen writes in black; ink drawn in other colours before stays as it was.
-
-The pen and eraser only touch your ink. To bring your ink or the agent's drawing into view, open
-**Boards** and choose a fit action from the current board's **⋮** menu. After a revision arrives,
-that menu also lets you inspect the previous revision and return. Looking back restores nothing.
-
-For interactive drawings, choose **Drawing views…** from that same menu on either screen. The
-controls also appear beside the drawing when they fit. Changing a view affects only your screen.
-
-## The whole board on your Mac
-
-<img
-  src="docs/images/mac-chat.png"
-  alt="Mac stage showing the ink and the diagram, with the board's chat open beside
-  them: the request with its sketch and the agent's answer."
-/>
-
-The Mac fits incoming ink and agent drawings until you navigate. Drag or scroll to pan; pinch or
-Ctrl-scroll to zoom. Your view then stays put, even as the board changes. Choose **Recenter board**
-next to the pairing button at the top right to see everything and resume following. On an
-interactive drawing, use its controls or click a shape with a shortcut to change the view on the Mac
-alone. Neither navigation nor a choice edits the drawing or moves the iPad’s camera.
-
-On the Mac and an iPad held sideways the chat opens beside the canvas, which keeps its view. Drag
-the chat’s left edge, or focus it and use the arrow keys, to choose a width for this device. On a
-narrow or short screen, or when the keyboard leaves too little room, chat takes the screen.
+Here I drew sign up, verify email and welcome, then asked what happens if the link expires. The
+agent answered in the chat and drew the flow back with a resend path. A message carries only your
+words unless you tap the sketch icon beside it. The Mac shows the same board and chat.
 
 ## Try it
 
-On a Mac with [Bun](https://bun.sh):
+You need a Mac with [Bun](https://bun.sh) and an iPad that can reach it.
 
 ```sh
 git clone https://github.com/bout3fiddy/tldraw-sync.git
@@ -77,28 +24,20 @@ bun link
 tldraw-sync start
 ```
 
-The board opens on your Mac. Tap the QR icon at the top right and scan it with your iPad. If both
-devices are connected to the same Tailscale network, the Mac offers its Tailscale address first: no
-board setup or shared Wi-Fi needed. Your tailnet rules and Mac firewall must allow the iPad to reach
-the board's port. On the same Wi-Fi, you can use the local code instead. Without Tailscale, just
-scan the usual local code. Reopen the sheet after changing networks.
+The board opens in a browser on the Mac. Tap the QR icon at the top right, scan it with the iPad
+camera and draw.
 
-Pairing does not publish your board to the internet. Don't forward its port or share its QR code.
-Ask your agent to read `tldraw-sync --help`; it can then fetch your sketch whenever you mention it.
+Any agent that can run commands can look at the drawing: ask it to read `tldraw-sync --help`, and it
+will fetch a PNG when you mention your sketch.
 
-For Chat, link the board to an agent session: in a pih session with whiteboard support, run
-`/start_whiteboard`. Tap the QR icon on the Mac stage, scan the code and leave the stage open.
-**Chat** at the top right works on the iPad and the Mac; a violet square on it means an answer you
-have not read on that device.
-
-Switch boards with the button beside the board's name, at the top left. A board's **⋮** menu renames
-or deletes it; for the board on screen it also clears your ink or replaces it with the agent's
-drawing, and Undo takes either back.
+To chat on the board, run `/start_whiteboard` in a pih session, scan the QR code on the Mac page
+again and leave that page open. In a new session this makes a native board, where you and the agent
+edit the same shapes and the iPad's Undo takes back an agent edit. A session that is already linked
+keeps the board it has.
 
 ## Privacy
 
-The board runs on your Mac and calls no model itself. Use it on networks you trust: sketch access
-has no password. The board serves HTTP; Tailscale encrypts the tailnet connection, not ordinary
-Wi-Fi access. A board's chat is kept on the Mac and can be read only by the Mac stage and devices
-paired with that board's QR code. Anything you send to an agent that uses a hosted model goes to
-that model's provider.
+The board runs on your Mac and doesn't call a model. It serves plain HTTP with no password, so use
+it on a network you trust and don't forward its port. Over Tailscale, the iPad can reach it from
+elsewhere if your tailnet allows the port. Anything you send to an agent goes to that agent's model
+provider.
