@@ -23,6 +23,7 @@ export const commands = [
   'session-rename',
   'whiteboard-link', 'whiteboard-poll', 'whiteboard-ack',
   'whiteboard-snapshot', 'whiteboard-preview', 'whiteboard-publish',
+  'whiteboard-scene', 'whiteboard-edit',
 ] as const
 
 // Every board command takes this; it is described once here and named in each command's help.
@@ -53,6 +54,8 @@ draws a freeform scene on the board's Agent canvas):
   whiteboard-snapshot  Read a coherent sketch, the scene on the Agent canvas and its format
   whiteboard-preview   Render a draft scene exactly as it would be published; publish nothing
   whiteboard-publish   Publish a scene as the entire Agent canvas
+  whiteboard-scene     Read a native board's shared scene, each record with its hash
+  whiteboard-edit      Change a native board's shared scene in one step the iPad can undo
 
 Boards (each is a separate board, listed in the side rail and opened by its own address):
   session-list    List the boards, their ids, names and addresses
@@ -233,12 +236,66 @@ Failure codes:
 Example:
   tldraw-sync whiteboard-publish --binding /private/binding.json --file scene.json --json`
 
+const help_scene = `Usage: tldraw-sync whiteboard-scene --binding <file> [--out <file>] --json
+
+Reads the shared scene of a native board: every page, shape and binding as tldraw records,
+the sha-256 "hashes" of each record's bytes, and "base_sequence", the board's revision count.
+An edit names both, so it lands only on what was read. The file is private to this Mac.
+
+Output:
+  --json  {"status": "success", "code": "scene_read", "session", "base_sequence",
+           "records_count", "scene_path"}
+
+Failure codes:
+  not_native  the board has an Agent canvas: use whiteboard-snapshot and whiteboard-publish`
+
+const help_edit = `Usage: tldraw-sync whiteboard-edit --binding <file> --file <edit.json> --json
+
+Applies one edit to a native board's shared scene, whole or not at all, saved before it is
+acknowledged. The person sees it at once and can take it back with one Undo on the iPad.
+Any record may be changed, the person's own strokes included; keep each record's type and id.
+Nothing is laid out, recoloured or restacked: records land exactly as written.
+
+The edit file:
+  {"base_sequence": n,                     from whiteboard-scene
+   "adds": [record, …],                    new shapes or bindings, id "shape:new-<key>" or
+                                           "binding:new-<key>"; others in the edit may name them
+   "updates": [{"record": record, "base_hash": hash}, …]   whole records, as read, changed
+   "deletes": [{"id": id, "base_hash": hash}, …],          with every child and binding
+   "request_id": "…"}                      optional: 8 to 64 of A-Z a-z 0-9 - _
+
+Without a request_id the file's bytes name the request, so running the same file again is a
+retry: the board answers with the revision it already made. A different edit needs a fresh
+scene read; an edit of records changed since is refused, and nothing is written.
+
+Output:
+  --json  {"status": "success", "code": "edit_written" | "edit_replayed" | "edit_unchanged",
+           "sequence", "minted": [{"placeholder", "id"}, …], "request_id"}
+
+Failure codes:
+  conflict           exit 5: records changed since they were read; read the scene again
+  diverged           exit 5: the scene changed while writing; read the scene again
+  replay_expired     exit 5: the request may have run and is too old to check; read again
+  request_id_reused  exit 1: that request id named a different edit
+  invalid_request    exit 1: the edit does not parse; "message" says where
+  invalid_records    exit 1: a record does not fit the tldraw schema
+  not_native         exit 1: the board has an Agent canvas
+
+Example:
+  tldraw-sync whiteboard-edit --binding /private/binding.json --file tidy.json --json`
+
 export const help_commands: Record<Command, string> = {
   'whiteboard-link': `Usage: tldraw-sync whiteboard-link --protocol ${protocol}
-    --owner <id> --out <absolute-file> --json
+    --owner <id> --out <absolute-file> [--native] --json
 
 Starts the board if need be, links one board to the owner and saves its private binding file.
-Linking again with the same owner and file returns the same board.`,
+Linking again with the same owner and file returns the same board.
+
+--native makes a new native board: one shared scene that the person and the agent both edit,
+with whiteboard-scene and whiteboard-edit instead of the Agent canvas. An owner whose board
+has an Agent canvas keeps it; --native then fails with not_native.`,
+  'whiteboard-scene': help_scene,
+  'whiteboard-edit': help_edit,
   'whiteboard-poll': `Usage: tldraw-sync whiteboard-poll --protocol ${protocol}
     --binding <file> --json
 

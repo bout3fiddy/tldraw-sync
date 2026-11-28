@@ -22,11 +22,13 @@ import {
 import { api_request, type ApiAnswer } from './board_client'
 import { browser_open } from './board_process'
 import { canvas_preview, canvas_publish, canvas_snapshot } from './canvas_commands'
+import { native_edit, native_scene } from './native_commands'
 import { board_port } from './session_commands'
 import { session_find, start, type Options } from './commands'
 import { failure, success, type Outcome } from './output'
 import { binding_directory, binding_install, binding_read } from './whiteboard_file'
 import { binding_headers, machine_headers } from './whiteboard_scope'
+import { native_route_scene } from '../shared/native_scene'
 
 export type BoardFlags = Partial<
   Record<'protocol' | 'owner' | 'event' | 'message' | 'state' | 'binding' | 'layer', string>
@@ -60,6 +62,16 @@ export async function whiteboard(command: string, options: Options): Promise<Out
     if (!options.binding) return usage(command, 'Supply --binding with the private file path.')
 
     const binding = binding_read(options.binding)
+
+    if (command === 'whiteboard-scene' || command === 'whiteboard-edit') {
+      const port = await board_port()
+
+      if (typeof port !== 'number') return port
+
+      return command === 'whiteboard-scene'
+        ? await native_scene(port, binding, options)
+        : await native_edit(port, binding, options)
+    }
 
     if (canvas_commands.includes(command)) {
       const layer = options.layer ?? 'canvas'
@@ -125,7 +137,8 @@ async function link(options: Options): Promise<Outcome> {
 
   if (status.body.protocol !== whiteboard_protocol) return upgrade()
 
-  const bound = await link_binding(port, existing, out, owner)
+  const native = options.native === true
+  const bound = await link_binding(port, existing, out, owner, native)
 
   if ('kind' in bound) return bound
 
@@ -152,6 +165,7 @@ async function link(options: Options): Promise<Outcome> {
     stage_url,
     binding_file: out,
     protocol: whiteboard_protocol,
+    native,
   })
 }
 
@@ -160,6 +174,7 @@ async function link_binding(
   existing: Binding | null,
   out: string,
   owner: string,
+  native: boolean,
 ): Promise<Binding | Outcome> {
   if (existing) {
     const query = `protocol=${protocol_text}&${board_query(existing.session)}`
@@ -172,13 +187,18 @@ async function link_binding(
 
     if (!poll_checked(poll.body, existing)) return invalid_reply()
 
-    return existing
+    if (!native) return existing
+
+    // A native link never adopts a board with an Agent canvas.
+    const scene = `${whiteboard_path}${native_route_scene}?${board_query(existing.session)}`
+    const read = await api_request(port, scene, null, binding_headers(existing))
+    return read.kind === 'answer' && read.status === 200 ? existing : refusal(read)
   }
 
   const response = await api_request(
     port,
     `${whiteboard_path}link`,
-    JSON.stringify({ protocol: whiteboard_protocol, owner }),
+    JSON.stringify({ protocol: whiteboard_protocol, owner, ...(native ? { native } : {}) }),
     machine_headers(),
   )
 
@@ -191,6 +211,8 @@ async function link_binding(
   if (typeof session !== 'string' || typeof token !== 'string' || response.body.owner !== owner) {
     return refusal({ kind: 'unreachable' })
   }
+
+  if (native && response.body.native !== true) return invalid_reply()
 
   const binding = { owner, session, token }
   binding_install(out, binding)

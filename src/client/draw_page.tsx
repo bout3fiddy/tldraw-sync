@@ -5,9 +5,10 @@
 // slides over the canvas, and the canvas never stops. Only a drawing the agent made
 // interactive brings its own switch, which changes that drawing on this iPad alone.
 
-import { useCallback, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { atom, DefaultSizeStyle, useValue, type Atom, type Editor } from 'tldraw'
 import { use_pair_token } from './board_pair'
+import { native_history_install, revert_request } from './native_history'
 import { PrintNotice, use_notice } from './print_notice'
 import { use_board_menu, type BoardMenuItem } from './board_menu'
 import { use_board_store } from './board_store'
@@ -38,11 +39,7 @@ export function DrawPage({ session, title }: { session: string; title: string })
   const talk = use_board_chat({ session, token, linked, online, editor, viewing: chat_open })
   const extent = useMemo(() => atom<PrintExtent | null>('print extent', null), [])
   const [notice, notice_show] = use_notice()
-  const mount = useCallback((value: Editor) => {
-    draw_mount(value)
-    editor_set(value)
-    return () => editor_set(null)
-  }, [])
+  const mount = use_draw_mount(session, token, notice_show, editor_set)
 
   const ask = (words: string) => chat_ask(talk.composer, words, () => chat_open_set(true))
   const show_canvas = use_show_canvas({ editor, extent, chat_open, chat_open_set })
@@ -92,6 +89,30 @@ export function DrawPage({ session, title }: { session: string; title: string })
         <Notice floating text="Lost the Mac. Keep drawing: strokes sync when it is back." />
       )}
     </main>
+  )
+}
+
+// On a native board, Undo and Redo also reach the agent's revisions, through the pairing.
+function use_draw_mount(
+  session: string,
+  token: string | null,
+  notice_show: (text: string) => void,
+  editor_set: (editor: Editor | null) => void,
+) {
+  const token_current = useRef(token)
+  token_current.current = token
+  return useCallback(
+    (value: Editor) => {
+      draw_mount(value)
+      editor_set(value)
+      const revert = revert_request(session, () => token_current.current)
+      const uninstall = native_history_install(value, revert, notice_show)
+      return () => {
+        uninstall()
+        editor_set(null)
+      }
+    },
+    [session, notice_show, editor_set],
   )
 }
 

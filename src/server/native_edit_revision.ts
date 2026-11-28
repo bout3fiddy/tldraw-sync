@@ -1,6 +1,5 @@
-// One logical agent operation on the native shared scene as one reversible revision. Nothing
-// here is wired into the product yet; it is the server-side primitive a chronological undo can
-// build on.
+// One logical agent operation on the native shared scene as one reversible revision. A native
+// board runs it through `native_scene.ts`: the host edits, and the iPad's Undo and Redo revert.
 //
 // An edit is an intentional agent transaction. It may create shapes and bindings, and it may
 // revise or delete any record, including original human strokes. Authorization to modify comes
@@ -833,15 +832,22 @@ export type RevisionWriteResult = {
   readonly room_problem: string | null
 }
 
-// The integration path: read, plan, persist the intent, write, settle and persist again. The
-// read, plan, intent save and `updateStore` call run in one synchronous turn, so no client push
-// can land between the decision and the room's snapshot. Calls must be serialized per room.
+// The integration path: read, plan, persist the intent, write, persist the room, settle and
+// persist again. The read, plan, intent save and `updateStore` call run in one synchronous
+// turn, so no client push can land between the decision and the room's snapshot. Calls must be
+// serialized per room.
+//
+// `annotate` adds records outside the revision to the same push, such as a marker pages read;
+// it never changes what the journal tracks. `room_save` makes the room durable before the
+// settle is saved, so an acknowledged revision survives a crash; it throws on failure.
 export async function revision_write<R>(options: {
   room: SceneRoom<R>
   room_epoch: string
   journal: RevisionJournal
   action: RevisionAction
   saver: RevisionJournalSaver
+  annotate?: (store: SceneStore<R>, entry: RevisionEntry) => void
+  room_save?: () => void
 }): Promise<RevisionWriteResult> {
   const { room, room_epoch, journal, action, saver } = options
   const viewed = room_view_create(room.getCurrentSnapshot(), room_epoch)
@@ -862,12 +868,24 @@ export async function revision_write<R>(options: {
   const intended = revision_intend(journal, planned.plan)
   assert(intended.ok, 'a plan made from this journal can be intended')
   saver.save(intended.journal)
-  const written = await revision_store_update(room, planned.plan)
+  const written = await revision_store_update(room, planned.plan, options.annotate ?? null)
   const after = room_view_create(room.getCurrentSnapshot(), room_epoch)
   const pending_base = { journal: intended.journal, plan: planned, sequence: null }
 
   // The intent stays saved: recovery settles it once the host has a readable room again.
   if (!after.ok) return { ...pending_base, kind: 'unavailable', room_problem: after.reason }
+
+  // Nothing is acknowledged that a crash could take back. The intent stays pending, so the
+  // caller settles it from the room once the room can be saved again.
+  if (written === 'applied' && options.room_save !== undefined) {
+    try {
+      options.room_save()
+    } catch (error) {
+      if (error instanceof AssertionError) throw error
+
+      return { ...pending_base, kind: 'unavailable', room_problem: 'room_save_failed' }
+    }
+  }
 
   const settled = revision_settle(
     intended.journal,
@@ -886,6 +904,7 @@ export async function revision_write<R>(options: {
 async function revision_store_update<R>(
   room: SceneRoom<R>,
   plan: RevisionPlan,
+  annotate: ((store: SceneStore<R>, entry: RevisionEntry) => void) | null,
 ): Promise<'applied' | 'diverged' | 'rejected'> {
   assert(plan.entry.changes.length >= 1, 'a plan writes something')
 
@@ -894,6 +913,8 @@ async function revision_store_update<R>(
   try {
     await room.updateStore((store) => {
       result.applied = revision_apply(store, plan)
+
+      if (result.applied === 'applied' && annotate !== null) annotate(store, plan.entry)
     })
   } catch (error) {
 

@@ -28,7 +28,9 @@ const bound = { ...options_common, binding: string_option }
 const layer = { ...bound, layer: string_option }
 const options_by_command = {
   'whiteboard-link': { ...options_common, protocol: string_option, owner: string_option,
-    out: string_option },
+    out: string_option, native: { type: 'boolean' } },
+  'whiteboard-scene': { ...bound, out: string_option },
+  'whiteboard-edit': { ...bound, file: string_option },
   'whiteboard-poll': { ...bound, protocol: string_option },
   'whiteboard-ack': { ...bound, event: string_option, state: string_option,
     message: string_option },
@@ -140,6 +142,7 @@ function arguments_parse(command: Command, rest: readonly string[]): Parsed {
     revision,
     session,
     name,
+    native: values.native === true,
   }
   assert(options.port === null || options.port > 0, 'a parsed port is positive')
   return { options, help: values.help === true }

@@ -42,6 +42,8 @@ export type Options = BoardFlags & {
   readonly name: string | null
   // Whether a person is reading: only then is the QR code worth printing.
   readonly terminal: boolean
+  // A link that makes a native board: one shared scene the agent edits in place.
+  readonly native?: boolean
 }
 
 // A running board, and the status of the one board session a command is about.

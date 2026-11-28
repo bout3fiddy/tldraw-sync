@@ -48,6 +48,7 @@ import {
   type RestoreResult,
   type ViewResult,
 } from './cleaned'
+import { NativeScene } from './native_scene'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
 export { StorageError } from './storage'
@@ -112,6 +113,10 @@ export class Board {
   private readonly room: TLSocketRoom<TLRecord>
   readonly session: string
 
+  // The shared scene of a native board, which the agent edits in place. Null for a board with
+  // an Agent canvas, which every board made before native boards keeps.
+  native: NativeScene | null = null
+
   private constructor(
     private readonly environment: BoardEnvironment,
     snapshot: RoomSnapshot,
@@ -145,6 +150,8 @@ export class Board {
     // lifetimes could be mistaken for one that is up to date with the second.
     board.save()
     assert(board.clock_saved === board.room.getCurrentDocumentClock(), 'a new board is saved')
+    board.native = NativeScene.open(environment.disk, board.room, () => board.save_now())
+    assert(board.clock_saved === board.room.getCurrentDocumentClock(), 'recovery saved the room')
     return board
   }
 
@@ -512,6 +519,13 @@ export class Board {
     const delay_ms = Math.max(0, Math.min(save_delay_ms, this.save_deadline_ms - now_ms))
     assert(delay_ms <= save_delay_ms, 'a save is never postponed past its delay')
     this.save_timer = time.timeout_set(() => this.save(), delay_ms)
+  }
+
+  // A native revision is acknowledged only once the room holding it is on disk.
+  private save_now(): void {
+    assert(!this.closed, 'board is open')
+    this.save()
+    assert(this.clock_saved === this.room.getCurrentDocumentClock(), 'the room is saved')
   }
 
   private save(): void {

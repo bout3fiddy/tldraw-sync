@@ -361,9 +361,16 @@ export async function stroke(
 // scan the chat can be written in but neither read nor sent, and says why. The scan is read
 // with the chat open, and a reload keeps the pairing and drops it from the address. Pairing
 // ends with the chat closed, on the canvas, where a pen stroke draws.
-export async function pair(root: string, file: string, stage: Page, ipad: Page) {
+export async function pair(
+  root: string,
+  file: string,
+  stage: Page,
+  ipad: Page,
+  flags: readonly string[] = [],
+) {
   const link = () =>
-    command(root, 'whiteboard-link', '--protocol', protocol, '--owner', 'e2e', '--out', file)
+    command(root, 'whiteboard-link', '--protocol', protocol, '--owner', 'e2e', '--out', file,
+      ...flags)
   const opener = path.join(root, process.platform === 'darwin' ? 'open' : 'xdg-open')
   fs.writeFileSync(opener, '#!/bin/sh\nexit 1\n', { mode: 0o700 })
   expect(link().code).toBe('stage_closed')
@@ -405,7 +412,12 @@ export async function pair(root: string, file: string, stage: Page, ipad: Page) 
 }
 
 // Runs one journey on its own disposable linked board, and always stops that board after.
-export async function board_linked(browser: Browser, journey: (board: Linked) => Promise<void>) {
+// `flags` go to the link, such as `--native` for a board with one shared scene.
+export async function board_linked(
+  browser: Browser,
+  journey: (board: Linked) => Promise<void>,
+  flags: readonly string[] = [],
+) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'linked-e2e-')))
   const file = path.join(root, 'binding.json')
   const cli: Cli = (...args) => command(root, ...args)
@@ -430,7 +442,7 @@ export async function board_linked(browser: Browser, journey: (board: Linked) =>
 
   try {
     const linked = await step('link a disposable board and pair the iPad by the stage QR', () =>
-      pair(root, file, stage, ipad),
+      pair(root, file, stage, ipad, flags),
     )
     const origin = new URL(linked.stage_url).origin
     const session = String(linked.session)

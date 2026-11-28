@@ -36,6 +36,17 @@ import {
 } from './http_canvas'
 import { json_no_store } from './http_sessions'
 import { authorized, scoped_key } from './whiteboard_keys'
+import {
+  native_edit_route,
+  native_only,
+  native_revert_route,
+  native_scene_route,
+} from './http_native'
+import {
+  native_route_edit,
+  native_route_revert,
+  native_route_scene,
+} from '../shared/native_scene'
 
 export const header_preview_id = 'x-preview-id'
 const preview_id_pattern = /^[0-9a-f-]{36}$/
@@ -130,7 +141,26 @@ export async function whiteboard_route(
 
   if (action === 'ack' && request.method === 'POST') return ack_route(request, registry, session)
 
-  return canvas_route(request, url, registry, session, action)
+  return native_host_route(request, action, lookup.board) ??
+    canvas_route(request, url, registry, session, action)
+}
+
+// What the host does with a native board's shared scene. Null is any other route.
+function native_host_route(request: Request, action: string, board: Board) {
+  assert(action.length <= request.url.length, 'an action is part of its address')
+
+  if (action === native_route_scene && request.method === 'GET') return native_scene_route(board)
+
+  if (action === native_route_edit && request.method === 'POST') {
+    return native_edit_route(request, board)
+  }
+
+  // A native board has no Agent canvas to publish to or draft on.
+  if (board.native !== null && (action === 'publish' || action === 'preview')) {
+    return body_discard(request).then(native_only)
+  }
+
+  return null
 }
 
 type PadRequest = {
@@ -161,6 +191,12 @@ function pad_route(pad: PadRequest): Response | Promise<Response> | null {
 
   if (action === 'chat' && request.method === 'GET') {
     return authorized(request, pairing) ? chat_route(url, registry, session) : denied(request)
+  }
+
+  // The iPad's Undo or Redo of an agent revision on a native board.
+  if (action === native_route_revert && request.method === 'POST') {
+    return authorized(request, pairing) ? native_revert_route(request, registry, session)
+      : denied(request)
   }
 
   return null
@@ -289,18 +325,29 @@ async function link_route(request: Request, registry: BoardRegistry, key: string
 
   if ((body.value as { protocol?: unknown } | null)?.protocol !== protocol) return upgrade()
 
-  const owner = (body.value as { owner?: unknown } | null)?.owner
+  const { owner, native } = (body.value ?? {}) as { owner?: unknown; native?: unknown }
 
   if (typeof owner !== 'string' || !owner_pattern.test(owner)) return invalid()
 
-  const result = registry.link(owner)
+  if (native !== undefined && typeof native !== 'boolean') return invalid()
+
+  const result = registry.link(owner, native === true)
 
   if (result.kind === 'full') return json_error(409, 'sessions_full', 'Board capacity reached.')
+
+  if (result.kind === 'not_native') {
+    return json_error(409, 'not_native', 'This owner has a board with an Agent canvas already.')
+  }
+
+  if (result.kind !== 'created') return lookup_error(result)
 
   const session = result.session.id
   assert(registry.owner(session) === owner, 'the board is durably bound before issuing a token')
   const token = scoped_key(key, 'host', session, owner)
-  return json_no_store({ protocol, session, owner, token })
+  const lookup = registry.board(session)
+  const is_native = lookup.kind === 'board' && lookup.board.native !== null
+  assert(!native || is_native, 'a native link answers with a native board')
+  return json_no_store({ protocol, session, owner, token, native: is_native })
 }
 
 // A Send from a paired pad: a replay key, the words in the person's own hand, and whether the

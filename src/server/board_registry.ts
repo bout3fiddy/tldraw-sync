@@ -29,6 +29,7 @@ import {
 import { owner_pattern } from '../shared/whiteboard'
 import type { Time } from '../shared/time'
 import { Board, type PreviewResult } from './board'
+import { NativeScene } from './native_scene'
 import type { PublishResult } from './cleaned'
 import { envelope_decode, envelope_encode, StorageError, type Disk } from './storage'
 
@@ -53,6 +54,7 @@ export type BoardLookupFailure =
   { kind: 'not_found' } | { kind: 'busy' } | { kind: 'damaged'; message: string }
 
 export type CreateResult = { kind: 'created'; session: BoardSession } | { kind: 'full' }
+export type LinkResult = CreateResult | { kind: 'not_native' } | BoardLookupFailure
 export type RenameResult = { kind: 'renamed'; session: BoardSession } | { kind: 'not_found' }
 
 // A publish to a board, and whether its title named that board.
@@ -140,7 +142,9 @@ export class BoardRegistry {
     return owner
   }
 
-  link(owner: string): CreateResult {
+  // An owner has one board. A native link only ever makes a new native board: an owner whose
+  // board has an Agent canvas keeps it, and is told so, until boards can be migrated whole.
+  link(owner: string, native = false): LinkResult {
     assert(owner_pattern.test(owner), 'a link has a validated owner')
 
     for (const [id, bound] of this.owners) {
@@ -148,14 +152,24 @@ export class BoardRegistry {
 
       const session = this.find(id)
       assert(session !== null, 'a bound board is listed')
+
+      if (!native) return { kind: 'created', session }
+
+      const lookup = this.board(id)
+
+      if (lookup.kind !== 'board') return lookup
+
+      if (lookup.board.native === null) return { kind: 'not_native' }
+
       return { kind: 'created', session }
     }
 
-    return this.create(null, owner)
+    return this.create(null, owner, native)
   }
 
-  create(name: string | null, owner?: string): CreateResult {
+  create(name: string | null, owner?: string, native = false): CreateResult {
     assert(name === null || board_name_clean(name, board_name_length_max) === name, 'clean name')
+    assert(!native || owner !== undefined, 'a native board is linked to its host')
 
     if (this.sessions.length === board_sessions_count_max) return { kind: 'full' }
 
@@ -164,6 +178,14 @@ export class BoardRegistry {
     if (next === null) throw new StorageError('No unused board address could be allocated.')
 
     const { id, serial } = next
+
+    // Written before the board is listed: a crash in between leaves an unlisted directory,
+    // which `id_unused` never hands out again, and never a listed board that is half native.
+    if (native) {
+      const ids = { room_epoch: this.environment.id_create(), id_namespace: id }
+      NativeScene.create_file(this.environment.disk_board(id), ids)
+    }
+
     const session: BoardSession = {
       id,
       name,

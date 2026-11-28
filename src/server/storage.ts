@@ -18,12 +18,13 @@ export type Disk = {
 // they were when the board moved on from them.
 export const board_file_names = [
   'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'ideas.state',
-  'events.state', 'interpretation.archive', 'ideas.archive', 'canvas.archive',
+  'events.state', 'interpretation.archive', 'ideas.archive', 'canvas.archive', 'native.journal',
 ] as const
 export const file_names = [...board_file_names, 'sessions.registry', 'whiteboard.key'] as const
 export type FileName = (typeof file_names)[number]
 
-export type EnvelopeKind = 'board' | 'image' | 'frame' | 'cleaned' | 'registry' | 'events'
+export type EnvelopeKind =
+  'board' | 'image' | 'frame' | 'cleaned' | 'registry' | 'events' | 'native'
 
 // A saved file cannot be trusted. This is an operating error: the caller reports it and
 // refuses to start, because starting empty would silently discard someone's work.
