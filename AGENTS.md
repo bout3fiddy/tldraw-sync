@@ -3,6 +3,9 @@
 Keep the README for people trying the board. Put behavior in code, examples in CLI help, and
 invariants in executable tests. Don't add a design or status document by default.
 
+- Keep the interface text-minimal. If the control or drawing already says what to do, omit the
+  caption. Prefer a working default over a checkbox. Give icon-only controls accessible names; keep
+  visible text when someone needs it to make a decision or recover from an error.
 - Follow [Tiger Style](TIGER_STYLE.md). Bound input and work. Reject bad input without mutation.
 - Legacy publish replaces only the Agent canvas, never the sketch. In the native shared scene, both
   authors edit the same objects. An authorized agent edit may change original strokes as one
