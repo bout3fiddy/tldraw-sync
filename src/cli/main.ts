@@ -9,6 +9,7 @@ import { fetch_drawing, serve, start, status, stop, type Options } from './comma
 import { whiteboard } from './whiteboard_commands'
 import { commands, help_commands, help_top, type Command } from './help'
 import { failure, outcome_print, type Outcome, type OutputMode } from './output'
+import { rehearse_command } from './rehearse_command'
 import { session_create, session_list, session_rename } from './session_commands'
 import { board_id_pattern, board_name_clean } from '../shared/board_session'
 import { board_name_length_max } from '../shared/constants'
@@ -54,6 +55,9 @@ const options_by_command = {
   'session-list': options_common,
   'session-create': { ...options_common, name: { type: 'string' } },
   'session-rename': { ...options_common, ...option_session, name: { type: 'string' } },
+  'native-rehearse': {
+    ...options_common, ...option_session, source: string_option, out: string_option,
+  },
 } as const
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -164,6 +168,7 @@ function command_run(command: Command, options: Options): Promise<Outcome> {
   if (command === 'session-create') return session_create(options)
   if (command === 'session-rename') return session_rename(options)
   if (command === 'stop') return stop()
+  if (command === 'native-rehearse') return Promise.resolve(rehearse_command(options))
   assert(command === 'serve', 'every command is dispatched')
   return serve(options)
 }

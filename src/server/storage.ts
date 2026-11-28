@@ -15,10 +15,12 @@ export type Disk = {
 // A board's files live in one directory: the data directory itself for the default board,
 // and a directory of its own for every other board session. The registry of sessions lives
 // only in the data directory. The archives are canvases saved in retired formats, kept as
-// they were when the board moved on from them.
+// they were when the board moved on from them. `agent_canvas.archive` is the Agent canvas of a
+// board rehearsed as native (`native_rehearsal.ts`), byte for byte, and is never read back.
 export const board_file_names = [
   'board.snapshot', 'drawing.image', 'drawing.frame', 'cleaned.state', 'ideas.state',
   'events.state', 'interpretation.archive', 'ideas.archive', 'canvas.archive', 'native.journal',
+  'agent_canvas.archive',
 ] as const
 export const file_names = [...board_file_names, 'sessions.registry', 'whiteboard.key'] as const
 export type FileName = (typeof file_names)[number]

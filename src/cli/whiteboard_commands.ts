@@ -31,7 +31,10 @@ import { binding_headers, machine_headers } from './whiteboard_scope'
 import { native_route_scene } from '../shared/native_scene'
 
 export type BoardFlags = Partial<
-  Record<'protocol' | 'owner' | 'event' | 'message' | 'state' | 'binding' | 'layer', string>
+  Record<
+    'protocol' | 'owner' | 'event' | 'message' | 'state' | 'binding' | 'layer' | 'source',
+    string
+  >
 >
 const usage = (command: string, message: string) =>
   failure('usage_error', message, { action: 'fix_usage', command: `tldraw-sync ${command} --help` })

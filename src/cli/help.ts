@@ -24,6 +24,7 @@ export const commands = [
   'whiteboard-link', 'whiteboard-poll', 'whiteboard-ack',
   'whiteboard-snapshot', 'whiteboard-preview', 'whiteboard-publish',
   'whiteboard-scene', 'whiteboard-edit',
+  'native-rehearse',
 ] as const
 
 // Every board command takes this; it is described once here and named in each command's help.
@@ -64,6 +65,9 @@ Boards (each is a separate board, listed in the side rail and opened by its own 
 
 History:
   cleanup-restore  Bring back an earlier revision of a board's Agent canvas
+
+Migration (offline, on a copy of a stopped data directory; nothing live is changed):
+  native-rehearse  Make a separate native working copy of one linked board
 
 Options:
   --json       Print one JSON object on stdout (every command)
@@ -236,6 +240,51 @@ Failure codes:
 Example:
   tldraw-sync whiteboard-publish --binding /private/binding.json --file scene.json --json`
 
+const help_rehearse = `Usage: tldraw-sync native-rehearse --source <data-directory> --session <id>
+    --out <new-folder> [--json]
+
+A dry run of moving one board to the native shared scene. Reads a copy of a stopped data
+directory and writes a separate native data directory at --out holding only that board, under
+the same id and owner, so its existing binding file works against the copy. Nothing in
+--source is written: the files read are compared before and after. Delete --out to undo.
+
+The copy keeps every sketch record exactly, adds the Agent canvas as shown now on the same
+page under the sketch, as its print was drawn, each shape where the agent put it, with its
+colours and its order, and keeps the chat journal byte for byte. The Agent canvas file, with
+its earlier revisions, is kept byte for byte as agent_canvas.archive; the copy shows no
+separate Agent canvas. The copy is private (mode 700) with the same private machine key,
+written beside --out, reopened as a native board and compared record by record before it is
+renamed into place.
+
+Supported: a board listed with an owner (linked with whiteboard-link), not the original
+"default" board, whose Agent canvas is empty or static, with no open chat request.
+
+Refused before anything is written, each with its own failure code:
+  source_live, source_active   the data directory in use, or a running board on --source
+  board_default                the original board shares its folder with the registry
+  board_not_found              no board with that id is listed in --source
+  board_not_linked             the board has no owner
+  board_native                 the board is native already
+  board_interactive            a revision has controls, conditional elements or taps
+  board_outstanding            a chat request is not ended
+  board_ambiguous              extra pages, clashing ids or an unfinished deletion
+  board_unsupported            a retired format or a file the rehearsal does not carry
+  board_damaged, key_unsafe    a damaged board file, or a key that is not private
+  output_exists, output_alias  --out exists, or overlaps --source or the data directory
+After writing begins: output_failed and source_changed remove the partial copy.
+
+Output:
+  --json  {"status": "success", "code": "rehearsed", "session", "output_directory",
+           "sketch_records_count", "agent_records_count", "agent_revision",
+           "agent_history_count", "chat_events_count", "native": true, "serve_command"}
+
+Example:
+  tldraw-sync stop
+  cp -Rp ~/board-data /tmp/board-copy
+  tldraw-sync native-rehearse --source /tmp/board-copy --session 0123456789abcdef \\
+    --out /tmp/board-native --json
+  BOARD_DATA_DIR=/tmp/board-native tldraw-sync start`
+
 const help_scene = `Usage: tldraw-sync whiteboard-scene --binding <file> [--out <file>] --json
 
 Reads the shared scene of a native board: every page, shape and binding as tldraw records,
@@ -296,6 +345,7 @@ with whiteboard-scene and whiteboard-edit instead of the Agent canvas. An owner 
 has an Agent canvas keeps it; --native then fails with not_native.`,
   'whiteboard-scene': help_scene,
   'whiteboard-edit': help_edit,
+  'native-rehearse': help_rehearse,
   'whiteboard-poll': `Usage: tldraw-sync whiteboard-poll --protocol ${protocol}
     --binding <file> --json
 

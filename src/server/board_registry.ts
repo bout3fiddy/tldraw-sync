@@ -436,15 +436,7 @@ export class BoardRegistry {
       assert(!sessions.some((board) => board.id === pending), 'a retired board is not listed')
     }
 
-    const state = {
-      format: registry_format,
-      sessions,
-      owners: Object.fromEntries(owners),
-      allocation,
-      pending,
-    }
-    const payload = new TextEncoder().encode(JSON.stringify(state))
-    const next = envelope_encode({ kind: 'registry', label, payload })
+    const next = registry_encode({ sessions, owners, allocation, pending })
 
     try {
       this.environment.disk.write_atomic(file_name, next)
@@ -480,6 +472,28 @@ export class BoardRegistry {
   }
 }
 
+// What a registry file holds. A native rehearsal writes one for its copy with the same code.
+export type RegistryState = {
+  readonly sessions: readonly BoardSession[]
+  readonly owners: ReadonlyMap<string, string>
+  readonly allocation: Allocation
+  readonly pending: string | null
+}
+
+export function registry_encode(state: RegistryState): Uint8Array {
+  assert(state.sessions.length <= board_sessions_count_max, 'sessions are bounded')
+  assert(state.owners.size <= state.sessions.length, 'only listed boards can be owned')
+  const json = {
+    format: registry_format,
+    sessions: state.sessions,
+    owners: Object.fromEntries(state.owners),
+    allocation: state.allocation,
+    pending: state.pending,
+  }
+  const payload = new TextEncoder().encode(JSON.stringify(json))
+  return envelope_encode({ kind: 'registry', label, payload })
+}
+
 function session_default(): BoardSession {
   const session = { id: board_default_id, name: null, named_by: null, created_at_ms: 0 }
   assert(board_id_pattern.test(session.id), 'the default id is well formed')
@@ -489,7 +503,7 @@ function session_default(): BoardSession {
 
 // The registry file is untrusted like any input. Damage stops the server, because starting
 // without it would hide every board but the default one.
-function registry_read(bytes: Uint8Array) {
+export function registry_read(bytes: Uint8Array): RegistryState {
   const decoded = envelope_decode(bytes, 'registry')
 
   if (!decoded.ok) throw new StorageError(`${file_name} is damaged: ${decoded.reason}`)
