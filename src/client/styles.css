@@ -852,20 +852,9 @@ button {
   height: 12rem;
 }
 
-.pair__network {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  min-height: 24px;
-  color: var(--ink);
-  accent-color: var(--ink);
-  cursor: pointer;
-}
-
-.pair__caption {
+.pair__status {
   max-width: 12rem;
-  margin: 12px 0 0;
+  margin: 0;
   line-height: 1.4;
 }
 

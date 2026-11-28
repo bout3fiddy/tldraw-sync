@@ -224,8 +224,7 @@ async function geometry_stage(stage: Page, info: TestInfo, name: string) {
 
   await pair.click()
   await expect(pair).toHaveAttribute('aria-expanded', 'true')
-  await expect(sheet.locator('.guide__code')).toBeVisible()
-  await expect(sheet).toContainText('Scan for sketchboard controls')
+  await expect(sheet.getByRole('img', { name: 'QR code for the draw page' })).toBeVisible()
   expect(target_problems(await targets(stage, '.pair__sheet'), stage.viewportSize()!)).toEqual([])
   expect(await surface(stage).boundingBox()).toEqual(canvas)
 

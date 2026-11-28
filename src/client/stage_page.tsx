@@ -22,8 +22,7 @@ import { ViewSwitch } from './view_switch'
 import { stage_mount } from './stage_mount'
 import { Surface } from './surface'
 
-type Pairing = { modules: string[]; local?: { modules: string[] } }
-type PairCodes = { recommended: string[]; local?: string[] }
+type Pairing = { modules: string[] }
 const offline_notice = 'The board has stopped. Start it again with “tldraw-sync start”.'
 
 // The sketch canvas stays mounted while the chat is open: it renders the image agents fetch.
@@ -197,53 +196,40 @@ function StagePair({ session }: { session: string }) {
 }
 
 function PairSheet({ session }: { session: string }) {
-  const pairing = use_pairing(session)
-  const [local, local_set] = useState(false)
-  const modules = local && pairing?.local ? pairing.local : pairing?.recommended
+  const modules = use_pairing(session)
 
   return (
     <aside id={pair_sheet_id} className="pair__sheet" aria-label="Pair iPad" tabIndex={-1}>
-      {modules && <QrCode modules={modules} />}
-      <p className="pair__caption">
-        {pairing === undefined
-          ? 'Loading pairing code…'
-          : pairing === null
-            ? 'Could not load the code. Close and reopen to retry.'
-            : 'Scan for sketchboard controls'}
-      </p>
-      {pairing?.local && (
-        <label className="pair__network">
-          <input
-            type="checkbox"
-            checked={local}
-            onChange={(event) => local_set(event.currentTarget.checked)}
-          />
-          Local Wi-Fi
-        </label>
+      {modules ? (
+        <QrCode modules={modules} />
+      ) : (
+        <p className="pair__status">
+          {modules === undefined
+            ? 'Loading pairing code…'
+            : 'Could not load the code. Close and reopen to retry.'}
+        </p>
       )}
     </aside>
   )
 }
 
 // Each board has a QR code of its own, which leads the iPad to that board.
-function use_pairing(session: string): PairCodes | null | undefined {
-  const [pairing, pairing_set] = useState<PairCodes | null>()
+function use_pairing(session: string): string[] | null | undefined {
+  const [modules, modules_set] = useState<string[] | null>()
   useEffect(() => {
     const controller = new AbortController()
     const headers = { 'x-board-stage': 'qr' }
     fetch(`${path_pairing}?${board_query(session)}`, { headers, signal: controller.signal })
       .then((response) => (response.ok ? (response.json() as Promise<Pairing>) : null))
       .then((loaded) => {
-        if (controller.signal.aborted) return
-
-        pairing_set(loaded ? { recommended: loaded.modules, local: loaded.local?.modules } : null)
+        if (!controller.signal.aborted) modules_set(loaded?.modules ?? null)
       })
       .catch(() => {
-        if (!controller.signal.aborted) pairing_set(null)
+        if (!controller.signal.aborted) modules_set(null)
       })
     return () => controller.abort()
   }, [session])
-  return pairing
+  return modules
 }
 
 // One path for all dark modules. Crisp edges keep the squares exact, which scanners need.
