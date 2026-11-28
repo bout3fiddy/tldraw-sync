@@ -1,6 +1,6 @@
 // The README's pictures, taken from the real board on a disposable linked board with synthetic
 // content: a person's ink on the iPad, a request with the sketch explicitly added, the agent's
-// diagram printed in violet beside the ink, one of its shapes chosen to take, and the board's
+// diagram printed beside the ink, one of its shapes chosen to take, and the board's
 // chat beside the drawing on the Mac stage. Nothing here is a mockup: every picture is a
 // screenshot of the built app, taken only once what it shows has been checked.
 //
@@ -439,7 +439,7 @@ async function diagram({ bound, cli, session }: Board, frame: Frame) {
 }
 
 // The print arrives under the ink without moving the view: the person's strokes and the
-// agent's violet diagram are both on screen, side by side and touching where they meet.
+// agent's diagram are both on screen, side by side and touching where they meet.
 async function together({ ipad }: Board) {
   await expect_revision(ipad, 1)
 
@@ -449,7 +449,7 @@ async function together({ ipad }: Board) {
 
   await at_rest(ipad, '.print__shape[data-print-shape="shape:scene-welcome"]')
   await expect(print_shape(ipad, 'expired').getByText('Link expired?')).toBeVisible()
-  expect((await painted(ipad, 'verify')).violet).toBeGreaterThan(50)
+  expect(await painted(ipad, 'verify', 0x1d1d1d)).toBeGreaterThan(50)
   await expect(surface(ipad).locator('.tl-shape[data-shape-type="draw"]')).toHaveCount(
     ink_strokes_count,
   )

@@ -10,13 +10,14 @@ export type BoardMenuItem = {
   disabled: boolean
 }
 
-export const BoardMenuContext = createContext<(items: readonly BoardMenuItem[]) => void>(() => {})
+type Menu = readonly BoardMenuItem[]
+export const BoardMenuContext = createContext<(update: (items: Menu) => Menu) => void>(() => {})
 
 // Offers `items` for as long as the caller is mounted. The list must be memoised by its caller.
 export function use_board_menu(items: readonly BoardMenuItem[]): void {
   const offer = useContext(BoardMenuContext)
   useEffect(() => {
-    offer(items)
-    return () => offer([])
+    offer((current) => current.concat(items))
+    return () => offer((current) => current.filter((item) => !items.includes(item)))
   }, [offer, items])
 }

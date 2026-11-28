@@ -1,6 +1,6 @@
 // The agent's print, made ready to lie under the person's ink on the one canvas. Each published
 // revision is loaded into a hidden, read-only editor of its own, never the sync room, and each
-// of its top-level shapes is exported as tldraw draws it, repainted in violet. The canvas shows
+// of its top-level shapes is exported in its authored colours. The canvas shows
 // those pictures in the person's own camera; the hidden editor answers what is where, for
 // inspecting and taking a shape.
 //
@@ -41,7 +41,7 @@ export type PrintShape = {
   type: string
   box: PrintBox
 
-  // The repainted picture, and the key a taken copy of this shape carries.
+  // The exported picture, and the key a taken copy of this shape carries.
   markup: string
   key: string
 }

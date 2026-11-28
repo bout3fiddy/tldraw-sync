@@ -1,6 +1,6 @@
 // A linked board end to end on the one canvas: an iPad paired by the stage QR sends words alone
 // and its sketch from the board's chat, the agent's answers arrive under them, and a scene is
-// published and printed in violet under the person's ink on both screens. The pen and eraser
+// published and printed under the person's ink on both screens. The pen and eraser
 // touch only the ink. The person chooses one printed shape with a finger, takes it into the
 // sketch exactly where it lies, undoes and redoes that, and replaces the whole sketch from the
 // board's menu. Every Send is one kind of request, and none of them writes to a canvas.
@@ -416,7 +416,8 @@ function publish_canvas(root: string, bound: Cli, session: string, hash: string)
     { type: 'geo', id: 'b', geo: 'ellipse', x: 360, y: -10, w: 260, h: 120, font: 'sans' },
     { type: 'arrow', id: 'ab', from: 'a', to: 'b' },
   ]
-  scene.elements[1].text = 'What about retries?'
+  Object.assign(scene.elements[0], { color: 'green', label_color: 'violet' })
+  Object.assign(scene.elements[1], { color: 'blue', fill: 'solid', text: 'What about retries?' })
   fs.writeFileSync(snap.scene_path, JSON.stringify(scene))
   expect(bound('publish', '--file', snap.scene_path)).toMatchObject({
     status: 'success',
@@ -617,7 +618,7 @@ async function keyboard_geometry(page: Page, info: TestInfo) {
   await sketch_open(page)
 }
 
-// The print on both screens: in violet, under the ink, with no tab to reach it. The iPad's
+// The print on both screens: in its own colours, under the ink, with no tab to reach it. The iPad's
 // camera stayed where the person left it when the revision arrived; the board menu can bring
 // the print into view. The stage, which presents, keeps all of it in view itself, and has the
 // agent's answers waiting as news.
@@ -639,9 +640,15 @@ async function print_views(ipad: Page, stage: Page, info: TestInfo) {
     await expect(page.locator('.print__shape')).toHaveCount(3)
     await expect(print_region(page)).toHaveAttribute('data-failed', '0')
 
-    // The agent's ink is printed in violet: none of its own black reaches the screen.
-    await expect.poll(async () => (await painted(page, 'b')).violet).toBeGreaterThan(50)
-    expect((await painted(page, 'b')).black).toBe(0)
+    // Native green box, violet lettering, blue ellipse and its lighter blue fill.
+    for (const [id, rgb] of [
+      ['a', 0x099268],
+      ['a', 0xae3ec9],
+      ['b', 0x4465e9],
+      ['b', 0xdce1f8],
+    ] as const) {
+      expect(await painted(page, id, rgb), `${id}: #${rgb.toString(16)}`).toBeGreaterThan(10)
+    }
   }
 
   await expect(stage.getByTestId('chat-unread')).toBeVisible()

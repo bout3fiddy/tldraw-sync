@@ -1,16 +1,16 @@
 # tldraw-sync
 
-Sketch with an Apple Pencil on your iPad. Your agent answers on the same canvas, in violet.
+Sketch with an Apple Pencil on your iPad. Your agent answers on the same canvas.
 
 <img
   src="docs/images/ipad-one-canvas.png"
-  alt="iPad canvas: a rough flow drawn in black ink beside the agent's tidy violet diagram of
+  alt="iPad canvas: a rough flow drawn in black ink beside the agent's tidy diagram of
   the same flow, with a dashed arrow back to the circled step."
 />
 
 Your ink stays yours: loose, in black, and exactly as you drew it. The agent draws its answer as
-ordinary shapes, printed in violet under your ink, so you can always tell whose line is whose.
-Nothing the agent does moves your view or touches your strokes.
+ordinary shapes under your ink, with the colours, fills and lettering it chose. Nothing the agent
+does moves your view or touches your strokes.
 
 ## Ask about the board you are drawing
 
@@ -28,7 +28,7 @@ draws on the canvas; **Show on canvas** brings its drawing into view.
 
 <img
   src="docs/images/ipad-take.png"
-  alt="A violet Resend link box chosen on the iPad, with a card offering Take into my sketch."
+  alt="A Resend link box chosen on the iPad, with a card offering Take into my sketch."
 />
 
 Tap an agent shape with a finger, or click it, to see whose it is. **Take into my sketch** copies it
@@ -44,11 +44,14 @@ The pen and eraser only touch your ink. To bring your ink or the agent's drawing
 **Boards** and choose a fit action from the current board's **⋮** menu. After a revision arrives,
 that menu also lets you inspect the previous revision and return. Looking back restores nothing.
 
+For interactive drawings, choose **Drawing views…** from that same menu on either screen. The
+controls also appear beside the drawing when they fit. Changing a view affects only your screen.
+
 ## The whole board on your Mac
 
 <img
   src="docs/images/mac-chat.png"
-  alt="Mac stage showing the ink and the violet diagram, with the board's chat open beside
+  alt="Mac stage showing the ink and the diagram, with the board's chat open beside
   them: the request with its sketch and the agent's answer."
 />
 

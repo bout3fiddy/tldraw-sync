@@ -71,8 +71,16 @@ async function press(page, step) {
   await page.getByRole(role, { name: step.name, exact: true }).click()
 }
 
+async function board_action(page, name) {
+  await page.getByRole('button', { name: 'Boards', exact: true }).click()
+  const rail = page.getByRole('complementary', { name: 'Boards' })
+  const active = rail.locator('li', { has: page.locator('[aria-current="page"]') })
+  await active.getByRole('button', { name: /^Actions for / }).click()
+  await active.getByRole('menuitem', { name, exact: true }).click()
+}
+
 // The board's own draw page, with its print of the agent's drawing under the person's ink:
-// each top-level shape exported by tldraw as SVG and repainted (`src/client/print_engine`).
+// each top-level shape exported by tldraw as SVG (`src/client/print_engine`).
 export const svg_print = {
   name: 'svg-print',
   boundary: 'press event time on the board switch to the print naming the view, plus two frames',
@@ -102,15 +110,16 @@ export const svg_print = {
     if (await legacy_fit.isVisible()) {
       await legacy_fit.click()
     } else {
-      await page.getByRole('button', { name: 'Boards', exact: true }).click()
-      const rail = page.getByRole('complementary', { name: 'Boards' })
-      const active = rail.locator('li', { has: page.locator('[aria-current="page"]') })
-      await active.getByRole('button', { name: /^Actions for / }).click()
-      await active.getByRole('menuitem', { name: 'Fit agent drawing', exact: true }).click()
+      await board_action(page, 'Fit agent drawing')
     }
 
-    await page.getByRole('radiogroup').first().waitFor()
     await page.waitForTimeout(600)
+    const controls = page.getByRole('radiogroup').first()
+
+    // Oversized scenes offer the same controls on demand. This is before the first sample.
+    if (!(await controls.isVisible())) await board_action(page, 'Drawing views…')
+
+    await controls.waitFor()
     return { page, errors, startup_ms }
   },
 

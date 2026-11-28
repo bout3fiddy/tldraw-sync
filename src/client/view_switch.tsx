@@ -2,8 +2,7 @@
 // under its bottom edge when the top has no room) and going away with it. It is there only
 // for a revision whose views differ, and only while the current revision is on show. It has
 // no header: each control says in words what it changes.
-// When it would cover the drawing, in a narrow window or zoomed far out, it folds into one
-// button on the canvas's bottom edge, which opens the same controls over it.
+// When it would cover the drawing it stays in the board menu until requested.
 //
 // A choice changes the drawing on this screen only (`interactive_state.tsx`). The switch never
 // moves the camera, and never takes the pen's ink: the Pencil writes straight through it, and
@@ -14,6 +13,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -23,7 +23,8 @@ import { useEditor, useValue, type Editor } from 'tldraw'
 import { assert } from '../shared/assert'
 import { scene_controls_count_max } from '../shared/constants'
 import type { SceneControl, ViewState } from '../shared/scene_controls'
-import { icon_check_small, icon_fold_open, icon_step_back, icon_step_next } from './icons'
+import { use_board_menu } from './board_menu'
+import { icon_check_small, icon_step_back, icon_step_next } from './icons'
 import { use_view_choice, type ViewChoice } from './interactive_state'
 import type { SceneEnvelope } from './interactive_scene'
 import { use_print } from './print_engine'
@@ -61,6 +62,18 @@ export function ViewSwitch() {
 }
 
 function SwitchPlaced({ editor, choice }: { editor: Editor; choice: ViewChoice }) {
+  const [open, open_set] = useState(false)
+  const actions = useMemo(
+    () => [
+      {
+        label: 'Drawing views…',
+        run: () => open_set(true),
+        disabled: false,
+      },
+    ],
+    [],
+  )
+  use_board_menu(actions)
   const measure = useRef<HTMLDivElement>(null)
   const envelope = choice.envelope
 
@@ -84,7 +97,7 @@ function SwitchPlaced({ editor, choice }: { editor: Editor; choice: ViewChoice }
       >
         <SwitchRows choice={choice} idle />
       </div>
-      {place.kind === 'inline' && (
+      {!open && place.kind === 'inline' && (
         <SwitchFrame
           editor={editor}
           style={{ left: place.left, top: place.top, maxWidth: room }}
@@ -93,7 +106,16 @@ function SwitchPlaced({ editor, choice }: { editor: Editor; choice: ViewChoice }
           <SwitchRows choice={choice} idle={false} />
         </SwitchFrame>
       )}
-      {place.kind === 'folded' && <SwitchFolded editor={editor} choice={choice} />}
+      {open && (
+        <SwitchPanel
+          editor={editor}
+          choice={choice}
+          close={() => {
+            open_set(false)
+            canvas_focus(editor)
+          }}
+        />
+      )}
       <p className="visually-hidden" role="status">
         {words}
       </p>
@@ -133,7 +155,8 @@ function switch_place(seen: ReturnType<typeof envelope_seen>, size: Size | null)
     left + size.w > screen.w - edge_px || size.w > Math.max(far.x - near.x, 1) * width_ratio_max
   assert(size.w >= 0 && size.h >= 0, 'a measured switch has a size')
 
-  if (wide) return { kind: 'folded' }
+  // A cropped envelope can span distant parts of a board. Its edge is not a local anchor.
+  if (wide || far.x - near.x > screen.w || far.y - near.y > screen.h) return { kind: 'folded' }
 
   if (above >= top_clear_px) return { kind: 'inline', left, top: above }
 
@@ -309,62 +332,26 @@ function pointer_init(native: PointerEvent): PointerEventInit {
   }
 }
 
-// The switch folded into one button on the canvas's bottom edge, naming the first control and
-// its value. Pressed, it opens every control above it.
-function SwitchFolded({ editor, choice }: { editor: Editor; choice: ViewChoice }) {
-  const [open, open_set] = useState(false)
-  const button = useRef<HTMLButtonElement>(null)
-  const panel_id = useId()
-  const first = choice.scene.controls[0]
-  assert(first !== undefined, 'an interactive scene has a control')
-  const more = choice.scene.controls.length - 1
-  const close = () => {
-    open_set(false)
-    button.current?.focus()
-  }
+type PanelProps = { editor: Editor; choice: ViewChoice; close: () => void }
+
+// The board menu can open the controls even when the drawing is outside the viewport.
+function SwitchPanel({ editor, choice, close }: PanelProps) {
+  const panel = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    panel.current
+      ?.querySelector<HTMLElement>('button:enabled:not([tabindex="-1"])')
+      ?.focus({ preventScroll: true })
+  }, [])
   return (
-    <div className="switch-fold">
-      {open && (
-        <SwitchFrame
-          editor={editor}
-          className="switch switch--panel"
-          id={panel_id}
-          onEscape={close}
-        >
-          <SwitchRows choice={choice} idle={false} />
-        </SwitchFrame>
-      )}
-      <SwitchFrame
-        editor={editor}
-        className="switch switch--folded"
-        onEscape={() => (open ? close() : canvas_focus(editor))}
-      >
-        <button
-          ref={button}
-          type="button"
-          className="switch__fold"
-          aria-expanded={open}
-          aria-controls={panel_id}
-          onClick={() => open_set(!open)}
-        >
-          <span className="switch__swatch" aria-hidden="true" />
-          <span className="switch__summary">
-            <strong>{first.label}:</strong> {value_label(first, choice.state)}
-            {more > 0 && <span className="switch__more"> · {more} more</span>}
-          </span>
-          <span className="switch__caret" data-open={open}>
-            {icon_fold_open}
-          </span>
+    <div className="switch-fold" ref={panel}>
+      <SwitchFrame editor={editor} className="switch switch--panel" onEscape={close}>
+        <SwitchRows choice={choice} idle={false} />
+        <button type="button" className="switch__close" onClick={close}>
+          Done
         </button>
       </SwitchFrame>
     </div>
   )
-}
-
-function value_label(control: SceneControl, state: ViewState): string {
-  const option = control.options.find((candidate) => candidate.value === state[control.id])
-  assert(option !== undefined, 'a state names a value of every control')
-  return option.label
 }
 
 type RowsProps = { choice: ViewChoice; idle: boolean }

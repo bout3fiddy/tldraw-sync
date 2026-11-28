@@ -76,7 +76,7 @@ async function clicks({ cli, session, origin }: Linked, mac: Page) {
   const before = status()
   await expect_revision(mac, 1)
   await print_fit(mac, 'a')
-  expect((await painted(mac, 'a')).violet).toBeGreaterThan(50)
+  expect(await painted(mac, 'a', 0x1d1d1d)).toBeGreaterThan(50)
 
   // The print's lettering is shown, not carried over hidden from the engine that drew it.
   await expect(print_shape(mac, 'a').getByText('Hold stock', { exact: true })).toBeVisible()

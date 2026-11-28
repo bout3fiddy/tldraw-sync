@@ -5,7 +5,7 @@
 // choose them; the Pencil writes straight through the switch and never chooses. A choice works
 // offline once loaded, sends nothing, publishes nothing, moves no camera and leaves the ink as
 // it was; the Mac stage keeps its own view at rest. A new revision or a restore lets the choice
-// go. In a narrow window the switch folds into one button. The screenshots are kept with the
+// go. In a narrow window the switch opens from the board menu. The screenshots are kept with the
 // results, and the board is left on the drawing at rest, switch showing, for review.
 //
 // Run: bun run build && npx playwright test tests/interactive_views.e2e.ts
@@ -13,7 +13,7 @@
 import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
-import { at_rest, board_menu, print_choose, print_fit, published } from './one_canvas'
+import { at_rest, board_menu, painted, print_choose, print_fit, published } from './one_canvas'
 import {
   action_ms,
   board_linked,
@@ -96,7 +96,7 @@ test('an interactive drawing switches on this screen only, offline, and the ink 
     )
     await desktop_inputs(board, browser)
     await soon(ipad.bringToFront())
-    await step('a narrow window folds the switch into one button', () => folded(board, info))
+    await step('a narrow window offers views from the board menu', () => folded(board, info))
     await step('a new revision and a restore let the choice go', () => transitions(board))
     await step('the chat opens beside the switch and moves nothing', () =>
       beside_chat(board, errors, info),
@@ -105,7 +105,43 @@ test('an interactive drawing switches on this screen only, offline, and the ink 
       rest_state(board, info),
     )
     expect(sent).toEqual([])
-    await expect(switch_frame(stage).first()).toBeVisible()
+    await open_views(stage)
+    await expect(radio(stage, 'Approved')).toHaveAttribute('aria-checked', 'true')
+  })
+})
+
+test('a board spanning distant views can switch back without finding a shape', async ({
+  browser,
+}) => {
+  await board_linked(browser, async ({ bound, root, ipad, stage }) => {
+    const snap = bound('snapshot', '--out', path.join(root, 'distant-views'))
+    scene_edit(snap.scene_path, (scene) => {
+      scene.controls = [gateway_controls()[0]]
+      scene.elements = ['approved', 'declined', 'timeout'].map((value, index) => ({
+        id: value,
+        type: 'geo',
+        x: 9000 * index,
+        y: 0,
+        w: 200,
+        h: 100,
+        text: value,
+        visible_when: answer(value),
+      }))
+    })
+    expect(bound('publish', '--file', snap.scene_path)).toMatchObject({ revision: 1 })
+
+    for (const page of [ipad, stage]) {
+      await view_shown(page, '1')
+      await expect(switch_frame(page)).toHaveCount(0)
+      await board_menu(page, 'Drawing views…')
+      await radio(page, 'Declined').click()
+      await view_shown(page, '1 declined')
+      await page.getByRole('button', { name: 'Done' }).click()
+      await expect(switch_frame(page)).toHaveCount(0)
+      await board_menu(page, 'Drawing views…')
+      await radio(page, 'Approved').click()
+      await view_shown(page, '1')
+    }
   })
 })
 
@@ -153,6 +189,12 @@ async function static_drawing({ bound, root, ipad, stage }: Linked, asked: strin
   for (const page of [ipad, stage]) {
     await expect_revision(page, 1)
     await view_shown(page, '1')
+    await page.getByRole('button', { name: 'Boards', exact: true }).click()
+    const rail = page.getByRole('complementary', { name: 'Boards' })
+    const active = rail.locator('li', { has: page.locator('[aria-current="page"]') })
+    await active.getByRole('button', { name: /^Actions for / }).click()
+    await expect(active.getByRole('menuitem', { name: 'Drawing views…' })).toHaveCount(0)
+    await rail.getByRole('button', { name: 'Close the list of boards' }).click()
   }
 
   await print_fit(ipad, 'cart')
@@ -281,6 +323,7 @@ function gateway_elements(pen: Json): Json[] {
       w: 288,
       h: 40,
       text: 'Attempt 1 · no answer',
+      label_color: 'red',
       dash: 'dashed',
       font: 'sans',
       size: 's',
@@ -405,18 +448,17 @@ async function switch_arrives({ ipad, stage, session }: Linked, asked: string[],
 
   // The stage starts at rest, with its own switch (possibly folded to fit its viewport).
   await view_shown(stage, '2')
-  await expect(switch_frame(stage).first()).toBeVisible()
   await capture(ipad, info, 'interactive-ipad-rest')
 }
 
 async function stage_choices({ stage, ipad, cli, session }: Linked) {
   expect(new URL(stage.url()).pathname).toBe(`/s/${session}`)
   const fit = stage.getByRole('button', { name: 'Recenter board' })
-  const fold = stage.locator('.switch__fold')
+  const done = stage.getByRole('button', { name: 'Done', exact: true })
   const camera = await camera_of(stage)
   const hash = cli('status', '--session', session).document_hash
 
-  if (await fold.isVisible()) await fold.click()
+  await board_menu(stage, 'Drawing views…')
 
   // All controls use the existing local projection, including while the server is unreachable.
   await stage.context().setOffline(true)
@@ -438,7 +480,7 @@ async function stage_choices({ stage, ipad, cli, session }: Linked) {
     await stage.context().setOffline(false)
   }
 
-  if (await fold.isVisible()) await fold.click()
+  await done.click()
 
   expect(await camera_of(stage)).toBe(camera)
   await expect(fit).toHaveCount(0)
@@ -450,12 +492,16 @@ async function stage_choices({ stage, ipad, cli, session }: Linked) {
   })
   await view_shown(ipad, '2')
 
-  if (await fold.isVisible()) await fold.click()
+  await open_views(stage)
 
   await radio(stage, 'Approved').click()
   await view_shown(stage, '2')
 
-  if (await fold.isVisible()) await fold.click()
+  if (await done.isVisible()) await done.click()
+}
+
+async function open_views(page: Page) {
+  if (!(await switch_frame(page).isVisible())) await board_menu(page, 'Drawing views…')
 }
 
 // A drag beginning on the published shortcut pans; only a click chooses its value.
@@ -488,6 +534,7 @@ async function stage_shortcut(stage: Page, camera: string) {
   await expect.poll(() => axis_box(stage)).toBe(camera)
   await stage.mouse.click(x, y)
   await view_shown(stage, '2 timeout/first/off')
+  expect(await painted(stage, 'first', 0xe03131)).toBeGreaterThan(10)
   await expect(fit).toHaveCount(0)
   expect(await camera_of(stage)).toBe(camera)
   await expect(stage.getByRole('dialog', { name: 'Agent shape' })).toHaveCount(0)
@@ -505,6 +552,7 @@ async function finger_choices(board: Linked, info: TestInfo) {
   await radio(ipad, 'Times out').tap()
   await expect(radio(ipad, 'Times out')).toHaveAttribute('aria-checked', 'true')
   await view_shown(ipad, '2 timeout/first/off')
+  expect(await painted(ipad, 'first', 0xe03131)).toBeGreaterThan(10)
   await expect(print_shape(ipad, 'wait')).toBeVisible()
   await expect(print_shape(ipad, 'ok')).toHaveCount(0)
 
@@ -659,17 +707,18 @@ async function folded({ ipad }: Linked, info: TestInfo) {
   await soon(ipad.setViewportSize(ipad_narrow))
   await print_fit(ipad, 'axis')
   const fold = ipad.getByRole('button', { name: /^Gateway answers: Approved/ })
-  await expect(fold).toBeVisible()
-  await expect(fold).toHaveAttribute('aria-expanded', 'false')
+  await expect(fold).toHaveCount(0)
   await expect(radio(ipad, 'Approved')).toHaveCount(0)
-  await fold.tap()
-  await expect(fold).toHaveAttribute('aria-expanded', 'true')
+  await board_menu(ipad, 'Drawing views…')
+  await expect(radio(ipad, 'Approved')).toBeFocused()
   await radio(ipad, 'Times out').tap()
   await view_shown(ipad, '2 timeout/first/off')
-  await expect(ipad.getByRole('button', { name: /^Gateway answers: Times out/ })).toBeVisible()
+  await expect(radio(ipad, 'Times out')).toHaveAttribute('aria-checked', 'true')
   await capture(ipad, info, 'interactive-ipad-narrow-folded')
   await radio(ipad, 'Approved').tap()
   await view_shown(ipad, '2')
+  await radio(ipad, 'Approved').press('Escape')
+  await expect(switch_frame(ipad)).toHaveCount(0)
   await soon(ipad.setViewportSize(ipad_portrait))
 }
 
@@ -787,6 +836,7 @@ async function chat_beside(ipad: Page, info: TestInfo) {
   await board_menu(ipad, 'Fit agent drawing')
   const camera = await camera_of(ipad)
   await chat_open(ipad)
+  await board_menu(ipad, 'Drawing views…')
   await switch_inside_canvas(ipad)
   expect(await camera_of(ipad)).toBe(camera)
 
@@ -803,6 +853,10 @@ async function chat_beside(ipad: Page, info: TestInfo) {
   }
 
   await capture(ipad, info, 'interactive-ipad-chat-wide')
+  const done = ipad.getByRole('button', { name: 'Done', exact: true })
+
+  if (await done.isVisible()) await done.tap()
+
   await sketch_open(ipad)
   await soon(ipad.setViewportSize(ipad_portrait))
 }

@@ -24,8 +24,7 @@
   --paper-quiet: rgb(246 247 244 / 0.72);
   /* Paper a shade under the vellum, for a control under the pointer. */
   --blotter: #ecede9;
-  /* The agent's one ink. The person's pen writes in black, and none of the inks written
-     before is violet, so the print is never mistaken for their own. */
+  /* Accent for board controls, not the drawing. */
   --agent: #6a4fd0;
   --agent-wash: rgb(106 79 208 / 0.08);
   --dot: rgb(29 29 29 / 0.22);
@@ -208,11 +207,6 @@ button {
   width: 100%;
   height: 100%;
   overflow: visible;
-}
-
-/* Lettering set in the print's own picture takes the print's violet. */
-.print__shape foreignObject * {
-  color: var(--agent) !important;
 }
 
 /* Taken into the sketch: the print fades beneath the person's copy. */
@@ -535,7 +529,7 @@ button {
 .switch__option,
 .switch__step,
 .switch__toggle,
-.switch__fold {
+.switch__close {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -624,7 +618,7 @@ button {
   background: var(--vellum);
 }
 
-/* Folded: one button on the canvas's bottom edge, and the controls over it. */
+/* On-demand controls stay within the canvas, independently of the drawing's extents. */
 .switch-fold {
   position: absolute;
   right: calc(env(safe-area-inset-right) + var(--edge));
@@ -636,6 +630,7 @@ button {
   align-items: stretch;
   gap: 8px;
   max-width: 30rem;
+  max-height: calc(100% - 100px);
   pointer-events: none;
 }
 
@@ -647,6 +642,7 @@ button {
 
 .switch--panel {
   flex-flow: column nowrap;
+  overflow: auto;
 }
 
 .switch--panel .switch__row {
@@ -658,25 +654,9 @@ button {
   min-height: 32px;
 }
 
-.switch__fold {
-  width: 100%;
-  padding: 0 12px 0 11px;
-  text-align: left;
-}
-
-.switch__summary {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.switch__more {
-  color: var(--lead);
-}
-
-.switch__caret[data-open='true'] {
-  transform: rotate(180deg);
+.switch__close {
+  align-self: flex-end;
+  padding: 0 12px;
 }
 
 .switch [role='radio']:focus-visible,
@@ -687,8 +667,7 @@ button {
 
 @media (prefers-reduced-motion: no-preference) {
   .switch__option,
-  .switch__thumb,
-  .switch__caret {
+  .switch__thumb {
     transition:
       background-color 120ms ease-out,
       left 120ms ease-out,

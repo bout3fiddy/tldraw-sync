@@ -1,31 +1,10 @@
-// One shape of the agent's print as the board shows it: tldraw's own SVG export of the shape,
-// repainted in the print's violet, with nothing in it that could act. The records it was drawn
-// from are untouched; only this picture of them changes.
+// The native SVG export of one shape. Remove active content, not authored paint.
 
 import { assert } from '../shared/assert'
-import { print_paint, rgba_format, rgba_parse, type PaintRole, type Rgba } from './print_colour'
 
 export type PrintBox = { x: number; y: number; w: number; h: number }
 
-// Elements in one exported shape: a guard against a picture too large to repaint.
 const print_svg_elements_max = 20_000
-
-const paint_attributes: ReadonlyArray<[string, PaintRole]> = [
-  ['fill', 'fill'],
-  ['stroke', 'stroke'],
-  ['stop-color', 'fill'],
-  ['color', 'stroke'],
-]
-
-const paint_styles: ReadonlyArray<[string, PaintRole]> = [
-  ['fill', 'fill'],
-  ['stroke', 'stroke'],
-  ['color', 'stroke'],
-  ['background-color', 'fill'],
-  ['border-color', 'stroke'],
-  ['-webkit-text-stroke-color', 'stroke'],
-  ['text-decoration-color', 'stroke'],
-]
 
 // A level or upright straight line, such as an arrow between two shapes side by side, is
 // exported with no height or no width, and a view box with a zero side draws nothing. Such a
@@ -63,7 +42,7 @@ export function print_svg_box(svg: SVGSVGElement): PrintBox | null {
   return box
 }
 
-// Repaints and defuses an export in place, then returns it as markup.
+// Defuses an export in place, then returns it as markup.
 export function print_svg_markup(svg: SVGSVGElement): string | null {
   const elements = [svg, ...svg.querySelectorAll('*')]
 
@@ -71,7 +50,6 @@ export function print_svg_markup(svg: SVGSVGElement): string | null {
 
   for (const element of elements) {
     element_defuse(element)
-    element_paint(element)
     element_rename(element)
   }
 
@@ -129,66 +107,4 @@ function element_rename(element: Element): void {
     element.setAttribute('data-print-type', element.getAttribute('data-shape-type')!)
     element.removeAttribute('data-shape-type')
   }
-}
-
-function element_paint(element: Element): void {
-  for (const [name, role] of paint_attributes) {
-    const value = element.getAttribute(name)
-
-    if (value === null) continue
-
-    const painted = paint(value, role)
-
-    if (painted !== null) element.setAttribute(name, painted)
-  }
-
-  const style = (element as HTMLElement | SVGElement).style
-
-  if (style === undefined) return
-
-  for (const [name, role] of paint_styles) {
-    const value = style.getPropertyValue(name)
-
-    if (value === '') continue
-
-    const painted = paint(value, role)
-
-    if (painted !== null) style.setProperty(name, painted, style.getPropertyPriority(name))
-  }
-}
-
-// The violet for one paint value, or null to leave it as it is: patterns, variables and
-// keywords keep their meaning, and their own contents are repainted where they are defined.
-function paint(value: string, role: PaintRole): string | null {
-  const colour = colour_read(value)
-
-  if (colour === null) return null
-
-  return rgba_format(print_paint(colour, role))
-}
-
-let reader: CanvasRenderingContext2D | null = null
-const sentinel = '#010203'
-
-// The browser's own colour parser: any CSS colour, read back as hex or rgba().
-function colour_read(value: string): Rgba | null {
-  const text = value.trim().toLowerCase()
-
-  if (text === '' || text === 'none' || text === 'transparent' || text === 'currentcolor') {
-    return null
-  }
-
-  if (/^(url|var|inherit|initial|unset|context-)/.test(text)) return null
-
-  reader ??= document.createElement('canvas').getContext('2d')
-
-  if (reader === null) return rgba_parse(text)
-
-  reader.fillStyle = sentinel
-  reader.fillStyle = text
-  const normal = String(reader.fillStyle)
-
-  if (normal === sentinel && text !== sentinel) return null
-
-  return rgba_parse(normal)
 }
