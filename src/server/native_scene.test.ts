@@ -364,6 +364,60 @@ test('a crash at any save leaves the edit acknowledged or absent; a retry lands 
   }
 })
 
+// A delete leaves no record at the write clock, and a restart empties the room's tombstones, so
+// the only evidence of a delete-only edit that crashed before its settle is the document marker
+// its push wrote. Each crash point is replayed; the retry is answered once and never reapplied.
+test('a delete-only edit crashed before its settle is still known after a restart', async () => {
+  for (let crash_at = 0; crash_at <= 3; crash_at += 1) {
+    const native = await native_linked()
+    human(board_of(native))(stroke('shape:rough', rough_points))
+    timers_settle(native)
+    const read = await scene(native)
+    const edit = {
+      request_id: 'delete-rough-1',
+      base_sequence: read.base_sequence,
+      adds: [],
+      updates: [],
+      deletes: [{ id: 'shape:rough', base_hash: read.hashes['shape:rough'] }],
+    }
+    const disk = native.env.disks.get(native.session)!
+    let writes = 0
+    disk.on_write = () => {
+      writes += 1
+      disk.write_fault_armed = writes === crash_at
+    }
+    disk.write_fault_armed = crash_at === 0
+    const answer = await native.run(request('native/edit', native.host, edit))
+    expect(answer.status).toBe(crash_at === 3 ? 200 : 503)
+    disk.on_write = () => undefined
+    disk.write_fault_armed = false
+    restart(native, false)
+
+    // The room on disk decides: the delete landed exactly when the room was saved with it.
+    const landed = crash_at >= 2
+    expect(record(board_of(native), 'shape:rough') === undefined).toBe(landed)
+    const retry = (await (
+      await native.run(request('native/edit', native.host, edit))
+    ).json()) as Json
+    expect([retry.result, retry.sequence]).toEqual([landed ? 'replayed' : 'written', 1])
+    expect(board_of(native).shapes()).toHaveLength(0)
+
+    // A restart forgets when the stroke was deleted, so the board cannot prove nobody drew it
+    // again since: that revert is refused and nothing is resurrected. A delete made in this
+    // lifetime still reverts, under the next sequence, so no sequence is ever named twice.
+    const undone = (await (
+      await native.run(request('native/revert', native.pad, { sequence: 1 }))
+    ).json()) as Json
+    const changed_since = [{ id: 'shape:rough', reason: 'changed_since', related_id: null }]
+    expect(landed ? [undone.code, undone.conflicts] : [undone.sequence, undone.reverts]).toEqual(
+      landed ? ['conflict', changed_since] : [2, 1],
+    )
+    expect(board_of(native).shapes()).toHaveLength(landed ? 0 : 1)
+    const marker = native_marker_read(board_of(native)['room'].getRecord(TLDOCUMENT_ID)?.meta)
+    expect(marker).toEqual(landed ? { sequence: 1, reverts: null } : { sequence: 2, reverts: 1 })
+  }
+})
+
 test('two edits read from the same bytes: one lands, the other is refused whole', async () => {
   const native = await native_linked()
   const push = human(board_of(native))

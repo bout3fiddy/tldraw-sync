@@ -36,6 +36,7 @@ import {
   revision_journal_create,
   revision_journal_decode,
   revision_journal_encode,
+  revision_marker,
   revision_revert_plan,
   revision_settle,
   revision_write,
@@ -690,6 +691,88 @@ test('a restart settles a pending revision from the room and never reuses minted
   written(await board.edit(request({ adds: [geo('shape:new-later')] })))
   expect(board.room.getRecord(`shape:edit-${id_namespace}-3`)).toBeDefined()
   expect(board.room.getRecord(`shape:edit-${id_namespace}-2`)).toBeUndefined()
+})
+
+// A board restart as `board.ts` makes one: the clock jumps and every tombstone is dropped.
+function restarted_view(snapshot: RoomSnapshot): RoomView {
+  const clock = Math.max(snapshot.clock, snapshot.documentClock ?? 0) + 1_000
+  const room = new TLSocketRoom<TLRecord>({
+    schema,
+    initialSnapshot: { ...snapshot, clock, tombstones: {}, tombstoneHistoryStartsAtClock: clock },
+  })
+  const viewed = room_view_create(room.getCurrentSnapshot(), room_epoch)
+  room.close()
+  assert(viewed.ok, 'the restarted room is readable')
+  expect(viewed.view.tombstones.size).toBe(0)
+  return viewed.view
+}
+
+// The same saved room with its document's marker replaced, or its document clock moved.
+function marker_replaced(snapshot: RoomSnapshot, marker: unknown, clock_shift = 0): RoomSnapshot {
+  const documents = snapshot.documents.map((document) => {
+    if (document.state.id !== TLDOCUMENT_ID) return document
+
+    const state = document.state as TLRecord
+    assert(state.typeName === 'document', 'the document record is a document')
+    const meta = { ...state.meta, native_revision: marker as never }
+    const lastChangedClock = document.lastChangedClock + clock_shift
+    return { state: { ...state, meta }, lastChangedClock }
+  })
+  expect(documents.length).toBe(snapshot.documents.length)
+  return { ...snapshot, documents }
+}
+
+test('a delete-only revision is recognized after a restart by its exact marker only', async () => {
+  const board = board_open()
+  board.human_put(stroke('shape:rough'))
+  const parsed = request({ deletes: [removal(board, 'shape:rough')] })
+  const planned = revision_edit_plan(board.journal, board.view(), 'request-delete', parsed)
+  assert(planned.kind === 'planned', 'the delete is plannable')
+  const intended = revision_intend(board.journal, planned.plan)
+  assert(intended.ok, 'the plan is current')
+  const marker = revision_marker(room_epoch, planned.plan.entry)
+  await board.room.updateStore((store) => {
+    expect(revision_apply(store, planned.plan)).toBe('applied')
+    const document = store.get(TLDOCUMENT_ID)
+    assert(document !== null && document.typeName === 'document', 'the room has its document')
+    store.put({ ...document, meta: { ...document.meta, native_revision: marker } })
+  })
+
+  // Crash before the settle. The restart drops the tombstone; the marker is what remains.
+  const saved = board.room.getCurrentSnapshot()
+  const settle = (snapshot: RoomSnapshot) => {
+    const settled = revision_settle(intended.journal, restarted_view(snapshot), 'observe')
+    assert(settled.ok, 'the lineage is unchanged')
+    expect(settled.journal.pending).toBeNull()
+    return settled.journal
+  }
+  const recovered = settle(saved)
+  expect(recovered.entries.map((entry) => entry.request_id)).toEqual(['request-delete'])
+  expect(recovered.sequence_next).toBe(2)
+
+  // Negative controls: a room without the marker, a room replaced by another board's, another
+  // transaction at the same sequence, and a marker the document no longer holds at its clock.
+  const controls: [string, RoomSnapshot][] = [
+    ['no marker', marker_replaced(saved, undefined)],
+    ['replaced room', marker_replaced(saved, { ...marker, room_epoch: 'epoch-other' })],
+    ['other request', marker_replaced(saved, { ...marker, request_hash: 'f'.repeat(64) })],
+    ['other clock', marker_replaced(saved, { ...marker, write_clock: marker.write_clock - 1 })],
+    ['other sequence', marker_replaced(saved, { ...marker, sequence: 2 })],
+    ['page fields only', marker_replaced(saved, { sequence: 1, reverts: null })],
+    ['later document edit', marker_replaced(saved, marker, 1)],
+  ]
+
+  for (const [name, snapshot] of controls) {
+    const journal = settle(snapshot)
+    expect([name, journal.entries.length, journal.sequence_next]).toEqual([name, 0, 1])
+  }
+
+  // Applied, but its deletion clock is gone: the revert is refused, never resurrecting.
+  const reverting = revision_revert_plan(recovered, restarted_view(saved), 1)
+  assert(reverting.kind === 'refused', `the revert is refused: ${reverting.kind}`)
+  expect(reverting.conflicts).toEqual([
+    { id: 'shape:rough', reason: 'changed_since', related_id: null },
+  ])
 })
 
 test('a failed intent save or a diverged write leaves the room and journal untouched', async () => {

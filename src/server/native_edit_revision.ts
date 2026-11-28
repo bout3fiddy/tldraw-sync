@@ -17,8 +17,13 @@
 // it in one `updateStore` call guarded by every record the plan read, then persist the settled
 // journal. After a crash, `revision_settle(journal, view, 'observe')` resolves the pending
 // revision from the room alone, so no applied revision goes untracked while evidence remains.
+// The push that applies a revision on a native board also writes `revision_marker` into the
+// document's meta. It survives a restart, which empties the room's tombstones, so it is the
+// evidence that a revision which only deleted records was applied.
 
+import { TLDOCUMENT_ID } from '@tldraw/tlschema'
 import { assert, AssertionError } from '../shared/assert'
+import { native_marker_key } from '../shared/native_scene'
 import {
   clock_valid,
   id_namespace_pattern,
@@ -56,6 +61,17 @@ export type RevisionEntry = {
 }
 
 export type RevisionPending = { readonly entry: RevisionEntry; readonly id_sequence_next: number }
+
+// A page reads only `sequence` and `reverts`. The rest names the transaction (its write clock
+// and request) and the room lineage it was written in, so a marker from another journal or
+// another revision is never taken as evidence.
+export type RevisionMarker = {
+  readonly sequence: number
+  readonly reverts: number | null
+  readonly room_epoch: string
+  readonly write_clock: number
+  readonly request_hash: string | null
+}
 
 export type RevisionJournal = {
   readonly room_epoch: string
@@ -741,8 +757,9 @@ export type RevisionWrite = 'applied' | 'not_applied' | 'observe'
 
 // Resolves the pending revision. Pass 'applied' or 'not_applied' when the caller knows; pass
 // 'observe' for recovery after a crash, which counts the revision as applied when the room
-// holds any of its records at the write clock with the planned bytes, or a tombstone there for
-// a record it deleted. One push lands at one clock, so nothing else produced that evidence.
+// holds any of its records at the write clock with the planned bytes, a tombstone there for a
+// record it deleted, or the document there with its exact marker. One push lands at one clock,
+// so nothing else produced that evidence.
 // Without evidence every touched record has changed since, so a revert would be refused anyway.
 export function revision_settle(
   journal: RevisionJournal,
@@ -759,7 +776,8 @@ export function revision_settle(
   let entries = journal.entries
 
   if (pending !== null) {
-    const applied = write === 'applied' || (write === 'observe' && evidence(pending, view))
+    const applied =
+      write === 'applied' || (write === 'observe' && evidence(pending, view, journal.room_epoch))
 
     if (applied) entries = entries_append(journal.entries, pending.entry)
   }
@@ -776,9 +794,24 @@ export function revision_settle(
   return { ok: true, journal: settled }
 }
 
-function evidence(pending: RevisionPending, view: RoomView): boolean {
+export function revision_marker(room_epoch: string, entry: RevisionEntry): RevisionMarker {
+  assert(room_epoch_pattern.test(room_epoch), 'room epoch is well formed')
+  assert(clock_valid(entry.write_clock) && entry.sequence >= 1, 'the entry was planned')
+
+  return {
+    sequence: entry.sequence,
+    reverts: entry.reverts,
+    room_epoch,
+    write_clock: entry.write_clock,
+    request_hash: entry.request_hash,
+  }
+}
+
+function evidence(pending: RevisionPending, view: RoomView, room_epoch: string): boolean {
   const write_clock = pending.entry.write_clock
   assert(clock_valid(write_clock), 'the write clock is a room clock')
+
+  if (marker_evidence(pending.entry, view, room_epoch)) return true
 
   for (const change of pending.entry.changes) {
     if (change.after === null) {
@@ -796,6 +829,29 @@ function evidence(pending: RevisionPending, view: RoomView): boolean {
 
   assert(pending.entry.changes.length >= 1, 'a pending revision changes something')
   return false
+}
+
+// Only the revision's own push writes the document at its write clock with its exact marker.
+// Meta is client-writable, so every field must match, and a later document edit hides it.
+function marker_evidence(entry: RevisionEntry, view: RoomView, room_epoch: string): boolean {
+  const document = view.documents.get(TLDOCUMENT_ID)
+
+  if (document === undefined || document.lastChangedClock !== entry.write_clock) return false
+
+  const meta = document.state['meta']
+
+  if (typeof meta !== 'object' || meta === null) return false
+
+  const found = (meta as Record<string, unknown>)[native_marker_key]
+
+  if (typeof found !== 'object' || found === null || Array.isArray(found)) return false
+
+  const expected = revision_marker(room_epoch, entry)
+  const keys = Object.keys(expected) as (keyof RevisionMarker)[]
+  const record = found as Record<string, unknown>
+  const matches = Object.keys(record).length === keys.length
+  assert(keys.length === 5, 'a marker has five fields')
+  return matches && keys.every((key) => record[key] === expected[key])
 }
 
 // Appends an applied revision, marks the one it reverts, and expires the oldest beyond the bound.

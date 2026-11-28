@@ -20,12 +20,14 @@ import {
   revision_journal_create,
   revision_journal_decode,
   revision_journal_encode,
+  revision_marker,
   revision_settle,
   revision_write,
   type RevisionAction,
   type RevisionConflict,
   type RevisionEntry,
   type RevisionJournal,
+  type RevisionMarker,
   type RevisionMinted,
   type RevisionWriteResult,
 } from './native_edit_revision'
@@ -189,9 +191,11 @@ export class NativeScene {
         return { kind: 'unavailable', reason: 'storage_failure' }
       }
     })
-    this.tail = run.catch(() => undefined).finally(() => {
-      this.queued -= 1
-    })
+    this.tail = run
+      .catch(() => undefined)
+      .finally(() => {
+        this.queued -= 1
+      })
     return run
   }
 
@@ -206,7 +210,7 @@ export class NativeScene {
         journal: this.journal,
         action,
         saver: { save: (journal) => journal_save(this.disk, journal) },
-        annotate: marker_put,
+        annotate: (store, entry) => marker_put(store, this.journal.room_epoch, entry),
         room_save: this.room_save,
       })
       this.journal = result.journal
@@ -329,12 +333,13 @@ function unavailable(result: RevisionWriteResult): NativeOutcome {
   return { kind: 'unavailable', reason: problem ?? result.room_problem ?? 'the room is unreadable' }
 }
 
-// Runs inside the revision's own push: the marker lands at the same clock as its records.
-function marker_put(store: SceneStore<TLRecord>, entry: RevisionEntry): void {
+// Runs inside the revision's own push: the marker lands at the same clock as its records, and
+// recovery reads it back as evidence the push was applied.
+function marker_put(store: SceneStore<TLRecord>, room_epoch: string, entry: RevisionEntry): void {
   const document = store.get(TLDOCUMENT_ID)
   assert(document !== null && document.typeName === 'document', 'a board has its document')
 
-  const marker: NativeMarker = { sequence: entry.sequence, reverts: entry.reverts }
+  const marker: NativeMarker & RevisionMarker = revision_marker(room_epoch, entry)
   store.put({ ...document, meta: { ...document.meta, [native_marker_key]: marker } })
 }
 
