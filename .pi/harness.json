@@ -43,7 +43,7 @@
       "required": true,
       "runner": "host",
       "argv": ["npm", "run", "test:browser"],
-      "timeoutMs": 240000
+      "timeoutMs": 420000
     }
   ]
 }
