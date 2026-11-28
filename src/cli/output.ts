@@ -41,6 +41,9 @@ export type Outcome =
       message: string
       next_action: NextAction
       exit_code: Exclude<ExitCode, 0>
+
+      // What a failure found, printed with --json beside the fixed fields; none by default.
+      data?: Record<string, unknown>
     }
 
 export type OutputMode = 'human' | 'quiet' | 'json'
@@ -60,10 +63,13 @@ export function failure(
   message: string,
   next_action: NextAction,
   exit_code: Exclude<ExitCode, 0> = exit_codes.failure,
+  data?: Record<string, unknown>,
 ): Outcome {
   assert(/^[a-z_]+$/.test(code), 'a code is snake_case')
   assert(message.endsWith('.'), 'a message is a full sentence')
-  return { kind: 'failure', code, message, next_action, exit_code }
+  return data === undefined
+    ? { kind: 'failure', code, message, next_action, exit_code }
+    : { kind: 'failure', code, message, next_action, exit_code, data }
 }
 
 // Prints the outcome and returns the exit code for it.
@@ -81,6 +87,7 @@ export function outcome_print(outcome: Outcome, mode: OutputMode): ExitCode {
 
   if (mode === 'json') {
     line_write({
+      ...outcome.data,
       status: 'failure',
       code: outcome.code,
       message: outcome.message,

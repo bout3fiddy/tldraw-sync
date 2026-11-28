@@ -343,7 +343,8 @@ function marker_put(store: SceneStore<TLRecord>, room_epoch: string, entry: Revi
   store.put({ ...document, meta: { ...document.meta, [native_marker_key]: marker } })
 }
 
-function journal_read(disk: Disk): RevisionJournal | null {
+// Null for a board without a journal; a whole-root stage reads it to find a pending revision.
+export function journal_read(disk: Disk): RevisionJournal | null {
   const bytes = disk.read(journal_file)
 
   if (bytes === null) return null

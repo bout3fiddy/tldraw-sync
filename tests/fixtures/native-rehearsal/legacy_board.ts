@@ -108,7 +108,7 @@ export function legacy_board_write(
   return { session }
 }
 
-function sketch_write(disk: ReturnType<typeof disk_open>): void {
+export function sketch_write(disk: ReturnType<typeof disk_open>): void {
   const schema = createTLSchema()
   const page_index = 'a1' as TLPage['index']
   const records = [
@@ -129,7 +129,11 @@ function sketch_write(disk: ReturnType<typeof disk_open>): void {
   disk.write_atomic('board.snapshot', envelope_encode({ kind: 'board', label: '-', payload }))
 }
 
-function canvas_publish(registry: BoardRegistry, session: string, canvas: CanvasKind): void {
+export function canvas_publish(
+  registry: BoardRegistry,
+  session: string,
+  canvas: CanvasKind,
+): void {
   const lookup = registry.board(session)
 
   if (lookup.kind !== 'board') throw new Error('the fixture board did not open')
@@ -166,7 +170,7 @@ function canvas_publish(registry: BoardRegistry, session: string, canvas: Canvas
   }
 }
 
-function chat_write(registry: BoardRegistry, session: string, chat: ChatKind): void {
+export function chat_write(registry: BoardRegistry, session: string, chat: ChatKind): void {
   const lookup = registry.board(session)
 
   if (lookup.kind !== 'board') throw new Error('the fixture board did not open')

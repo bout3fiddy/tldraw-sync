@@ -119,7 +119,8 @@ type SourceRead = {
   readonly before: string
 }
 
-class SourceWriteRefused extends Error {}
+// Thrown by a read-only disk; a whole-root stage (`native_stage.ts`) reads with it too.
+export class SourceWriteRefused extends Error {}
 
 // What a board folder may hold to be rehearsed. Anything else is refused by name, so nothing a
 // later version adds is silently left behind. The image and frame are derived and carried as is.
@@ -159,7 +160,9 @@ export function native_rehearse(options: RehearsalOptions): RehearsalResult {
   return result
 }
 
-function paths_check(options: RehearsalOptions): Paths | RehearsalRefusal {
+export function paths_check(
+  options: Pick<RehearsalOptions, 'source_directory' | 'output_directory' | 'live_directory'>,
+): Paths | RehearsalRefusal {
   const source = directory_real(options.source_directory)
 
   if (source === null) return refusal('source_missing', 'The source data directory is missing.')
@@ -319,9 +322,9 @@ function board_names(directory: string): string[] | RehearsalRefusal {
   return names
 }
 
-type BoardRead = Omit<SourceRead, keyof Listed | 'key' | 'files' | 'before'>
+export type BoardRead = Omit<SourceRead, keyof Listed | 'key' | 'files' | 'before'>
 
-function board_read(disk: Disk): BoardRead | RehearsalRefusal {
+export function board_read(disk: Disk): BoardRead | RehearsalRefusal {
   const room = room_read(disk)
   const canvas_bytes = disk.read('cleaned.state')
   const canvas = Cleaned.open(disk)
@@ -360,7 +363,7 @@ function board_read(disk: Disk): BoardRead | RehearsalRefusal {
   }
 }
 
-function room_read(disk: Disk): RoomSaved {
+export function room_read(disk: Disk): RoomSaved {
   const bytes = disk.read('board.snapshot')
   assert(bytes !== null, 'the board folder was checked for its room')
   const decoded = envelope_decode(bytes, 'board')
@@ -572,7 +575,7 @@ function rehearsed(staging: Staging): Rehearsed {
   }
 }
 
-function disk_read_only(disk: Disk): Disk {
+export function disk_read_only(disk: Disk): Disk {
   return {
     read: (name) => disk.read(name),
     write_atomic: () => {
@@ -581,7 +584,7 @@ function disk_read_only(disk: Disk): Disk {
   }
 }
 
-function source_running(directory: string): boolean {
+export function source_running(directory: string): boolean {
   assert(path.isAbsolute(directory), 'a source is named absolutely')
   const held = server_state_read(directory)
   assert(held === null || held.pid > 0, 'a read claim names a process')
@@ -618,7 +621,7 @@ function directory_real(directory: string): string | null {
   }
 }
 
-function entry_exists(file: string): boolean {
+export function entry_exists(file: string): boolean {
   assert(path.isAbsolute(file), 'an output is named absolutely')
   return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined
 }
@@ -628,7 +631,7 @@ function paths_overlap(a: string, b: string): boolean {
   return a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep)
 }
 
-function directory_sync(directory: string): void {
+export function directory_sync(directory: string): void {
   assert(path.isAbsolute(directory), 'a synced folder is named absolutely')
   const descriptor = fs.openSync(directory, 'r')
 
@@ -639,7 +642,7 @@ function directory_sync(directory: string): void {
   }
 }
 
-function error_code(error: unknown): string {
+export function error_code(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | null)?.code
   return typeof code === 'string' ? code : 'an unexpected error'
 }

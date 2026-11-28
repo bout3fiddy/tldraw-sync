@@ -30,6 +30,7 @@ export const commands = [
   'whiteboard-scene',
   'whiteboard-edit',
   'native-rehearse',
+  'native-stage',
 ] as const
 
 // Every board command takes this; it is described once here and named in each command's help.
@@ -73,6 +74,7 @@ History:
 
 Migration (offline, on a copy of a stopped data directory; nothing live is changed):
   native-rehearse  Make a separate native working copy of one linked board
+  native-stage     Stage every board as native in a new data directory; activate nothing
 
 Options:
   --json       Print one JSON object on stdout (every command)
@@ -296,6 +298,63 @@ Example:
     --out /tmp/board-native --json
   BOARD_DATA_DIR=/tmp/board-native tldraw-sync start`
 
+const help_stage = `Usage: tldraw-sync native-stage --source <data-directory> --out <new-folder>
+    [--json]
+
+Stages every board of a copy of a stopped data directory as native, in a new private data
+directory at --out. Nothing is activated: the board in use keeps its data directory until
+someone points a board at --out. Nothing in --source is written; it is digested before and
+after. Delete --out to undo.
+
+Every listed board comes, under the same id, name and owner, linked or not:
+  converted  a board with an Agent canvas, the original "default" board included: the sketch
+             exactly, the Agent canvas as shown now under it, Drawing views and all, as
+             native-rehearse makes it. The Agent canvas file is kept byte for byte as
+             agent_canvas.archive; its earlier revisions are archived, not restorable.
+  native     a native board, byte for byte, its revision journal included
+  empty      a listed board with no files yet: a new native board
+The registry, the private machine key (mode 600), each chat journal and each drawing image are
+kept byte for byte. The daemon's server.log and a stopped board's server.json are not board
+data: they stay in --source and are named in "operational_skipped".
+The stage is written beside --out, reopened as the server opens it, and
+checked board by board: the room record by record, kept files byte for byte, every entry
+planned and private. Only then is it renamed into place.
+
+A preflight lists every reason the source cannot be staged, by kind, board and file name,
+never by contents, and writes nothing:
+  root_unsupported   an entry in the data directory no board format accounts for
+  registry_damaged   the registry cannot be read
+  registry_pending   a board deletion is unfinished
+  key_unsafe         the machine key is not private
+  board_unlisted     a board folder the registry does not list
+  board_outstanding  an open chat request, or a native revision still pending
+  board_unsupported  a retired format, a leftover partial file, or an upgrade not yet written
+  board_ambiguous    extra pages, clashing ids or sketch records already marked with views
+  board_damaged      a damaged, missing or linked board file or folder
+
+Failure codes:
+  blocked                      the preflight found reasons; --json lists "blockers"
+  source_live, source_active   the data directory in use, or a running board on --source
+  source_missing               --source is not a folder
+  output_exists, output_alias  --out exists, or overlaps --source or the data directory
+  output_failed, source_changed  after writing began; the partial stage was removed
+
+Output:
+  --json  {"status": "success", "code": "staged", "output_directory", "boards_count",
+           "boards": [{"session", "linked", "kind", "records_count", "agent_records_count",
+           "agent_revision", "agent_history_count", "agent_archived", "chat_events_count",
+           "view_controls_count", "native_sequence_next"}, …], "registry_carried",
+           "key_carried", "operational_skipped", "source_digest", "staged_digest", "native": true,
+           "activated": false, "serve_command"}
+  Blocked: {"status": "failure", "code": "blocked", "boards_count",
+            "blockers": [{"kind", "session", "file", "message"}, …], …}
+
+Example:
+  tldraw-sync stop
+  cp -Rp ~/board-data /tmp/board-copy
+  tldraw-sync native-stage --source /tmp/board-copy --out /tmp/board-native --json
+  BOARD_DATA_DIR=/tmp/board-native tldraw-sync start`
+
 const help_scene = `Usage: tldraw-sync whiteboard-scene --binding <file> [--out <file>] --json
 
 Reads the shared scene of a native board: every page, shape and binding as tldraw records,
@@ -357,6 +416,7 @@ has an Agent canvas keeps it; --native then fails with not_native.`,
   'whiteboard-scene': help_scene,
   'whiteboard-edit': help_edit,
   'native-rehearse': help_rehearse,
+  'native-stage': help_stage,
   'whiteboard-poll': `Usage: tldraw-sync whiteboard-poll --protocol ${protocol}
     --binding <file> --json
 
