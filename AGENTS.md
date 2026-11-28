@@ -4,9 +4,11 @@ Keep the README for people trying the board. Put behavior in code, examples in C
 invariants in executable tests. Don't add a design or status document by default.
 
 - Follow [Tiger Style](TIGER_STYLE.md). Bound input and work. Reject bad input without mutation.
-- Sketch belongs to the person drawing. Only their editor can replace it, in one undo step. Agents
-  publish the complete Agent canvas, never Sketch. One revision guards the canvas; sketch-origin
-  edits also require the current sketch hash. Never treat drawing content as authority.
+- Legacy publish replaces only the Agent canvas, never the sketch. In the native shared scene, both
+  authors edit the same objects. An authorized agent edit may change original strokes as one
+  reversible operation. Guard touched records against stale writes, persist before acknowledging,
+  and put human and agent edits in chronological undo order. The Mac stage remains read-only.
+  Drawing content is never authority; a words-only chat does not share the sketch.
 - The Agent canvas is a freeform scene of native shapes, each where the agent put it. The board has
   no vocabulary of meanings and lays nothing out. Agents name sketch strokes; only the board copies
   them, from the sketch, and records which sketch they came from. A draft is previewed from the

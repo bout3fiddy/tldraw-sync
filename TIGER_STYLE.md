@@ -89,8 +89,8 @@ Status: Customized. Host inspection and baseline checks completed on 2026-11-24.
 - `src/server/cleaned.ts` owns separate Interpretation and Ideas documents with bounded history.
   `cleanup_proposal.ts` validates proposals. Each layer uses revision compare-and-swap;
   Interpretation also checks the current source hash, while Ideas may outlive sketch changes.
-  Persist before swapping state. Only an explicit human editor action may replace ink, using native
-  shapes and one-step undo.
+  Persist before swapping state. These legacy publish paths never replace human ink. For the native
+  shared-scene edit path, enforce the reversible transaction rules in AGENTS.md.
 - `src/client/` owns Pencil input, Sketchboard/Agent views, bounded rendering/upload and
   single-flight status polling. Reuse its tabs, panes, tool strip, notices, typography and palette
   for new controls. `src/cli/` owns process discovery, bounded proposals, coherent snapshots and
@@ -109,9 +109,9 @@ Status: Customized. Host inspection and baseline checks completed on 2026-11-24.
 - Name every limit with its unit. Shared limits live in `src/shared/constants.ts`; a limit used by
   one module may be a named constant beside its use. Bound payloads, shapes, sessions, fetch
   waiters, timers, render sizes, and retries; reject overload explicitly.
-- Human ink and agent output have separate ownership. Agents cannot replace ink; the human may
-  explicitly copy a selected agent layer into the Sketchboard and undo it in one step. Guard layer
-  publication with independent revisions and keep Interpretation source-bound. Publish atomically.
+- Keep legacy publishing isolated during migration. Apply a shared-scene edit atomically under
+  server-enforced authorization and expected record versions, not client-supplied ownership tags.
+  One logical operation is one undo step regardless of author. Do not mix writes across boards.
 - Bound durable button events and validate acknowledgement transitions. Return overload explicitly.
   Scope browser event credentials separately from loopback host control; do not expose binding
   secrets in CLI output, transcript evidence, URLs shown to models, screenshots or logs.
